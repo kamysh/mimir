@@ -55,6 +55,17 @@ or explicit decision that is not a conclusion inferred from a queued incident.
 The MCP tool requires `provenance: {"basis":"user_instruction"|"document",
 "reference":"..."}`. Give a specific user instruction or document location;
 do not label an agent inference or incident report as an independent source.
+Also supply `supporting_passage_id`, the existing indexed passage ID returned
+by `query_document`. Read the passage and verify that it supports the claim;
+similarity only ranks suggestions. If no supporting passage is available or
+embedding preparation fails, open a user dialogue instead of storing the belief.
+The belief, embedding and source link are saved together after preparation;
+recording the source does not change the supplied probability.
+New belief candidates in `review_experience` require the same
+`supporting_passage_id` inside each belief candidate. Use `query_document` to
+select and read a supporting passage before submission. Missing support or a
+failed embedding leaves the review pending with no new belief; explain the
+problem to the user, correct it, and resubmit the original review.
 `explain_belief` exposes this provenance. Older untagged MCP insertion calls
 are rejected; capture their incident as an experience instead.
 User requirements are authoritative constraints for the task, not statistical

@@ -1,5 +1,5 @@
 {-# OPTIONS --safe #-}
--- The ten embedded application migrations. This is the concrete DDL/data
+-- Embedded application migrations. This is the concrete DDL/data
 -- contract supplied to MigrationDriver.executeOriginalSQL; PostgreSQL executes
 -- these operations inside the driver's transaction, before both ledger writes.
 -- SQL expression arithmetic, collation and NULL semantics are database
@@ -20,7 +20,7 @@ open import Mimir.Migrations public
   using (Migration; initial; searchPath; evidenceEdges; betaBeliefs)
   renaming (name to migrationName; beliefEmbeddings to embeddingTable; learningLedger to learning;
     reviewCandidates to candidates; assessments to assessment; itemOwners to owners;
-    postgresItemAllocation to allocation;
+    postgresItemAllocation to allocation; reviewWorkEvents to workEvents;
     predecessor to requires; manifest to ordered)
 
 data Type : Set where uuid text bigint timestamp jsonb double boolean vector : Type
@@ -147,6 +147,7 @@ data DDL : Set where
   setColumnDefault : String → String → Default → DDL
   addUniqueConstraint : String → String → List String → DDL
   addCheckConstraint : String → String → Expr → DDL
+  notifyExperienceChanges : String → DDL
 
 kappa alpha beta : Expr
 kappa = add (number "2.0" ∷ multiply (columnValue "confidence" ∷ number "198.0" ∷ []) ∷ [])
@@ -178,6 +179,7 @@ body allocation =
   addUniqueConstraint "mimir_learning_item_owners" "mimir_learning_item_local_key"
     ("experience_id" ∷ "item_key" ∷ []) ∷
   addCheckConstraint "mimir_learning_item_owners" "mimir_learning_item_key_nonempty" localKeyValid ∷ []
+body workEvents = notifyExperienceChanges "mimir_review_work" ∷ []
 
 -- PostgreSQL supplies the decoded historical rows and execution order. The
 -- application's data rule is insert-missing-only, linked to its general laws.

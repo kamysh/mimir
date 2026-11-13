@@ -306,6 +306,7 @@ fn config() -> EmailConfig {
         auth: Some(Auth::None),
         password: None,
         oauth: None,
+        daily_report_at: None,
         timeout_seconds: 3,
         retry_seconds: 10,
         max_attempts: 2,
@@ -344,6 +345,40 @@ fn progress(source: &str, incident: &str) -> Event {
         status: EventStatus::Progress,
         details: None,
     }
+}
+
+#[tokio::test]
+async fn stalled_delivery_does_not_lock_out_new_alerts() {
+    let settings = config();
+    let path = directory();
+    let sender_path = path.clone();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let delivery = tokio::spawn(async move {
+        let sender_settings = config();
+        let sender = Notifier::new(&sender_settings, &sender_path).unwrap();
+        sender
+            .submit_with(
+                &failure("judge", "stalled", "unavailable"),
+                100,
+                |_| async move {
+                    started_tx.send(()).unwrap();
+                    release_rx.await.unwrap();
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap()
+    });
+    started_rx.await.unwrap();
+    let other = Notifier::new(&settings, &path).unwrap();
+    other
+        .enqueue(&failure("judge", "new-review", "needs_input"))
+        .unwrap();
+    assert_eq!(other.pending_ids().unwrap().len(), 2);
+    release_tx.send(()).unwrap();
+    assert_eq!(delivery.await.unwrap(), Outcome::Sent);
+    assert_eq!(other.pending_ids().unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -656,7 +691,7 @@ async fn digest_uses_host_and_real_loopback_smtp() {
 }
 
 #[tokio::test]
-async fn digest_cursor_suppresses_repeats_and_throttles_failed_delivery() {
+async fn digest_cursor_suppresses_repeats_and_obeys_configured_retry_delay() {
     use std::os::unix::fs::PermissionsExt;
     let config = config();
     let path = directory();
@@ -677,7 +712,7 @@ async fn digest_cursor_suppresses_repeats_and_throttles_failed_delivery() {
         Outcome::RetryPending
     );
     let state = notifier.digest_state().unwrap();
-    assert_eq!(state.next_due, 3700);
+    assert_eq!(state.next_due, 100 + config.retry_seconds);
     assert_eq!(state.through_day, None);
     assert!(state.last_attempt_failed);
     assert_eq!(
@@ -690,14 +725,14 @@ async fn digest_cursor_suppresses_repeats_and_throttles_failed_delivery() {
     );
     assert_eq!(
         notifier
-            .send_digest_at(&digest, 3699, Some(|_| async { panic!("too early") }))
+            .send_digest_at(&digest, 109, Some(|_| async { panic!("retry is not due") }))
             .await
             .unwrap(),
         Outcome::RetryPending
     );
     assert_eq!(
         notifier
-            .send_digest_at(&digest, 3700, Some(|_| async { Ok(()) }))
+            .send_digest_at(&digest, 110, Some(|_| async { Ok(()) }))
             .await
             .unwrap(),
         Outcome::Sent
@@ -863,7 +898,7 @@ async fn shared_outbox_lock_privacy_and_due_retry() {
     .await;
     config.port = Some(port);
     let notifier = Notifier::new(&config, &path).unwrap();
-    let retried = notifier.retry_due(1).await.unwrap();
+    let retried = notifier.retry_pending().await.unwrap();
     assert_eq!(
         retried,
         vec![("mcp".into(), "transport".into(), Outcome::Exhausted)]

@@ -71,7 +71,7 @@ memory = enum (("fact" , C.fact) ∷ ("experiential" , C.experiential) ∷ ("wor
 
 -- The same public tool name selects both its accepted fields and decoder.
 allowedFields : Tools.Tool → List Text
-allowedFields Tools.insertBelief = map toList ("provenance" ∷ "content" ∷ "probability" ∷ "confidence" ∷ "memory_type" ∷ "project" ∷ [])
+allowedFields Tools.insertBelief = map toList ("provenance" ∷ "content" ∷ "probability" ∷ "confidence" ∷ "memory_type" ∷ "project" ∷ "supporting_passage_id" ∷ [])
 allowedFields Tools.deleteBelief = map toList ("id" ∷ [])
 allowedFields Tools.deleteProject = map toList ("project" ∷ [])
 allowedFields Tools.deletePattern = map toList ("id" ∷ [])
@@ -172,10 +172,11 @@ module Decode (conversion : Conversion.Contract) where
 
   decode : Tools.Tool → V.Object.View → Fault ⊎ Request
   decode Tools.insertBelief fields = required "provenance" validOrigin fields >>= λ origin →
+    required "supporting_passage_id" uuid fields >>= λ passage →
     required "content" V.asString fields >>= λ content → required "probability" float fields >>= λ probability →
     required "confidence" float fields >>= λ confidence → memoryField (toList "memory_type") fields >>= λ kind →
     project fields >>= λ selectedProject →
-    inj₂ (mutation (Mutation.belief content probability confidence selectedProject (defaultMemory kind) (just origin)))
+    inj₂ (mutation (Mutation.belief content probability confidence selectedProject (defaultMemory kind) (just origin) passage))
   decode Tools.deleteBelief fields = mapResult (delete Delete.belief) (required "id" uuid fields)
   decode Tools.deletePattern fields = mapResult (delete Delete.patternNode) (required "id" uuid fields)
   decode Tools.deleteProject fields = mapResult deleteProject (required "project" V.asString fields)

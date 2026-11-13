@@ -8,8 +8,6 @@ use reqwest::{redirect::Policy, Client};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-const MAX_REPLY: usize = 16 * 1024;
-const MAX_TOKEN: usize = 8192;
 const EXPIRY_MARGIN: u64 = 60;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,7 +41,7 @@ struct RefreshReply {
 }
 
 fn valid_token(token: &str) -> bool {
-    !token.is_empty() && token.len() <= MAX_TOKEN && !token.chars().any(char::is_control)
+    !token.is_empty() && !token.chars().any(char::is_control)
 }
 
 fn identity(config: &EmailConfig) -> Result<Vec<u8>, AuthError> {
@@ -116,17 +114,8 @@ async fn refresh(
             AuthError::Retryable
         });
     }
-    if response
-        .content_length()
-        .is_some_and(|size| size > MAX_REPLY as u64)
-    {
-        return Err(AuthError::NeedsAttention);
-    }
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|_| AuthError::Retryable)? {
-        if bytes.len().saturating_add(chunk.len()) > MAX_REPLY {
-            return Err(AuthError::NeedsAttention);
-        }
         bytes.extend_from_slice(&chunk);
     }
     let reply: RefreshReply =

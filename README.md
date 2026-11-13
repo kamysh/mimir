@@ -198,7 +198,7 @@ chmod 600 ~/.pgpass
 Run the setup script (creates the role, database, extensions, and grants):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kamysh/mimir/v2.3.0/mimir-setup/create-db-user.sh \
+curl -fsSL https://raw.githubusercontent.com/kamysh/mimir/v3.0.0/mimir-setup/create-db-user.sh \
   | bash -s -- --container postgres-ai --host localhost --port 5432 --user mimir --db mimir
 ```
 
@@ -223,7 +223,7 @@ psql -h localhost -U mimir -d mimir -c '\conninfo' >/dev/null && echo OK
 
 This step installs the two mimir binaries to `~/.local/bin`. It is one of three pieces — see Step 5 for the MCP server registration.
 
-Install the **2.3.0** release. This block selects one archive for your platform:
+Install the **3.0.0** release. This block selects one archive for your platform:
 
 ```bash
 mkdir -p "$HOME/.local/bin"
@@ -233,11 +233,11 @@ case "$(uname -s)-$(uname -m)" in
   Darwin-arm64)  TARBALL=mimir-darwin-arm64.tar.gz ;;
   *) echo "Use Building from source for this platform" >&2; exit 1 ;;
 esac
-curl -fL "https://github.com/kamysh/mimir/releases/download/v2.3.0/${TARBALL}" \
+curl -fL "https://github.com/kamysh/mimir/releases/download/v3.0.0/${TARBALL}" \
   | tar -xz -C "$HOME/.local/bin"
 chmod +x "$HOME/.local/bin/mimir" "$HOME/.local/bin/mimir-mcp"
 export PATH="$HOME/.local/bin:$PATH"
-mimir --version  # must report 2.3.0
+mimir --version  # must report 3.0.0
 ```
 
 The release workflow builds Linux x86_64, Linux ARM64 and Apple Silicon.
@@ -426,7 +426,7 @@ docker ps --filter name=postgres-ai
 
 | Tool | What it does |
 |---|---|
-| `insert_belief` | Add an independently sourced belief with `content`, `probability` [0,1], `confidence` [0,1], and required `provenance` (`basis`, `reference`) |
+| `insert_belief` | Add an independently sourced belief with `content`, `probability` [0,1], `confidence` [0,1], `provenance` (`basis`, `reference`), and `supporting_passage_id` pointing to an existing indexed document passage |
 | `delete_belief` | Remove a belief and all its edges by `id` |
 | `insert_pattern` | Add a pattern with `situation`, `approach`, `success_rate` [0,1] |
 | `delete_pattern` | Remove a pattern by `id` |
@@ -506,10 +506,14 @@ Replacing the review can restore a mistakenly superseded belief.
 MCP `insert_belief` now requires explicit independent `provenance` with a
 `user_instruction` or `document` basis and a nonempty source reference. The
 source is stored with the graph node and shown by `explain_belief`; untagged MCP
-writes are rejected. This is a provenance declaration by the caller, not proof
+writes are rejected. Supply `supporting_passage_id` using the existing passage
+ID returned by `query_document`. Select a passage that actually supports the
+claim; a similarity score alone does not establish support. Mimir prepares the
+embedding before atomically saving the belief, vector and source link. Failed
+preparation or publication leaves no belief to clean up. The source reference
+does not change the submitted probability. This is a provenance declaration by the caller, not proof
 that the cited source is authentic. Incident-derived conclusions still belong
-to atomic review candidates. Existing CLI belief insertion remains available
-for explicit manual operations.
+to atomic review candidates.
 
 `insert_pattern` now accepts `project`. `query_learning_context` returns relevant
 beliefs plus situation-matched patterns, with successes, failures, unresolved

@@ -29,10 +29,14 @@ oauth = recordOf ("provider" ∷ "client_id" ∷ "client_secret" ∷ "refresh_to
 module Decode (sizeMaximum : ℕ) where
   decode : V.Value → Fault ⊎ N.Config
   decode = recordOf ("enabled" ∷ "host" ∷ "port" ∷ "tls" ∷ "from" ∷ "to" ∷ "username" ∷ "auth" ∷
-    "password" ∷ "oauth" ∷ []) (λ fields →
+    "password" ∷ "oauth" ∷ "daily_report_at" ∷ "timeout_seconds" ∷ "retry_seconds" ∷ "max_attempts" ∷ []) (λ fields →
     defaulted "enabled" false V.asBoolean fields >>= λ enabled → optional "host" V.asString fields >>= λ host →
     optional "port" (unsigned 65535) fields >>= λ port → optional "tls" tls fields >>= λ tls →
     optional "from" V.asString fields >>= λ from → defaulted "to" [] (readArray V.asString) fields >>= λ to →
     optional "username" V.asString fields >>= λ user → optional "auth" auth fields >>= λ auth →
     optional "password" V.asString fields >>= λ password → optional "oauth" oauth fields >>= λ oauth →
-    inj₂ (N.config enabled host port tls from to user password auth oauth))
+    optional "daily_report_at" V.asString fields >>= λ daily →
+    defaulted "timeout_seconds" 15 (unsigned 18446744073709551615) fields >>= λ timeout →
+    defaulted "retry_seconds" 300 (unsigned 18446744073709551615) fields >>= λ retry →
+    defaulted "max_attempts" 5 (unsigned sizeMaximum) fields >>= λ attempts →
+    inj₂ (N.config enabled host port tls from to user password auth oauth daily timeout retry attempts))

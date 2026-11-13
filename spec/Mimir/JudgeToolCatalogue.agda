@@ -99,6 +99,7 @@ demands =
   requiredModel (requirement "experience_history" (property "id" "string" ∷ [])) ∷
   requiredModel (requirement "query_relevant" (property "context" "string" ∷ property "project" "string" ∷ property "limit" "integer" ∷ [])) ∷
   requiredModel (requirement "query_learning_context" (property "context" "string" ∷ property "project" "string" ∷ property "limit" "integer" ∷ [])) ∷
+  requiredModel (requirement "query_document" (property "context" "string" ∷ property "project" "string" ∷ property "limit" "integer" ∷ [])) ∷
   requiredModel (requirement "explain_belief" (property "id" "string" ∷ property "limit" "integer" ∷ property "offset" "integer" ∷ [])) ∷
   requiredModel (requirement "get_belief" (property "id" "string" ∷ [])) ∷
   requiredModel (requirement "query_intervention" (property "id" "string" ∷ property "value" "number" ∷ [])) ∷

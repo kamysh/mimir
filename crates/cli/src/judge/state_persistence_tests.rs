@@ -161,7 +161,7 @@ fn restart_retains_committed_report_and_marks_running_trace_interrupted() {
 }
 
 #[test]
-fn full_batch_state_is_preserved_while_diagnostic_metadata_is_bounded() {
+fn full_batch_and_diagnostic_selection_are_preserved() {
     let directory = Directory::new();
     let state = State::lock(directory.0.clone()).unwrap().unwrap();
     let mut report = Report::new("blocked", 100_000, 0, 0, 100_000, 0);
@@ -169,18 +169,15 @@ fn full_batch_state_is_preserved_while_diagnostic_metadata_is_bounded() {
     state.write(&report).unwrap();
     let saved = read(&directory.0).unwrap().unwrap();
     assert_eq!(saved.selected_ids, report.selected_ids);
-    assert!(fs::metadata(directory.0.join(STATUS_FILE)).unwrap().len() > MAX_DIAGNOSTICS);
+    assert!(fs::metadata(directory.0.join(STATUS_FILE)).unwrap().len() > 3 * 1024 * 1024);
     let id = state.begin_trace(&report, 0).unwrap();
     state.finish_trace(id, &report).unwrap();
     let traces = read_diagnostics(&directory.0).unwrap();
-    assert_eq!(
-        traces.attempts[0].selected_ids,
-        report.selected_ids[..MAX_TRACE_EVENTS]
-    );
+    assert_eq!(traces.attempts[0].selected_ids, report.selected_ids);
     assert!(
         fs::metadata(directory.0.join(DIAGNOSTICS_FILE))
             .unwrap()
             .len()
-            < MAX_TRACE as u64
+            > 3 * 1024 * 1024
     );
 }

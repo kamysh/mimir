@@ -161,7 +161,7 @@ impl InferenceEngine {
     /// `external_means`. Because the accumulation is a SUM it is order-independent
     /// (spec: `Mimir.Beta.accumulate-↭`), and because the posterior is re-derived
     /// from the prior (never folded into a mutated scalar) propagation is
-    /// idempotent. Iterated to a fixpoint, bounded by MAX_ITERS. Pure; never
+    /// idempotent. Iterated to an exact fixpoint. Pure; never
     /// writes to the store. Returns the new posterior `(α, β)` per changed node.
     fn propagate_core(
         &self,
@@ -174,9 +174,6 @@ impl InferenceEngine {
         if downstream.is_empty() {
             return Ok(vec![]);
         }
-
-        const MAX_ITERS: usize = 50;
-        const EPS: f64 = 1e-9;
 
         // Fixed prior (α₀, β₀) and the base posterior (α, β) (for change
         // detection) per downstream node. The seed carries no prior — it is
@@ -228,22 +225,30 @@ impl InferenceEngine {
             }
         }
 
-        let mut order: Vec<Uuid> = downstream
+        let order: Vec<Uuid> = downstream
             .iter()
             .map(|b| b.id)
             .filter(|id| *id != seed_id)
             .collect();
-        order.sort();
 
         // Fixpoint: each node re-derives (α,β) from its FIXED prior plus the
         // summed per-parent evidence, reading current parent means. Sum ⇒
         // order-independent (spec accumulate-↭); re-derived from prior ⇒
         // idempotent (spec recompute-idempotent). DAG: one sweep exact; cycles
-        // converge. Change-detection uses a RELATIVE epsilon (scaled by strength)
-        // so a real fractional move is caught even at high κ.
-        let mut converged = false;
-        for _ in 0..MAX_ITERS {
-            let mut max_rel_delta = 0.0_f64;
+        // may complete or repeat distinct numerical states. A repeated state
+        // asks for a decision; no pass allowance or precision threshold chooses
+        // a partial result on the user's behalf.
+        let mut visited = std::collections::HashSet::new();
+        loop {
+            let signature = order
+                .iter()
+                .map(|id| {
+                    let (alpha, beta) = state[id];
+                    (alpha.to_bits(), beta.to_bits())
+                })
+                .collect::<Vec<_>>();
+            anyhow::ensure!(visited.insert(signature), "Propagation repeats distinct numerical states instead of completing. No calculated posteriors were published. Explain the cycle to the user and request a decision before restarting; no accuracy threshold or partial result was chosen.");
+            let mut changed = false;
             for &v in &order {
                 let (a0, b0) = prior[&v];
                 let mut alpha = a0;
@@ -261,41 +266,24 @@ impl InferenceEngine {
                     }
                 }
                 let (oa, ob) = state[&v];
-                let old_m = crate::graph::beta_mean(oa, ob);
-                let new_m = crate::graph::beta_mean(alpha, beta);
-                // Relative to the mean's [0,1] scale; the mean already normalizes
-                // strength, so its delta is the right convergence signal.
-                let d = (new_m - old_m).abs();
-                if d > max_rel_delta {
-                    max_rel_delta = d;
-                }
+                changed |= alpha != oa || beta != ob;
                 state.insert(v, (alpha, beta));
             }
-            if max_rel_delta < EPS {
-                converged = true;
+            if !changed {
                 break;
             }
-        }
-        if !converged {
-            tracing::warn!(
-                subgraph_size = order.len(),
-                "propagate_core hit MAX_ITERS without converging; returning current values"
-            );
         }
 
         // Report only nodes whose posterior (α,β) actually moved from base
         // (seed excluded); return the DURABLE (α,β) the caller persists. We
         // compare the FULL (α,β), not just the mean, so a change that shifts
         // strength/confidence without moving the mean (balanced support+defeat)
-        // is still persisted. The threshold is RELATIVE to the base strength, so
-        // a real fractional move is caught even when α,β are large (κ up to ~200);
-        // an absolute EPS would be below the ULP at high strength.
+        // is still persisted. Compare complete values without a tolerance.
         let mut updated: Vec<(Uuid, (f64, f64))> = Vec::new();
         for &v in &order {
             let (a, b) = state[&v];
             let (ba, bb) = base[&v];
-            let scale = (ba + bb).max(1.0);
-            if (a - ba).abs() > EPS * scale || (b - bb).abs() > EPS * scale {
+            if a != ba || b != bb {
                 updated.push((v, (a, b)));
             }
         }

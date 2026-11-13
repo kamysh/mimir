@@ -12,6 +12,12 @@ use uuid::Uuid;
 
 #[tokio::test]
 async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> {
+    struct Provider;
+    impl mimir_core::embed::EmbeddingProvider for Provider {
+        fn embed<'a>(&'a self, texts: &'a [String]) -> mimir_core::embed::EmbedFuture<'a> {
+            Box::pin(async move { Ok(vec![vec![1.0, 0.0]; texts.len()]) })
+        }
+    }
     let service = MimirService::connect(&Config {
         database: isolation::fixture().database_config(),
         embeddings: None,
@@ -19,7 +25,8 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
         judge: None,
         email: None,
     })
-    .await?;
+    .await?
+    .with_embedding_provider(Box::new(Provider));
     let capabilities = handle_tool_call(&service, "learning_capabilities", &json!({})).await?;
     ensure!(
         capabilities["source_coverage"] == true,
@@ -99,7 +106,54 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
         "insert_belief schema omits provenance"
     );
     let project = format!("mcp-learning-{}", Uuid::new_v4());
+    let passage = mimir_core::documents::DocumentChunk::new(
+        format!("/fixture/{project}.md"),
+        vec![],
+        "Restart stale keyboard layout process after checking configuration".into(),
+        None,
+        Some(project.clone()),
+    );
+    let fixture_db = isolation::fixture().database_config();
+    let store = mimir_core::store::AgeStore::new(
+        mimir_core::db::connect(&fixture_db).await?,
+        fixture_db.dbname.clone(),
+    )?;
+    store
+        .replace_document(
+            &passage.document_path,
+            std::slice::from_ref(&passage),
+            &[vec![1.0, 0.0]],
+        )
+        .await?;
     let id = Uuid::new_v4();
+    let foreign_project = format!("{project}-foreign");
+    let foreign_passage = mimir_core::documents::DocumentChunk::new(
+        format!("/fixture/{foreign_project}.md"),
+        vec![],
+        passage.content.clone(),
+        None,
+        Some(foreign_project.clone()),
+    );
+    store
+        .replace_document(
+            &foreign_passage.document_path,
+            std::slice::from_ref(&foreign_passage),
+            &[vec![1.0, 0.0]],
+        )
+        .await?;
+    let foreign = service
+        .publish_supported_belief(
+            mimir_core::graph::Belief::new_in_project(
+                passage.content.clone(),
+                0.5,
+                0.1,
+                foreign_project.clone(),
+            )?
+            .with_memory_type(mimir_core::graph::MemoryType::Fact),
+            None,
+            foreign_passage.id,
+        )
+        .await?;
     let result: Result<()> = async {
         let experience = json!({
             "id":id,"project":project,"context":"stale keyboard indicator",
@@ -127,11 +181,25 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
             "experience_id":id,"experience_revision":1,"reviewer":"rust-fixture",
             "rationale":"one observed incident, one owned candidate",
             "candidates":[
-                {"kind":"belief","key":"layout-lesson","content":"Restart stale keyboard layout process after checking configuration","memory_type":"Experiential"},
+                {"kind":"belief","key":"layout-lesson","content":"Restart stale keyboard layout process after checking configuration","memory_type":"Experiential","supporting_passage_id":passage.id},
                 {"kind":"pattern","key":"layout-procedure","situation":"stale keyboard layout indicator","approach":"check config, restart, and verify"}
             ],
             "candidate_feedback":[{"target":{"candidate_key":"layout-lesson"},"verdict":"support","weight":0.75}]
         });
+        let mut wrong_project = review.clone();
+        wrong_project["assessments"] = json!([{
+            "target":{"belief_id":foreign.id}, "scope":"keyboard-v1", "rubric":"benefit-v1",
+            "correctness":{"value":1.0,"weight":1.0}, "usefulness":{"value":1.0,"weight":1.0},
+            "evidence_indices":[0], "rationale":"scope refusal fixture"
+        }]);
+        let refused = handle_tool_call(&service, "review_experience", &json!({"review":wrong_project,"expected_review_revision":0}))
+            .await.expect_err("a review changed another project's belief");
+        let refusal = refused.downcast_ref::<mimir_core::validation::Refusal>().expect("wrong-project reference did not remain correctable input");
+        ensure!(matches!(refusal.fault.code, mimir_core::validation::Code::WrongIdentity), "wrong-project reference lost its identity diagnostic");
+        ensure!(refusal.fault.message.contains(&foreign.id.to_string()) && refusal.fault.message.contains(&project), "correction omitted the offending belief or expected project");
+        ensure!(handle_tool_call(&service,"get_experience",&json!({"id":id})).await?["review_revision"] == 0, "rejected review was committed");
+        ensure!(handle_tool_call(&service,"list_beliefs",&json!({"project":project})).await?.as_array().is_some_and(Vec::is_empty), "refused review left a belief candidate behind");
+        ensure!(handle_tool_call(&service,"list_patterns",&json!({"project":project})).await?.as_array().is_some_and(Vec::is_empty), "refused review left a pattern candidate behind");
         let applied = handle_tool_call(
             &service,
             "review_experience",
@@ -236,20 +304,22 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
         let mut independent = direct;
         independent["provenance"] = json!({"basis":"user_instruction",
             "reference":"fixture user requirement"});
-        let inserted = handle_tool_call(&service, "insert_belief", &independent).await?;
-        let direct_explanation = handle_tool_call(
-            &service,
-            "explain_belief",
-            &json!({"id":inserted["id"]}),
-        )
-        .await?;
+        let missing_support = handle_tool_call(&service, "insert_belief", &independent)
+            .await.expect_err("a belief without an indexed supporting passage was stored");
         ensure!(
-            direct_explanation["independent_provenance"] == independent["provenance"],
-            "direct belief lost independent provenance"
+            missing_support.downcast_ref::<mimir_core::validation::Refusal>()
+                .is_some_and(|refusal| refusal.fault.path == vec![mimir_core::validation::Segment::Key("supporting_passage_id".into())]),
+            "missing supporting passage did not explain the required correction"
         );
+        independent["content"] = json!(passage.content);
+        independent["supporting_passage_id"] = json!(passage.id);
+        let published = handle_tool_call(&service, "insert_belief", &independent).await?;
+        let stored = handle_tool_call(&service, "get_belief", &json!({"id":published["id"]})).await?;
+        ensure!(stored["content"] == passage.content, "prepared direct belief was not published");
         Ok(())
     }
     .await;
     service.delete_project(&project).await?;
+    service.delete_project(&foreign_project).await?;
     result
 }

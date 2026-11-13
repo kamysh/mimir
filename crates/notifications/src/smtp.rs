@@ -9,7 +9,6 @@ use lettre::{
     transport::smtp::authentication::{Credentials, Mechanism},
     AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
 };
-use std::time::Duration;
 
 pub(crate) fn message(config: &EmailConfig, alert: &Alert) -> Result<Message> {
     let from = config
@@ -96,7 +95,7 @@ pub(crate) async fn send_with_root(
     .map_err(|_| SmtpFailure::Retryable)?;
     let mut transport = transport
         .port(config.port.ok_or(SmtpFailure::Retryable)?)
-        .timeout(Some(Duration::from_secs(config.timeout_seconds)));
+        .timeout(Some(std::time::Duration::from_secs(config.timeout_seconds)));
     if let Some(root) = trusted_root {
         use lettre::transport::smtp::client::{Certificate, Tls, TlsParameters};
         let cert = Certificate::from_der(root.to_vec()).map_err(|_| SmtpFailure::Retryable)?;
@@ -127,7 +126,7 @@ pub(crate) async fn send_with_root(
         }
     }
     tokio::time::timeout(
-        Duration::from_secs(config.timeout_seconds),
+        std::time::Duration::from_secs(config.timeout_seconds),
         transport.build().send(message),
     )
     .await

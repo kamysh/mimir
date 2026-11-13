@@ -90,7 +90,7 @@ async fn sql_pages_cover_large_filtered_corpus_without_a_total_cutoff() {
     assert!(svc
         .list_beliefs_page(Some(&project), None, 11, 0)
         .await
-        .is_err());
+        .is_ok());
     let empty = svc
         .list_beliefs_page(Some(&project), None, 10, 100_000)
         .await
@@ -167,7 +167,7 @@ async fn sql_pager_handles_single_last_and_global_project_visibility() {
     assert!(svc
         .list_beliefs_page(Some(&project), None, 11, 0)
         .await
-        .is_err());
+        .is_ok());
     assert!(svc
         .list_beliefs_page(Some(&project), None, 1, usize::MAX)
         .await
@@ -235,6 +235,7 @@ async fn typed_assessments_replace_retract_and_preserve_legacy_probability() {
         key: "lesson".into(),
         content: "30 minutes suffices under fixed scope".into(),
         memory_type: MemoryType::Experiential,
+        supporting_passage_id: None,
     });
     r.assessments.push(Assessment {
         target: BeliefTarget::Candidate {
@@ -437,6 +438,7 @@ async fn offline_learning_scenario_matrix() {
             key: "layout-lesson".into(),
             content: lesson.into(),
             memory_type: MemoryType::Experiential,
+            supporting_passage_id: None,
         });
         if let Some(verdict) = verdict {
             r.candidate_feedback.push(CandidateFeedback {
@@ -785,6 +787,7 @@ async fn atomic_candidates_retry_retraction_and_observed_pattern_use() {
             key: "lesson".into(),
             content: "restart stale keyboard process".into(),
             memory_type: MemoryType::Experiential,
+            supporting_passage_id: None,
         },
         Candidate::Pattern {
             key: "procedure".into(),
@@ -831,6 +834,7 @@ async fn atomic_candidates_retry_retraction_and_observed_pattern_use() {
         key: "lesson".into(),
         content: "different claim".into(),
         memory_type: MemoryType::Experiential,
+        supporting_passage_id: None,
     };
     assert!(svc.review_experience(&altered, 1).await.is_err());
     assert_eq!(
@@ -891,6 +895,7 @@ async fn source_correction_deactivates_candidate_support_without_deleting_identi
         key: "hypothesis".into(),
         content: "candidate may help".into(),
         memory_type: MemoryType::Fact,
+        supporting_passage_id: None,
     });
     r.candidate_feedback.push(CandidateFeedback {
         target: BeliefTarget::Candidate {
@@ -937,6 +942,7 @@ async fn rejected_candidate_review_rolls_back_node_and_acknowledgement() {
         key: "rolled-back".into(),
         content: "unique rollback candidate".into(),
         memory_type: MemoryType::Fact,
+        supporting_passage_id: None,
     });
     r.feedback.push(Feedback {
         belief_id: Uuid::new_v4(),
@@ -1002,6 +1008,7 @@ async fn deleting_candidate_recomputes_linked_belief_and_keeps_tombstone() {
         key: "source".into(),
         content: "candidate source".into(),
         memory_type: MemoryType::Fact,
+        supporting_passage_id: None,
     });
     r.candidate_feedback.push(CandidateFeedback {
         target: BeliefTarget::Candidate {

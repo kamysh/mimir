@@ -88,7 +88,15 @@ async fn apply_migrations(client: &mut Client, migrations: &[kryzhen::Migration]
 /// falls back to plaintext if the server declines TLS. This requires passing
 /// the TLS connector directly to `cfg.connect()` — deadpool commits the
 /// connector type before the SSLRequest exchange, breaking Prefer fallback.
-pub async fn connect(cfg: &DatabaseConfig) -> Result<Client> {
+async fn open(
+    cfg: &DatabaseConfig,
+) -> Result<(
+    Client,
+    tokio_postgres::Connection<
+        tokio_postgres::Socket,
+        postgres_native_tls::TlsStream<tokio_postgres::Socket>,
+    >,
+)> {
     let mut pg_cfg = tokio_postgres::Config::new();
     pg_cfg.host(&cfg.host);
     pg_cfg.port(cfg.port);
@@ -120,11 +128,63 @@ pub async fn connect(cfg: &DatabaseConfig) -> Result<Client> {
         cfg.ssl_client_cert.as_deref(),
         cfg.ssl_client_key.as_deref(),
     )?;
-    let (client, conn) = pg_cfg.connect(tls).await?;
+    Ok(pg_cfg.connect(tls).await?)
+}
+
+pub async fn connect(cfg: &DatabaseConfig) -> Result<Client> {
+    let (client, conn) = open(cfg).await?;
     tokio::spawn(async move {
         if let Err(e) = conn.await {
             tracing::error!("postgres connection error: {e}");
         }
     });
     Ok(client)
+}
+
+/// Own a database subscription before checking pending reviews. PostgreSQL
+/// queues notifications received during a batch; no polling timer is needed.
+pub struct WorkSubscription {
+    _client: Client,
+    events: tokio::sync::mpsc::UnboundedReceiver<Result<()>>,
+    connection: tokio::task::JoinHandle<()>,
+}
+
+impl WorkSubscription {
+    pub async fn subscribe(cfg: &DatabaseConfig) -> Result<Self> {
+        let (client, mut connection) = open(cfg).await?;
+        let (send, events) = tokio::sync::mpsc::unbounded_channel();
+        let task = tokio::spawn(async move {
+            while let Some(message) = std::future::poll_fn(|cx| connection.poll_message(cx)).await {
+                let event = match message {
+                    Ok(tokio_postgres::AsyncMessage::Notification(_)) => Ok(()),
+                    Ok(_) => continue,
+                    Err(error) => Err(error.into()),
+                };
+                let failed = event.is_err();
+                if send.send(event).is_err() || failed {
+                    break;
+                }
+            }
+        });
+        let subscription = Self {
+            _client: client,
+            events,
+            connection: task,
+        };
+        subscription
+            ._client
+            .batch_execute("LISTEN mimir_review_work")
+            .await?;
+        Ok(subscription)
+    }
+
+    pub async fn changed(&mut self) -> Result<()> {
+        self.events.recv().await.ok_or_else(|| anyhow::anyhow!("The database work listener disconnected. Check the database and send SIGHUP to retry."))?
+    }
+}
+
+impl Drop for WorkSubscription {
+    fn drop(&mut self) {
+        self.connection.abort();
+    }
 }

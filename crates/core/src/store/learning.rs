@@ -1,5 +1,6 @@
 use super::*;
 use crate::learning::*;
+use crate::validation::{Code, Refusal, Segment};
 use anyhow::ensure;
 use std::collections::HashSet;
 use tokio_postgres::Transaction;
@@ -126,7 +127,12 @@ impl AgeStore {
         let beliefs = self
             .learning_beliefs_for_ids(&tx, &HashSet::from([belief_id]))
             .await?;
-        validate_targets(&beliefs, project, [belief_id].into_iter())?;
+        validate_targets(
+            &beliefs,
+            project,
+            [belief_id].into_iter(),
+            &[Segment::Key("belief_id".into())],
+        )?;
         let row = tx.query_one("SELECT COALESCE(sum(a.positive),0), COALESCE(sum(a.negative),0), COALESCE(sum(a.benefit),0), COALESCE(sum(a.benefit_weight),0), count(*), count(*) FILTER (WHERE a.positive+a.negative=0), count(*) FILTER (WHERE a.benefit_weight=0) FROM mimir_assessment_contributions a JOIN mimir_experiences e ON e.id=a.experience_id JOIN mimir_review_versions r ON r.experience_id=e.id AND r.revision=a.review_revision WHERE e.project=$1 AND a.belief_id=$2 AND a.scope=$3 AND a.rubric=$4 AND e.review_revision=r.revision AND e.revision=r.experience_revision", &[&project,&belief_id,&scope,&rubric]).await?;
         let scores = crate::assessment::Scores::from_totals(
             row.get(0),
@@ -187,9 +193,24 @@ impl AgeStore {
         limit: usize,
         excluded: &[Uuid],
     ) -> Result<Vec<ExperienceState>> {
-        ensure!(limit > 0, "limit must be positive");
+        self.select_experiences(project, pending, Some(limit), excluded)
+            .await
+    }
+
+    pub async fn select_experiences(
+        &self,
+        project: Option<&str>,
+        pending: bool,
+        count: Option<usize>,
+        excluded: &[Uuid],
+    ) -> Result<Vec<ExperienceState>> {
+        ensure!(
+            count.is_none_or(|count| count > 0),
+            "An explicit selection count must be positive; omit it to select all pending work"
+        );
+        let count = count.map(i64::try_from).transpose()?;
         let client = self.client.lock().await;
-        client.query(&format!("{CURRENT} WHERE ($1::text IS NULL OR e.project=$1) AND (NOT $2 OR e.reviewed_revision<e.revision) AND NOT (e.id = ANY($4::uuid[])) ORDER BY e.updated_at,e.id LIMIT $3"), &[&project, &pending, &(i64::try_from(limit)?), &excluded]).await?.iter().map(state).collect()
+        client.query(&format!("{CURRENT} WHERE ($1::text IS NULL OR e.project=$1) AND (NOT $2 OR e.reviewed_revision<e.revision) AND NOT (e.id = ANY($4::uuid[])) ORDER BY e.updated_at,v.created_at LIMIT $3"), &[&project, &pending, &count, &excluded]).await?.iter().map(state).collect()
     }
     /// One snapshot: stale review data is never presented as current coverage.
     pub async fn learning_review(&self, id: Uuid) -> Result<serde_json::Value> {
@@ -305,7 +326,7 @@ impl AgeStore {
                 ids.insert(candidate.key().to_owned(), row.get(1));
                 continue;
             }
-            let id = Uuid::new_v4();
+            let id = tx.query_one("SELECT gen_random_uuid()", &[]).await?.get(0);
             self.ensure_candidate_identity_free(tx, id).await?;
             self.create_candidate_node(tx, candidate, id, project)
                 .await?;
@@ -434,6 +455,10 @@ impl AgeStore {
             &beliefs,
             &experience.project,
             experience.belief_ids.iter().copied(),
+            &[
+                Segment::Key("experience".into()),
+                Segment::Key("belief_ids".into()),
+            ],
         )?;
         if let Some(id) = experience.pattern_id {
             let g = &self.graph_name;
@@ -466,6 +491,34 @@ impl AgeStore {
         &self,
         review: &Review,
         expected: i64,
+    ) -> Result<ExperienceState> {
+        self.review_experience_inner(review, expected, None).await
+    }
+
+    pub(crate) async fn existing_belief_candidates(
+        &self,
+        experience_id: Uuid,
+    ) -> Result<HashSet<String>> {
+        let client = self.client.lock().await;
+        Ok(client.query("SELECT candidate_key FROM mimir_review_candidates WHERE experience_id=$1 AND kind='belief' AND NOT retired", &[&experience_id]).await?
+            .into_iter().map(|row| row.get(0)).collect())
+    }
+
+    pub(crate) async fn review_supported_experience(
+        &self,
+        review: &Review,
+        expected: i64,
+        materials: &HashMap<String, (Uuid, Vec<f32>)>,
+    ) -> Result<ExperienceState> {
+        self.review_experience_inner(review, expected, Some(materials))
+            .await
+    }
+
+    async fn review_experience_inner(
+        &self,
+        review: &Review,
+        expected: i64,
+        materials: Option<&HashMap<String, (Uuid, Vec<f32>)>>,
     ) -> Result<ExperienceState> {
         review
             .validate()
@@ -526,6 +579,15 @@ impl AgeStore {
         }
 
         let old_review = Self::active_review(&tx, review.experience_id).await?;
+        let existing: HashSet<String> = tx
+            .query(
+                "SELECT candidate_key FROM mimir_review_candidates WHERE experience_id=$1",
+                &[&review.experience_id],
+            )
+            .await?
+            .into_iter()
+            .map(|row| row.get(0))
+            .collect();
         let candidate_ids = self
             .reserve_candidates(
                 &tx,
@@ -534,6 +596,31 @@ impl AgeStore {
                 &review.candidates,
             )
             .await?;
+        if let Some(materials) = materials {
+            for candidate in &review.candidates {
+                if let Candidate::Belief {
+                    key,
+                    supporting_passage_id,
+                    ..
+                } = candidate
+                {
+                    if existing.contains(key) {
+                        continue;
+                    }
+                    let (passage, embedding) = materials.get(key).ok_or_else(|| anyhow::anyhow!(
+                        "New belief '{key}' has no prepared embedding and supporting passage. No review changes were saved; select an indexed supporting passage and resubmit."))?;
+                    ensure!(Some(*passage) == *supporting_passage_id, "The prepared source does not match the selected passage; no review changes were saved.");
+                    self.publish_belief_material_on(
+                        tx.client(),
+                        candidate_ids[key],
+                        Some(&current.experience.project),
+                        embedding,
+                        *passage,
+                    )
+                    .await?;
+                }
+            }
+        }
         let applied = materialize_review(review, &candidate_ids)?;
         applied.validate()?;
         let ids: HashSet<_> = applied
@@ -548,7 +635,12 @@ impl AgeStore {
             }))
             .collect();
         let beliefs = self.learning_beliefs_for_ids(&tx, &ids).await?;
-        validate_targets(&beliefs, &current.experience.project, ids.iter().copied())?;
+        validate_targets(
+            &beliefs,
+            &current.experience.project,
+            ids.iter().copied(),
+            &[Segment::Key("review".into())],
+        )?;
         let mut assessed = current.experience.clone();
         assessed
             .learning_items
@@ -724,21 +816,23 @@ fn validate_targets(
     beliefs: &[Belief],
     project: &str,
     ids: impl Iterator<Item = Uuid>,
+    path: &[Segment],
 ) -> Result<()> {
     for id in ids {
         let b = beliefs
             .iter()
             .find(|b| b.id == id)
-            .ok_or_else(|| anyhow::anyhow!("belief {id} not found"))?;
+            .ok_or_else(|| Refusal::invalid(Code::MissingReference, path.to_vec(),
+                format!("Belief {id} was not found. Look up existing beliefs in project '{project}', replace or remove this reference, and resubmit the request. No requested changes were committed.")))?;
         // A project observation cannot change globally shared knowledge implicitly.
-        ensure!(
-            b.project.as_deref() == Some(project),
-            "belief {id} must belong to the experience project"
-        );
-        ensure!(
-            b.memory_type != MemoryType::Working,
-            "working memory is not a learning target"
-        );
+        if b.project.as_deref() != Some(project) {
+            return Err(Refusal::invalid(Code::WrongIdentity, path.to_vec(),
+                format!("Belief {id} is not owned by project '{project}'. Global beliefs and beliefs from other projects may be read as context but cannot be changed by this project's observations. Select an existing durable belief from '{project}', or remove this reference, then resubmit the request. No requested changes were committed.")).into());
+        }
+        if b.memory_type == MemoryType::Working {
+            return Err(Refusal::invalid(Code::UnsupportedCombination, path.to_vec(),
+                format!("Belief {id} is temporary Working memory and cannot be a learning target. Select a durable Fact or Experiential belief in project '{project}', or remove this reference, then resubmit the request. No requested changes were committed.")).into());
+        }
     }
     Ok(())
 }

@@ -23,17 +23,6 @@ pub enum Action {
 #[derive(Debug)]
 struct InputRejected(String);
 
-#[derive(Debug)]
-struct DiagnosticWriteError(String);
-
-impl std::fmt::Display for DiagnosticWriteError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for DiagnosticWriteError {}
-
 impl std::fmt::Display for InputRejected {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
@@ -167,14 +156,16 @@ async fn scoped_tool(
             // the review transaction; the judge forwards the raw keyed input.
             args["review"] = serde_json::to_value(review)?;
         }
-        "query_relevant" | "query_learning_context" | "get_contradictions" => {
+        "query_relevant" | "query_learning_context" | "query_document" | "get_contradictions" => {
             input_ensure!(
                 args["project"] == project,
                 "query is outside selected project"
             );
-            if name != "get_contradictions" {
-                let limit = args["limit"].as_u64().unwrap_or(0);
-                input_ensure!(limit > 0, "query limit must be positive");
+            if name != "get_contradictions" && args.get("limit").is_some() {
+                input_ensure!(
+                    args["limit"].as_u64().is_some_and(|limit| limit > 0),
+                    "query limit must be positive when supplied; omit it to request all matches"
+                );
             }
         }
         "get_belief" | "explain_belief" | "query_intervention" => {
@@ -214,6 +205,12 @@ async fn scoped_tool(
         _ => return Err(InputRejected("tool is not allowed for judge".into()).into()),
     }
     let mut value = client.tool(name, args).await?;
+    if matches!(
+        value["status"].as_str(),
+        Some("needs_input" | "needs_correction")
+    ) {
+        return Ok(value);
+    }
     if name == "get_experience" {
         let state = parse_state(value.clone())?;
         ensure!(
@@ -338,15 +335,8 @@ pub async fn run<B: Backend>(settings: &RuntimeConfig, state: &State, backend: &
     let mut report = Report::new("blocked", 0, 0, 0, 0, 0);
     let result = run_inner(settings, state, backend, &mut report).await;
     if let Err(error) = result {
-        report.block_reason = Some(
-            if error.downcast_ref::<DiagnosticWriteError>().is_some() {
-                "diagnostics_write_error"
-            } else {
-                "mcp_or_configuration_error"
-            }
-            .into(),
-        );
-        report.failure_detail = Some(state::bounded(&format!("{error:#}"), 512));
+        report.block_reason = Some("mcp_or_configuration_error".into());
+        report.failure_detail = Some(format!("{error:#}"));
         report.capture_source(&error);
     }
     finish_report(settings, state, report).await
@@ -362,21 +352,19 @@ fn trace(
     detail: Option<&str>,
 ) -> Result<()> {
     if let Some(id) = report.diagnostics_id {
-        state
-            .trace_event(
-                id,
-                DiagnosticEvent::new(
-                    selected.experience.id,
-                    kind,
-                    model_used,
-                    tool_used,
-                    tool,
-                    detail,
-                ),
-            )
-            .map_err(|error| {
-                DiagnosticWriteError(format!("diagnostic trace write failed: {error:#}"))
-            })?;
+        if let Err(error) = state.trace_event(
+            id,
+            DiagnosticEvent::new(
+                selected.experience.id,
+                kind,
+                model_used,
+                tool_used,
+                tool,
+                detail,
+            ),
+        ) {
+            eprintln!("Diagnostic trace unavailable; review continues: {error:#}");
+        }
     }
     Ok(())
 }
@@ -389,7 +377,7 @@ pub async fn setup_failure(
 ) -> Report {
     let mut report = Report::new("blocked", 0, 0, 0, 0, 0);
     report.block_reason = Some(reason.into());
-    report.failure_detail = Some(state::bounded(&format!("{error:#}"), 512));
+    report.failure_detail = Some(format!("{error:#}"));
     report.capture_source(error);
     finish_report(settings, state, report).await
 }
@@ -401,30 +389,24 @@ async fn finish_report(settings: &RuntimeConfig, state: &State, mut report: Repo
             Ok(()) if report.status == "complete" => report.diagnostics_id = None,
             Ok(()) => {}
             Err(error) => {
-                report.status = "blocked".into();
-                report.block_reason = Some("diagnostics_write_error".into());
-                report.failure_detail = Some(state::bounded(&format!("{error:#}"), 512));
+                eprintln!("Cannot finish diagnostic trace; review result is unchanged: {error:#}");
             }
         }
     }
-    if state.record_incident(&report).is_err() {
-        report.status = "blocked".into();
-        report.block_reason = Some("incident_write_error".into());
+    if let Err(error) = state.record_incident(&report) {
+        eprintln!("Cannot save the failure incident; review result is unchanged: {error:#}");
     }
-    if state.write(&report).is_err() {
-        report.status = "blocked".into();
-        report.block_reason = Some("state_write_error".into());
-        return report;
+    if let Err(error) = state.write(&report) {
+        eprintln!("Cannot save the local review report: {error:#}");
     }
-    if notification::notify(settings, state, &mut report)
-        .await
-        .is_err()
-    {
+    if notification::enqueue(settings, state, &mut report).is_err() {
         report.notification = "unavailable".into();
     }
-    if state.write(&report).is_err() {
-        report.status = "blocked".into();
-        report.block_reason = Some("state_write_error".into());
+    if report.notification == "retry_pending" {
+        eprintln!("Email is queued. Delivery is owned by `mimir judge watch`; run it with this run's --config and --state-dir settings if no watcher is running.");
+    }
+    if let Err(error) = state.write(&report) {
+        eprintln!("Cannot save the local review report: {error:#}");
     }
     report
 }
@@ -464,7 +446,10 @@ async fn run_inner<B: Backend>(
             report.deferred_reviews.push(deferred);
         }
     }
-    let mut arguments = json!({"limit":settings.judge.batch_size});
+    let mut arguments = json!({});
+    if let Some(count) = settings.judge.batch_size {
+        arguments["limit"] = json!(count);
+    }
     arguments["exclude_ids"] = json!(report
         .deferred_reviews
         .iter()
@@ -482,7 +467,10 @@ async fn run_inner<B: Backend>(
         )
     })?;
     ensure!(
-        batch.len() <= settings.judge.batch_size,
+        settings
+            .judge
+            .batch_size
+            .is_none_or(|count| batch.len() <= count),
         "MCP returned oversized pending batch"
     );
     let mut seen = std::collections::HashSet::new();
@@ -509,9 +497,13 @@ async fn run_inner<B: Backend>(
         }
         return Ok(());
     }
-    report.diagnostics_id = Some(state.begin_trace(report, 0).map_err(|error| {
-        DiagnosticWriteError(format!("diagnostic trace start failed: {error:#}"))
-    })?);
+    report.diagnostics_id = match state.begin_trace(report, 0) {
+        Ok(id) => Some(id),
+        Err(error) => {
+            eprintln!("Cannot start diagnostic trace; reviews continue: {error:#}");
+            None
+        }
+    };
     let mut model_used: usize = 0;
     let mut tool_used: usize = 0;
     let mut failed = false;
@@ -554,7 +546,7 @@ async fn run_inner<B: Backend>(
                     if candidate_rejections == 0 {
                         failed = true;
                         report.block_reason = Some("backend_error".into());
-                        report.failure_detail = Some(state::bounded(&format!("{error:#}"), 512));
+                        report.failure_detail = Some(format!("{error:#}"));
                         report.capture_source(&error);
                     }
                     break;
@@ -614,10 +606,19 @@ async fn run_inner<B: Backend>(
                                 Some(&name),
                                 Some(&value.to_string()),
                             )?;
+                            if value.get("status").and_then(Value::as_str) == Some("needs_input") {
+                                failed = true;
+                                report.block_reason = Some("needs_input".into());
+                                report.failure_detail = Some(value.to_string());
+                                break;
+                            }
+                            let correction = value.get("status").and_then(Value::as_str)
+                                == Some("needs_correction");
                             last = Some(value);
                             // The database acknowledgement is authoritative. A model
                             // need not spend another turn saying it is done.
-                            if name == "review_experience"
+                            if !correction
+                                && name == "review_experience"
                                 && observe(&mut client, selected).await? != "pending"
                             {
                                 confirmed_review = true;
@@ -703,7 +704,7 @@ async fn run_inner<B: Backend>(
                             });
                             last_rejection = Some((
                                 name,
-                                state::bounded(&format!("{error:#}"), 512),
+                                format!("{error:#}"),
                                 focused.or_else(|| error.downcast_ref::<SourceFailure>().cloned()),
                             ));
                         }
@@ -766,6 +767,15 @@ async fn run_inner<B: Backend>(
         if failed {
             break;
         }
+    }
+    if failed {
+        client.stop().await;
+        client = Client::start(
+            &settings.judge.mcp_command,
+            &settings.judge.mcp_args,
+            &settings.path,
+        )
+        .await?;
     }
     for selected in &batch {
         match observe(&mut client, selected).await {
@@ -949,6 +959,7 @@ mod tests {
         MalformedJson,
         LocalValidation,
         MimirError,
+        WrongProject,
         Exhausted,
     }
 
@@ -991,7 +1002,15 @@ mod tests {
             Box::pin(async move {
                 if self.calls > 0 {
                     let feedback = last.ok_or_else(|| anyhow!("missing tool feedback"))?;
-                    ensure!(feedback["error"] == "invalid_tool_arguments");
+                    if matches!(self.case, RejectionCase::WrongProject) {
+                        ensure!(feedback["status"] == "needs_correction");
+                        ensure!(feedback["fault"]["code"] == "wrong_identity");
+                        ensure!(feedback["next_action"]
+                            .as_str()
+                            .is_some_and(|text| text.contains("resubmit")));
+                    } else {
+                        ensure!(feedback["error"] == "invalid_tool_arguments");
+                    }
                     ensure!(!feedback
                         .to_string()
                         .contains("private fixture database detail"));
@@ -1030,6 +1049,13 @@ mod tests {
                             name: "query_relevant".into(),
                             arguments: json!({"project":selected.experience.project,
                                 "context":"fixture observation","limit":1}),
+                        },
+                        RejectionCase::WrongProject => Action::Tool {
+                            name: "review_experience".into(),
+                            arguments: json!({"expected_review_revision":selected.review_revision,
+                                "review":{"experience_id":selected.experience.id,"experience_revision":selected.revision,
+                                    "reviewer":"fixture","rationale":"invalid project reference",
+                                    "feedback":[{"belief_id":Uuid::new_v4(),"verdict":"support","weight":0.5}]}}),
                         },
                     });
                 }
@@ -1172,6 +1198,7 @@ mod tests {
             RejectionCase::MalformedJson,
             RejectionCase::LocalValidation,
             RejectionCase::MimirError,
+            RejectionCase::WrongProject,
             RejectionCase::Exhausted,
         ] {
             let id = Uuid::new_v4();
@@ -1183,8 +1210,10 @@ mod tests {
             std::fs::write(
                 &config_path,
                 format!(
-                    "config_version=1\n[logging]\ndirectory='{}'\n[database]\nhost='127.0.0.1'\nport=1\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nbatch_size=1\nmcp_command='bash'\nmcp_args=['{}','{}']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\n",
-                    dir.join("logs").display(), fixture.display(), id
+                    "config_version=1\n[logging]\ndirectory='{}'\n[database]\nhost='127.0.0.1'\nport=1\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nbatch_size=1\nmcp_command='bash'\nmcp_args=['{}','{}','{}','{}']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\n",
+                    dir.join("logs").display(), fixture.display(), id,
+                    dir.join("reviews.jsonl").display(),
+                    if matches!(case, RejectionCase::WrongProject) { "project-correction" } else { "standard" }
                 ),
             )
             .unwrap();
@@ -1261,9 +1290,9 @@ mod tests {
             .iter()
             .any(|event| event.kind == "model_request"));
         assert!(trace.events.iter().any(|event| event.kind == "tool_result"));
-        assert!(
-            trace.events_omitted > 0,
-            "bounded diagnostics must not stop the review"
+        assert_eq!(
+            trace.events_omitted, 0,
+            "all diagnostic events must survive"
         );
         assert_eq!(trace.events[1].tool.as_deref(), Some("get_experience"));
         let mut recovery = ToolCorrection {
@@ -1350,7 +1379,7 @@ mod tests {
         let mut settings = super::super::config::load(Some(&path)).unwrap();
         settings.judge.project = Some(project.clone());
         settings.judge.mcp_command = binary;
-        settings.judge.batch_size = 1;
+        settings.judge.batch_size = Some(1);
         let core = Config::load_from_path(&settings.path).unwrap();
         fixture.assert_database(&core.database);
         let service = Arc::new(MimirService::connect(&core).await.unwrap());
@@ -1451,17 +1480,14 @@ mod tests {
                 .await
                 .unwrap();
         }
-        settings.judge.batch_size = 2;
+        settings.judge.batch_size = Some(2);
         let first = make_experience();
         let second = make_experience();
         service.record_experience(&first, 0).await.unwrap();
         service.record_experience(&second, 0).await.unwrap();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
         let port = listener.local_addr().unwrap().port();
-        let smtp = tokio::spawn(async move {
-            let (socket, _) = listener.accept().await.unwrap();
-            drop(socket); // local SMTP transport failure after a committed review
-        });
         settings.email = EmailConfig {
             enabled: true,
             host: Some("127.0.0.1".into()),
@@ -1473,9 +1499,10 @@ mod tests {
             auth: Some(Auth::None),
             password: None,
             oauth: None,
-            timeout_seconds: 3,
-            retry_seconds: 10,
-            max_attempts: 2,
+            daily_report_at: None,
+            timeout_seconds: 2,
+            retry_seconds: 5,
+            max_attempts: 3,
         };
         let mut partial = Fake {
             mode: Mode::Partial,
@@ -1500,7 +1527,11 @@ mod tests {
                 .unwrap()
                 .reviewed_revision;
         assert_eq!(reviewed, 1);
-        smtp.await.unwrap();
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "standalone review must queue mail without connecting to SMTP"
+        );
         service.delete_project(&project).await.unwrap();
         drop(state);
         std::fs::remove_dir_all(state_path).unwrap();

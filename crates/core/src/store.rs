@@ -1,6 +1,6 @@
 mod conformance;
 mod learning;
-use anyhow::{bail, Result};
+use anyhow::{bail, ensure, Result};
 use chrono::DateTime;
 use pgvector::Vector;
 use std::collections::HashMap;
@@ -451,6 +451,22 @@ impl AgeStore {
         belief: &Belief,
         provenance: Option<&crate::learning::IndependentProvenance>,
     ) -> Result<()> {
+        let mut client = self.client.lock().await;
+        let tx = learning_transaction(&mut client).await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        self.insert_belief_on(tx.client(), belief, provenance)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn insert_belief_on(
+        &self,
+        client: &Client,
+        belief: &Belief,
+        provenance: Option<&crate::learning::IndependentProvenance>,
+    ) -> Result<()> {
         let g = &self.graph_name;
         let id = belief.id.to_string();
         let probability = belief.probability.value();
@@ -509,12 +525,90 @@ impl AgeStore {
             },
         );
 
+        age_execute(client, &stmt, &prepare, &agtype_json).await?;
+        Ok(())
+    }
+
+    /// Publish one prepared belief with its vector and source reference. The
+    /// source is checked again while the same lock protects document changes.
+    pub(crate) async fn publish_supported_belief(
+        &self,
+        mut belief: Belief,
+        provenance: Option<&crate::learning::IndependentProvenance>,
+        embedding: &[f32],
+        passage_id: Uuid,
+    ) -> Result<Belief> {
         let mut client = self.client.lock().await;
         let tx = learning_transaction(&mut client).await?;
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
             .await?;
-        age_execute(tx.client(), &stmt, &prepare, &agtype_json).await?;
+        belief.id = tx.query_one("SELECT gen_random_uuid()", &[]).await?.get(0);
+        self.insert_belief_on(tx.client(), &belief, provenance)
+            .await?;
+        self.publish_belief_material_on(
+            tx.client(),
+            belief.id,
+            belief.project.as_deref(),
+            embedding,
+            passage_id,
+        )
+        .await?;
         tx.commit().await?;
+        Ok(belief)
+    }
+
+    async fn publish_belief_material_on(
+        &self,
+        client: &Client,
+        belief_id: Uuid,
+        project: Option<&str>,
+        embedding: &[f32],
+        passage_id: Uuid,
+    ) -> Result<()> {
+        use crate::validation::{Code, Refusal, Segment};
+        let refused = |code, message: &str| {
+            Refusal::invalid(
+                code,
+                vec![Segment::Key("supporting_passage_id".into())],
+                message,
+            )
+        };
+        ensure!(!embedding.is_empty() && embedding.iter().all(|component| component.is_finite()),
+            "The embedding is empty or contains invalid numbers. No belief was saved; correct the embedding provider before retrying.");
+        let passage = self.get_chunk_by_id_on(client, passage_id).await?
+            .ok_or_else(|| refused(Code::MissingReference, "The selected supporting passage is no longer indexed. Use query_document to find a supporting passage and resubmit its existing id. No belief was saved."))?;
+        if passage.content.trim().is_empty() {
+            return Err(refused(Code::MissingEvidence, "The selected passage is empty. Select an indexed passage containing the supporting text and resubmit.").into());
+        }
+        if let (Some(project), Some(source_project)) = (project, passage.project.as_deref()) {
+            if project != source_project {
+                return Err(refused(Code::UnsupportedCombination, "The selected passage belongs to a different project. Select a passage visible in the belief's project and resubmit.").into());
+            }
+        }
+        let indexed: bool = client
+            .query_one(
+                "SELECT EXISTS(SELECT 1 FROM public.chunk_embeddings WHERE chunk_id=$1)",
+                &[&passage_id],
+            )
+            .await?
+            .get(0);
+        if !indexed {
+            return Err(refused(Code::MissingEvidence, "The selected passage has no indexed embedding. Reload its document before resubmitting; no belief was saved.").into());
+        }
+        let vector = Vector::from(embedding.to_vec());
+        client
+            .execute(
+                "INSERT INTO public.belief_embeddings(belief_id,embedding) VALUES($1,$2)",
+                &[&belief_id, &vector],
+            )
+            .await?;
+        // A cited source is recorded without inventing numerical evidence.
+        // Zero mass leaves both the supplied probability and later recomputation unchanged.
+        let source = passage_id.to_string();
+        let target = belief_id.to_string();
+        let graph = &self.graph_name;
+        let rows = client.query(&format!("SELECT id::text FROM ag_catalog.cypher('{graph}', $$ MATCH (c:DocumentChunk {{id:'{source}'}}), (b:Belief {{id:'{target}'}}) CREATE (c)-[:GROUNDS {{weight:0.0}}]->(b) RETURN c.id $$) AS (id ag_catalog.agtype)"), &[]).await?;
+        ensure!(rows.len() == 1, "The supporting passage changed during publication. No belief was saved; find its current id and retry.");
         Ok(())
     }
 
@@ -561,6 +655,10 @@ $$) AS (ok ag_catalog.agtype)"#
     /// Delete all beliefs (and their edges) tagged with the given project.
     /// Returns the number of beliefs deleted.
     pub async fn delete_project(&self, project: &str) -> Result<usize> {
+        Ok(self.delete_project_complete(project).await?.0)
+    }
+
+    pub(crate) async fn delete_project_complete(&self, project: &str) -> Result<(usize, usize)> {
         let g = &self.graph_name;
         let agtype_json = format!(r#"{{"project": "{}"}}"#, json_esc(project));
 
@@ -611,14 +709,6 @@ $$) AS (ok ag_catalog.agtype)"#
         );
         age_execute(client, &stmt_del, &prepare_del, &agtype_json).await?;
 
-        tx.commit().await?;
-
-        // Preserve separate publication of the pattern deletion while making
-        // both independent graph writers participate in the learning lock.
-        let tx = learning_transaction(&mut connection).await?;
-        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
-            .await?;
-        let client = tx.client();
         // Also purge Pattern nodes tagged with the same project.
         let stmt_pat = format!("age_delproj_pat_{}", Uuid::new_v4().simple());
         let prepare_pat = format!(
@@ -628,11 +718,23 @@ $$) AS (ok ag_catalog.agtype)"#
              $$, $1) AS (ok agtype)"
         );
         age_execute(client, &stmt_pat, &prepare_pat, &agtype_json).await?;
-
+        client
+            .execute(
+                "DELETE FROM public.belief_embeddings WHERE belief_id = ANY($1)",
+                &[&ids],
+            )
+            .await?;
+        let chunks = self.get_chunk_ids_by_project_on(client, project).await?;
+        self.delete_document_chunks_in(&tx, &chunks).await?;
+        self.delete_chunk_embeddings_on(client, &chunks).await?;
+        client
+            .execute(
+                "DELETE FROM mimir_experiences WHERE project=$1",
+                &[&project],
+            )
+            .await?;
         tx.commit().await?;
-        drop(connection);
-        self.delete_belief_embeddings(&ids).await?;
-        Ok(count)
+        Ok((count, chunks.len()))
     }
 
     pub async fn get_belief(&self, id: Uuid) -> Result<Option<Belief>> {
@@ -1113,6 +1215,17 @@ $$) {PATTERN_RETURN_COLUMNS}"#
         Ok(())
     }
 
+    pub(crate) async fn insert_edge_and_propagate(&self, edge: &Edge) -> Result<()> {
+        let mut client = self.client.lock().await;
+        let tx = learning_transaction(&mut client).await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        self.insert_edge_on(tx.client(), edge).await?;
+        self.propagate_in(&tx, edge.from_id).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     async fn insert_edge_on(&self, client: &Client, edge: &Edge) -> Result<()> {
         let g = &self.graph_name;
         let from_id = edge.from_id.to_string();
@@ -1539,6 +1652,15 @@ $$) AS (ok ag_catalog.agtype)"#
 
     /// Return chunk IDs tagged with a project (used by delete_project extension).
     pub async fn get_chunk_ids_by_project(&self, project: &str) -> Result<Vec<Uuid>> {
+        let client = self.client.lock().await;
+        self.get_chunk_ids_by_project_on(&client, project).await
+    }
+
+    async fn get_chunk_ids_by_project_on(
+        &self,
+        client: &Client,
+        project: &str,
+    ) -> Result<Vec<Uuid>> {
         let g = &self.graph_name;
         let agtype_json = format!(r#"{{"project": "{}"}}"#, json_esc(project));
         let stmt = format!("age_chunk_ids_by_proj_{}", Uuid::new_v4().simple());
@@ -1549,7 +1671,6 @@ $$) AS (ok ag_catalog.agtype)"#
              $$, $1) AS (id agtype)"
         );
         let exec = format!("EXECUTE {stmt}('{}')", sql_esc(&agtype_json));
-        let client = self.client.lock().await;
         client.simple_query(&prepare).await?;
         let msgs = client.simple_query(&exec).await;
         let _ = client.simple_query(&format!("DEALLOCATE {stmt}")).await;
@@ -1855,6 +1976,11 @@ $$) AS (ok ag_catalog.agtype)"#
 
     /// Fetch a single DocumentChunk by ID.
     pub async fn get_chunk_by_id(&self, id: Uuid) -> Result<Option<DocumentChunk>> {
+        let client = self.client.lock().await;
+        self.get_chunk_by_id_on(&client, id).await
+    }
+
+    async fn get_chunk_by_id_on(&self, client: &Client, id: Uuid) -> Result<Option<DocumentChunk>> {
         let g = &self.graph_name;
         let id_str = id.to_string();
         let sql = format!(
@@ -1870,7 +1996,6 @@ FROM ag_catalog.cypher('{g}', $$
   RETURN c.id, c.documentPath, c.sectionPath, c.content, c.parentId, c.project
 $$) {CHUNK_RETURN_COLUMNS}"#
         );
-        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         if rows.is_empty() {
             return Ok(None);
@@ -2160,7 +2285,10 @@ impl AgeStore {
         limit: usize,
         offset: usize,
     ) -> Result<(Vec<Belief>, usize)> {
-        anyhow::ensure!((1..=10).contains(&limit), "limit must be in 1..=10");
+        anyhow::ensure!(
+            limit > 0,
+            "limit must be positive when supplied; omit it for all beliefs"
+        );
         anyhow::ensure!(offset <= i64::MAX as usize, "offset is too large");
         let mut filters = Vec::new();
         if project.is_some() {
@@ -2188,7 +2316,7 @@ impl AgeStore {
             .ok_or_else(|| anyhow::anyhow!("missing count"))?
             .parse()?;
         let stmt = format!("age_page_{}", Uuid::new_v4().simple());
-        let sql = format!("PREPARE {stmt}(agtype) AS SELECT id::text,content::text,probability::text,confidence::text,alpha::text,beta::text,alpha0::text,beta0::text,created_at::text,last_activated_at::text,memory_type::text,project::text FROM ag_catalog.cypher('{g}', $$ MATCH (n:Belief) {filter} RETURN n.id,n.content,n.probability,n.confidence,n.alpha,n.beta,n.alpha0,n.beta0,n.created_at,n.last_activated_at,n.memory_type,n.project $$,$1) {BELIEF_RETURN_COLUMNS} ORDER BY trim(both '\"' from created_at::text)::timestamptz,id::text LIMIT {limit} OFFSET {offset}");
+        let sql = format!("PREPARE {stmt}(agtype) AS SELECT id::text,content::text,probability::text,confidence::text,alpha::text,beta::text,alpha0::text,beta0::text,created_at::text,last_activated_at::text,memory_type::text,project::text FROM ag_catalog.cypher('{g}', $$ MATCH (n:Belief) {filter} RETURN n.id,n.content,n.probability,n.confidence,n.alpha,n.beta,n.alpha0,n.beta0,n.created_at,n.last_activated_at,n.memory_type,n.project $$,$1) {BELIEF_RETURN_COLUMNS} ORDER BY trim(both '\"' from created_at::text)::timestamptz LIMIT {limit} OFFSET {offset}");
         let rows = age_query_rows(&client, &stmt, &sql, &params).await?;
         Ok((
             rows.iter()

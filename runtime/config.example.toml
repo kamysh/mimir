@@ -3,15 +3,13 @@
 config_version = 1
 [logging]
 directory = "/ABSOLUTE/HOME/.local/state/mimir/logs"
-max_file_bytes = 1048576
-retained_files = 4
 
 # Merge these optional sections into ~/.config/mimir/config.toml.
 # Keep [database] and optional [embeddings]. Directory 0700; file 0600.
 # Select a model available to your account; no provider/model fallback occurs.
 
 [judge]
-batch_size = 5
+# batch_size = 5 # optional positive selection; omit to select all pending work
 # project = "my-project" # omit to process pending experiences across projects
 mcp_command = "mimir-mcp"
 mcp_args = []
@@ -44,9 +42,10 @@ to = ["you@gmail.com"]
 username = "you@gmail.com"
 auth = "password" # password | oauth2 | none (authenticated relay configured separately)
 password = "YOUR_APP_PASSWORD"
-timeout_seconds = 15
-retry_seconds = 300
-max_attempts = 5
+timeout_seconds = 15 # deadline for mail network operations; reviews continue separately
+retry_seconds = 300 # automatic mail retry interval
+max_attempts = 5 # retain the message and report exhaustion after this many attempts
+# daily_report_at = "09:00" # required only for daily reports; user's local time
 
 # For OAuth2 use auth = "oauth2", remove password, and add the matching
 # provider settings. See runtime/README.md for complete Google/Microsoft examples

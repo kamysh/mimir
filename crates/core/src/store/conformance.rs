@@ -257,6 +257,230 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn belief_preparation_and_publication_failures_leave_no_partial_belief() {
+        struct Provider {
+            fail: bool,
+        }
+        impl crate::embed::EmbeddingProvider for Provider {
+            fn embed<'a>(&'a self, texts: &'a [String]) -> crate::embed::EmbedFuture<'a> {
+                Box::pin(async move {
+                    if self.fail {
+                        anyhow::bail!("fixture embedding failed");
+                    }
+                    Ok(vec![vec![1.0, 0.0]; texts.len()])
+                })
+            }
+        }
+        let cfg = isolation::fixture().database_config();
+        let mut service = crate::MimirService::connect(&crate::config::Config {
+            database: cfg,
+            embeddings: None,
+            llm: None,
+            judge: None,
+            email: None,
+        })
+        .await
+        .unwrap();
+        let project = format!("prepared-belief-{}", Uuid::new_v4());
+        let path = format!("/fixture/{project}.md");
+        let source = DocumentChunk::new(
+            path.clone(),
+            vec![],
+            "Backups are kept for 30 days.".into(),
+            None,
+            Some(project.clone()),
+        );
+        service
+            .store
+            .replace_document(&path, std::slice::from_ref(&source), &[vec![1.0, 0.0]])
+            .await
+            .unwrap();
+        let draft = || {
+            Belief::new_in_project(
+                "Backups are kept for 30 days.".into(),
+                0.6,
+                0.3,
+                project.clone(),
+            )
+            .unwrap()
+        };
+
+        service.embeddings = Some(Box::new(Provider { fail: true }));
+        assert!(service
+            .publish_supported_belief(draft(), None, source.id)
+            .await
+            .is_err());
+        assert!(!service
+            .store
+            .list_beliefs()
+            .await
+            .unwrap()
+            .iter()
+            .any(|belief| belief.project.as_deref() == Some(project.as_str())));
+
+        service.embeddings = Some(Box::new(Provider { fail: false }));
+        {
+            let client = service.store.client.lock().await;
+            client.batch_execute("CREATE FUNCTION mimir_test_reject_belief_vector() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture vector publication rejected'; END $$; CREATE TRIGGER mimir_test_reject_belief_vector BEFORE INSERT ON belief_embeddings FOR EACH STATEMENT EXECUTE FUNCTION mimir_test_reject_belief_vector()").await.unwrap();
+        }
+        let failed = service
+            .publish_supported_belief(draft(), None, source.id)
+            .await;
+        {
+            let client = service.store.client.lock().await;
+            client.batch_execute("DROP TRIGGER mimir_test_reject_belief_vector ON belief_embeddings; DROP FUNCTION mimir_test_reject_belief_vector()").await.unwrap();
+        }
+        assert!(failed.is_err());
+        assert!(!service
+            .store
+            .list_beliefs()
+            .await
+            .unwrap()
+            .iter()
+            .any(|belief| belief.project.as_deref() == Some(project.as_str())));
+
+        let published = service
+            .publish_supported_belief(draft(), None, source.id)
+            .await
+            .unwrap();
+        let stored = service
+            .store
+            .get_belief(published.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.probability.value(), 0.6);
+        assert_eq!(stored.confidence.value(), 0.3);
+        assert_eq!(
+            service
+                .store
+                .get_evidence_for_beliefs(&[published.id])
+                .await
+                .unwrap(),
+            vec![(published.id, source.id, 0.0)]
+        );
+        let client = service.store.client.lock().await;
+        let vectors: i64 = client
+            .query_one(
+                "SELECT count(*) FROM belief_embeddings WHERE belief_id=$1",
+                &[&published.id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(vectors, 1);
+        drop(client);
+        // Review-created beliefs obey the same prepare-then-publish rule.
+        let experience: crate::learning::Experience = serde_json::from_value(serde_json::json!({
+            "id":Uuid::new_v4(), "project":project, "context":"backup retention",
+            "action":"check retention documentation", "outcome":"success", "source":"tool_result",
+            "evidence":["document read"], "pattern_id":null
+        }))
+        .unwrap();
+        service.record_experience(&experience, 0).await.unwrap();
+        let mut review: crate::learning::Review = serde_json::from_value(serde_json::json!({
+            "experience_id":experience.id, "experience_revision":1, "reviewer":"fixture",
+            "rationale":"document confirms retention", "candidates":[{
+                "kind":"belief", "key":"retention", "content":"Backups are kept for 30 days.",
+                "supporting_passage_id":source.id
+            }]
+        }))
+        .unwrap();
+        service.embeddings = Some(Box::new(Provider { fail: true }));
+        assert!(service
+            .review_supported_experience(&review, 0)
+            .await
+            .is_err());
+        assert!(service
+            .store
+            .existing_belief_candidates(experience.id)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            service
+                .get_experience(experience.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .review_revision,
+            0
+        );
+        service.embeddings = Some(Box::new(Provider { fail: false }));
+        if let crate::learning::Candidate::Belief {
+            supporting_passage_id,
+            ..
+        } = &mut review.candidates[0]
+        {
+            *supporting_passage_id = None;
+        }
+        assert!(service
+            .review_supported_experience(&review, 0)
+            .await
+            .is_err());
+        if let crate::learning::Candidate::Belief {
+            supporting_passage_id,
+            ..
+        } = &mut review.candidates[0]
+        {
+            *supporting_passage_id = Some(source.id);
+        }
+        let applied = service
+            .review_supported_experience(&review, 0)
+            .await
+            .unwrap();
+        let candidate_id = applied.candidate_ids["retention"];
+        assert_eq!(
+            service
+                .store
+                .get_evidence_for_beliefs(&[candidate_id])
+                .await
+                .unwrap(),
+            vec![(candidate_id, source.id, 0.0)]
+        );
+        // A completed retry uses the existing belief without invoking a provider.
+        service.embeddings = Some(Box::new(Provider { fail: true }));
+        let retried = service
+            .review_supported_experience(&review, 0)
+            .await
+            .unwrap();
+        assert_eq!(retried.candidate_ids, applied.candidate_ids);
+        service.delete_project(&project).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn project_deletion_rolls_back_before_a_fresh_retry() {
+        let cfg = isolation::fixture().database_config();
+        crate::db::migrate(&cfg).await.unwrap();
+        let store =
+            AgeStore::new(crate::db::connect(&cfg).await.unwrap(), cfg.dbname.clone()).unwrap();
+        let project = format!("deletion-rollback-{}", Uuid::new_v4());
+        let belief = Belief::new_in_project(
+            "deletion rollback fixture".into(),
+            0.5,
+            0.0,
+            project.clone(),
+        )
+        .unwrap();
+        store.insert_belief(&belief).await.unwrap();
+        // A statement trigger rejects a later deletion inside the transaction.
+        // Every earlier graph mutation must roll back with it.
+        {
+            let client = store.client.lock().await;
+            client.batch_execute("CREATE FUNCTION mimir_test_reject_delete() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture deletion rejected'; END $$; CREATE TRIGGER mimir_test_reject_delete BEFORE DELETE ON belief_embeddings FOR EACH STATEMENT EXECUTE FUNCTION mimir_test_reject_delete()").await.unwrap();
+        }
+        let failed = store.delete_project(&project).await;
+        {
+            let client = store.client.lock().await;
+            client.batch_execute("DROP TRIGGER mimir_test_reject_delete ON belief_embeddings; DROP FUNCTION mimir_test_reject_delete()").await.unwrap();
+        }
+        assert!(failed.is_err());
+        assert!(store.get_belief(belief.id).await.unwrap().is_some());
+        store.delete_project(&project).await.unwrap();
+        assert!(store.get_belief(belief.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
     async fn candidate_allocation_rejects_live_and_retired_occupied_ids() {
         let cfg = isolation::fixture().database_config();
         let dbname = cfg.dbname.clone();

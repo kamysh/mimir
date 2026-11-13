@@ -14,6 +14,7 @@ tools=$(jq -nc '
    review_experience:{review:"object",expected_review_revision:"integer"},
    experience_history:{id:"string"},
    query_relevant:{context:"string",project:"string",limit:"integer"},
+   query_document:{context:"string",project:"string",limit:"integer"},
    query_learning_context:{context:"string",project:"string",limit:"integer"},
    explain_belief:{id:"string",limit:"integer",offset:"integer"},
    get_belief:{id:"string"},query_intervention:{id:"string",value:"number"},
@@ -50,11 +51,7 @@ state() {
 while IFS= read -r request; do
     if [[ -n "$request_log" ]]; then printf '%s\n' "$request" >> "$request_log"; fi
     jq -e 'has("id")' <<< "$request" >/dev/null || continue
-    # Preserve the exact u64 request ID; jq's numeric representation rounds
-    # values near u64::MAX, which would falsify the counter boundary fixture.
-    id_pattern='"id"[[:space:]]*:[[:space:]]*([0-9]+)'
-    [[ "$request" =~ $id_pattern ]] || exit 2
-    id=${BASH_REMATCH[1]}
+    id=$(jq -c '.id' <<< "$request")
     error=
     case "$(jq -r '.method' <<< "$request")" in
         initialize) result='{"protocolVersion":"2024-11-05"}' ;;
@@ -80,6 +77,8 @@ while IFS= read -r request; do
                       [.candidate_feedback[]?.target.candidate_key | select(. != null)] as $referenced |
                       ($referenced - $declared | length) == 0' <<< "$request" >/dev/null; then
                         error='{"code":-32000,"message":"candidate belief reference must be declared in this review","data":{"kind":"undeclared_candidate","fault":{"path":["candidates"],"code":"missing_reference","message":"candidate belief reference must be declared in this review"}}}'
+                    elif [[ "$mode" == "project-correction" ]] && jq -e '.params.arguments.review.feedback | length > 0' <<< "$request" >/dev/null; then
+                        value='{"status":"needs_correction","fault":{"path":["review","feedback",0,"belief_id"],"code":"wrong_identity","message":"The belief is not owned by the experience project. Select a belief from this project or remove the reference and resubmit."},"reason":"The belief is not owned by the experience project","next_action":"Correct the belief reference and resubmit the review"}'
                     else reviewed=1; value='{"review_revision":1}'; fi ;;
                 query_relevant) error='{"code":-32000,"message":"private fixture database detail"}' ;;
                 *) error='{"code":-32601,"message":"unexpected fixture tool"}' ;;

@@ -1,6 +1,6 @@
-use super::{config, state, RunOutcome};
+use super::{config, state};
 use anyhow::{anyhow, Result};
-use chrono::{DateTime, Local, NaiveDate, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Local, LocalResult, NaiveDate, NaiveTime, TimeZone, Timelike, Utc};
 use mimir_notifications::{Digest, Notifier, Outcome};
 use std::{fmt::Write, path::Path};
 use tokio_postgres::Client;
@@ -31,8 +31,8 @@ fn midnight(day: NaiveDate) -> Result<DateTime<Utc>> {
         .ok_or_else(|| anyhow!("local midnight is unavailable"))
 }
 
-fn reporting_day(now: DateTime<Local>) -> Option<NaiveDate> {
-    if now.hour() < 9 {
+fn reporting_day(now: DateTime<Local>, configured: NaiveTime) -> Option<NaiveDate> {
+    if now.time() < configured {
         return None;
     }
     now.date_naive().pred_opt()
@@ -48,16 +48,62 @@ fn first_day(last: Option<&str>, through: NaiveDate) -> Result<Option<NaiveDate>
     Ok((first <= through).then_some(first))
 }
 
-fn latest_status(run: &RunOutcome) -> &'static str {
-    if run.degraded {
-        "needs attention"
-    } else if run.idle {
-        "idle"
-    } else if run.code == 0 {
-        "batch complete"
-    } else {
-        "unavailable"
+fn latest_status(report: Option<&state::Report>) -> &'static str {
+    match report.map(|report| report.status.as_str()) {
+        Some("blocked" | "partial") => "needs attention",
+        Some("idle") => "idle",
+        Some("complete") => "batch complete",
+        _ => "unavailable",
     }
+}
+
+fn delivery_on(day: NaiveDate, configured: NaiveTime) -> Result<DateTime<Local>> {
+    let mut clock = day.and_time(configured);
+    loop {
+        match Local.from_local_datetime(&clock) {
+            LocalResult::Single(instant) => return Ok(instant),
+            LocalResult::Ambiguous(first, second) => return Ok(first.min(second)),
+            LocalResult::None => {
+                clock = clock
+                    .with_second(0)
+                    .and_then(|value| value.with_nanosecond(0))
+                    .ok_or_else(|| anyhow!("configured local delivery time cannot be represented"))?
+                    .checked_add_signed(chrono::Duration::minutes(1))
+                    .ok_or_else(|| {
+                        anyhow!("configured local delivery time cannot be represented")
+                    })?
+            }
+        }
+    }
+}
+
+fn next_delivery(now: DateTime<Local>, configured: NaiveTime) -> Result<DateTime<Local>> {
+    let today = delivery_on(now.date_naive(), configured)?;
+    if today > now {
+        Ok(today)
+    } else {
+        delivery_on(
+            now.date_naive()
+                .succ_opt()
+                .ok_or_else(|| anyhow!("daily delivery date overflow"))?,
+            configured,
+        )
+    }
+}
+
+pub async fn wait_for_delivery(configured: Option<NaiveTime>) -> Result<()> {
+    let Some(configured) = configured else {
+        return std::future::pending().await;
+    };
+    let wake = next_delivery(Local::now(), configured)?;
+    let duration = wake
+        .signed_duration_since(Local::now())
+        .to_std()
+        .unwrap_or_default();
+    // This wake is derived only from the user's calendar setting. It is not
+    // a review polling interval, work deadline or retry delay.
+    tokio::time::sleep(duration).await;
+    Ok(())
 }
 
 async fn counts(client: &Client, start: DateTime<Utc>, end: DateTime<Utc>) -> Result<Counts> {
@@ -150,10 +196,10 @@ async fn content(
 pub async fn tick(
     config_path: Option<&Path>,
     state_dir: Option<&Path>,
-    run: &RunOutcome,
+    configured: NaiveTime,
 ) -> Result<bool> {
     let now = Local::now();
-    let Some(through) = reporting_day(now) else {
+    let Some(through) = reporting_day(now, configured) else {
         return Ok(false);
     };
     let settings = config::load(config_path)?;
@@ -166,21 +212,18 @@ pub async fn tick(
     let Some(first) = first_day(cursor.through_day.as_deref(), through)? else {
         return Ok(false);
     };
-    if (now.timestamp().max(0) as u64) < cursor.next_due {
-        return Ok(cursor.last_attempt_failed);
-    }
     let client = mimir_core::db::connect(&settings.core.database).await?;
+    let report = state::read(&state::resolve(state_dir)?).ok().flatten();
     let mut body = content(
         &client,
         first,
         through,
-        latest_status(run),
+        latest_status(report.as_ref()),
         &now.format("%Z").to_string(),
     )
     .await?;
-    let report = state::read(&state::resolve(state_dir)?).ok().flatten();
     body.push_str(&super::diagnose::summary(report.as_ref()));
-    body.push_str("The watcher retries automatically while running, with hourly backoff after repeated failures. A retry is not confirmation that the problem is resolved.\nHelp: https://github.com/kamysh/mimir/blob/v2.3.0/docs/operations.md\n");
+    body.push_str("A failed attempt is cleaned up. Correct the reported prerequisite and edit configuration or send SIGHUP to restart the original work. A retry is not confirmation that the problem is resolved.\nHelp: https://github.com/kamysh/mimir/blob/v3.0.0/docs/operations.md\n");
     let digest = Digest {
         through_day: through.to_string(),
         body,
@@ -197,18 +240,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn nine_am_boundary_and_catch_up_start() {
+    fn calendar_skips_missing_time_and_delivers_once_on_repeated_time() {
+        // Run this focused check with TZ=America/Los_Angeles. Other hosts keep
+        // their local calendar unchanged and run the general scheduling tests.
+        if std::env::var("TZ").as_deref() != Ok("America/Los_Angeles") {
+            return;
+        }
+        let spring = NaiveDate::from_ymd_opt(2026, 3, 8).unwrap();
+        let skipped = delivery_on(spring, NaiveTime::from_hms_opt(2, 30, 30).unwrap()).unwrap();
+        assert_eq!(skipped.time(), NaiveTime::from_hms_opt(3, 0, 0).unwrap());
+        let fall = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
+        let clock = NaiveTime::from_hms_opt(1, 30, 0).unwrap();
+        let LocalResult::Ambiguous(first, second) =
+            Local.from_local_datetime(&fall.and_time(clock))
+        else {
+            panic!("fixture must use a repeated local time");
+        };
+        assert_eq!(delivery_on(fall, clock).unwrap(), first.min(second));
+        let next = next_delivery(first.max(second), clock).unwrap();
+        assert_eq!(next.date_naive(), fall.succ_opt().unwrap());
+    }
+
+    #[test]
+    fn user_chosen_delivery_time_and_catch_up_start() {
         let day = NaiveDate::from_ymd_opt(2026, 10, 11).unwrap();
         let early = Local
-            .from_local_datetime(&day.and_hms_opt(8, 59, 0).unwrap())
+            .from_local_datetime(&day.and_hms_opt(14, 14, 0).unwrap())
             .single()
             .unwrap();
         let due = Local
-            .from_local_datetime(&day.and_hms_opt(9, 0, 0).unwrap())
+            .from_local_datetime(&day.and_hms_opt(14, 15, 0).unwrap())
             .single()
             .unwrap();
-        assert_eq!(reporting_day(early), None);
-        assert_eq!(reporting_day(due), day.pred_opt());
+        let configured = NaiveTime::from_hms_opt(14, 15, 0).unwrap();
+        assert_eq!(reporting_day(early, configured), None);
+        assert_eq!(reporting_day(due, configured), day.pred_opt());
         assert_eq!(first_day(None, day).unwrap(), Some(day));
         assert_eq!(
             first_day(Some("2026-10-08"), day).unwrap(),
@@ -259,11 +325,7 @@ mod tests {
     #[test]
     fn completed_batch_is_reported_as_complete() {
         assert_eq!(
-            latest_status(&RunOutcome {
-                code: 0,
-                degraded: false,
-                idle: false
-            }),
+            latest_status(Some(&state::Report::new("complete", 1, 1, 0, 0, 0))),
             "batch complete"
         );
     }

@@ -4,12 +4,11 @@ use serde_json::{json, Value};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
+#[cfg(test)]
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
-
-const MAX_STDERR: usize = 4096;
 
 #[derive(Debug)]
 pub struct CandidateConflict(pub Fault);
@@ -56,10 +55,11 @@ fn undeclared_belief_candidate(error: &Value) -> bool {
 
 pub struct Client {
     child: Child,
+    process_group: Option<i32>,
     input: ChildStdin,
     output: BufReader<ChildStdout>,
     stderr: Arc<Mutex<Vec<u8>>>,
-    next_id: u64,
+    stderr_task: Option<tokio::task::JoinHandle<()>>,
     allowed_tools: Vec<Value>,
 }
 
@@ -101,7 +101,7 @@ impl Client {
             .ok_or_else(|| anyhow!("MCP stderr unavailable"))?;
         let stderr = Arc::new(Mutex::new(Vec::new()));
         let captured = Arc::clone(&stderr);
-        tokio::spawn(async move {
+        let stderr_task = tokio::spawn(async move {
             let mut chunk = [0u8; 1024];
             while let Ok(size) = error_pipe.read(&mut chunk).await {
                 if size == 0 {
@@ -109,18 +109,15 @@ impl Client {
                 }
                 let mut bytes = captured.lock().await;
                 bytes.extend_from_slice(&chunk[..size]);
-                if bytes.len() > MAX_STDERR {
-                    let excess = bytes.len() - MAX_STDERR;
-                    bytes.drain(..excess);
-                }
             }
         });
         let mut client = Self {
+            process_group: child.id().map(|pid| pid as i32),
             child,
             input,
             output,
             stderr,
-            next_id: 1,
+            stderr_task: Some(stderr_task),
             allowed_tools: Vec::new(),
         };
         let response = client
@@ -162,24 +159,22 @@ impl Client {
 
     async fn line(&mut self) -> Result<Value> {
         let mut bytes = Vec::new();
-        loop {
-            let byte = self.output.read_u8().await;
-            let byte = match byte {
-                Ok(byte) => byte,
-                Err(_) => {
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                    let stderr = self.stderr.lock().await;
-                    let detail = super::state::bounded(&String::from_utf8_lossy(&stderr), 512);
-                    if detail.is_empty() {
-                        bail!("MCP stream ended");
-                    }
-                    bail!("MCP stream ended: {detail}");
-                }
-            };
-            if byte == b'\n' {
-                break;
+        let read = tokio::select! {
+            biased;
+            read = self.output.read_until(b'\n', &mut bytes) => read,
+            status = self.child.wait() => {
+                status?;
+                Ok(0)
             }
-            bytes.push(byte);
+        };
+        if read? == 0 || bytes.last() != Some(&b'\n') {
+            self.stop().await;
+            let stderr = self.stderr.lock().await;
+            let detail = String::from_utf8_lossy(&stderr);
+            if detail.is_empty() {
+                bail!("MCP stream ended");
+            }
+            bail!("MCP stream ended: {detail}");
         }
         serde_json::from_slice(&bytes).map_err(|error| {
             super::state::SourceFailure::json("malformed MCP response", &bytes, error).into()
@@ -188,11 +183,7 @@ impl Client {
 
     pub async fn request(&mut self, method: &str, params: Value) -> Result<Value> {
         let review_call = method == "tools/call" && params["name"] == "review_experience";
-        let id = self.next_id;
-        self.next_id = self
-            .next_id
-            .checked_add(1)
-            .ok_or_else(|| anyhow!("MCP request ID overflow"))?;
+        let id = uuid::Uuid::new_v4().simple().to_string();
         self.send(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
             .await?;
         loop {
@@ -209,7 +200,7 @@ impl Client {
                 continue;
             }
             ensure!(
-                response["id"].as_u64() == Some(id),
+                response["id"].as_str() == Some(id.as_str()),
                 "unexpected MCP response ID"
             );
             if response.get("error").is_some() {
@@ -268,6 +259,17 @@ impl Client {
                 .into()
         })
     }
+
+    pub async fn stop(&mut self) {
+        if let Some(group) = self.process_group.take() {
+            let _ = unsafe { libc::kill(-group, libc::SIGKILL) };
+        }
+        let _ = self.child.start_kill();
+        let _ = self.child.wait().await;
+        if let Some(reader) = self.stderr_task.take() {
+            let _ = reader.await;
+        }
+    }
 }
 
 // Mimir.JudgeToolCatalogue.check: first matching definitions, exact property
@@ -296,6 +298,14 @@ fn checked_tools(result: &Value) -> Result<Vec<Value>> {
             ][..],
         ),
         ("experience_history", &[("id", "string")][..]),
+        (
+            "query_document",
+            &[
+                ("context", "string"),
+                ("project", "string"),
+                ("limit", "integer"),
+            ][..],
+        ),
         (
             "query_relevant",
             &[
@@ -445,11 +455,14 @@ fn validate_learning_capabilities(capabilities: &Value) -> Result<()> {
 
 impl Drop for Client {
     fn drop(&mut self) {
-        if let Some(pid) = self.child.id() {
+        if let Some(group) = self.process_group.take() {
             // The child was placed in its own process group before exec.
-            let _ = unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+            let _ = unsafe { libc::kill(-group, libc::SIGKILL) };
         }
         let _ = self.child.start_kill();
+        if let Some(reader) = self.stderr_task.take() {
+            reader.abort();
+        }
     }
 }
 
