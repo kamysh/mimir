@@ -107,14 +107,6 @@ pub fn upgrade(path: &Path, directory: Option<&Path>) -> Result<()> {
         logging.remove("max_file_bytes");
         logging.remove("retained_files");
     }
-    if let Some(email) = document
-        .get_mut("email")
-        .and_then(toml_edit::Item::as_table_like_mut)
-    {
-        for retired in ["timeout_seconds", "retry_seconds", "max_attempts"] {
-            email.remove(retired);
-        }
-    }
     if let Some(embeddings) = document
         .get_mut("embeddings")
         .and_then(toml_edit::Item::as_table_like_mut)
@@ -296,7 +288,7 @@ mod tests {
     fn upgrade_removes_only_retired_model_limits() {
         let dir = directory();
         let path = dir.join("config.toml");
-        fs::write(&path, format!("{DB}\n[llm]\nbackend='codex'\nmodel='chosen' # keep model\nargs=['a','b']\ntimeout_seconds=300\nmax_calls=20\nmax_output_tokens=4096\nmax_budget_usd=1.0\n")).unwrap();
+        fs::write(&path, format!("{DB}\n[llm]\nbackend='codex'\nmodel='chosen' # keep model\nargs=['a','b']\ntimeout_seconds=300\nmax_calls=20\nmax_output_tokens=4096\nmax_budget_usd=1.0\n[email]\ntimeout_seconds=42\nretry_seconds=90\nmax_attempts=7\n")).unwrap();
         upgrade(&path, Some(&dir.join("logs"))).unwrap();
         let first = fs::read_to_string(&path).unwrap();
         let value: toml::Value = toml::from_str(&first).unwrap();
@@ -304,6 +296,9 @@ mod tests {
         assert!(first.contains("# keep model"));
         assert!(first.contains(DB));
         assert_eq!(value["llm"]["args"].as_array().unwrap().len(), 2);
+        assert_eq!(value["email"]["timeout_seconds"].as_integer(), Some(42));
+        assert_eq!(value["email"]["retry_seconds"].as_integer(), Some(90));
+        assert_eq!(value["email"]["max_attempts"].as_integer(), Some(7));
         for key in [
             "timeout_seconds",
             "max_calls",

@@ -82,6 +82,7 @@ async fn refresh(
 ) -> Result<RefreshReply, AuthError> {
     let oauth = config.oauth.as_ref().ok_or(AuthError::NeedsAttention)?;
     let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(config.timeout_seconds))
         .redirect(Policy::none())
         .build()
         .map_err(|_| AuthError::Retryable)?;

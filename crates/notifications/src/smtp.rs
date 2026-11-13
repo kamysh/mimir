@@ -95,7 +95,7 @@ pub(crate) async fn send_with_root(
     .map_err(|_| SmtpFailure::Retryable)?;
     let mut transport = transport
         .port(config.port.ok_or(SmtpFailure::Retryable)?)
-        .timeout(None);
+        .timeout(Some(std::time::Duration::from_secs(config.timeout_seconds)));
     if let Some(root) = trusted_root {
         use lettre::transport::smtp::client::{Certificate, Tls, TlsParameters};
         let cert = Certificate::from_der(root.to_vec()).map_err(|_| SmtpFailure::Retryable)?;
@@ -125,13 +125,15 @@ pub(crate) async fn send_with_root(
                 .authentication(vec![Mechanism::Xoauth2]);
         }
     }
-    transport
-        .build()
-        .send(message)
-        .await
-        .map_err(|error| match error.status().map(u16::from) {
-            Some(530 | 534 | 535) => SmtpFailure::AuthRejected,
-            _ => SmtpFailure::Retryable,
-        })?;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(config.timeout_seconds),
+        transport.build().send(message),
+    )
+    .await
+    .map_err(|_| SmtpFailure::Retryable)?
+    .map_err(|error| match error.status().map(u16::from) {
+        Some(530 | 534 | 535) => SmtpFailure::AuthRejected,
+        _ => SmtpFailure::Retryable,
+    })?;
     Ok(())
 }
