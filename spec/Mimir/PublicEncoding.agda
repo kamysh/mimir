@@ -18,6 +18,7 @@ import Mimir.StructuredValue as V
 import Mimir.Binary64 as Binary
 import Mimir.CandidateGraph as G
 import Mimir.CandidateWire as Candidate
+import Mimir.LearningCandidates as Declaration
 import Mimir.SourceWire as Source
 import Mimir.SourceReview as Coverage
 import Mimir.ExperienceSchema as X
@@ -47,6 +48,10 @@ object fields = V.object (map (λ { (name , value) → toList name , value }) fi
 optional : ∀ {A : Set} → (A → V.Value) → Maybe A → V.Value
 optional encode nothing = V.null
 optional encode (just value) = encode value
+
+presentField : ∀ {A : Set} → String → (A → V.Value) → Maybe A → List (String × V.Value)
+presentField name encode nothing = []
+presentField name encode (just value) = (name , encode value) ∷ []
 
 nonempty : ∀ {A : Set} → String → (A → V.Value) → List A → List (String × V.Value)
 nonempty name encode [] = []
@@ -165,12 +170,20 @@ module Encode (format : Formatting) where
   coverage c = object (("source_ref" , V.string (Coverage.Coverage.reference c)) ∷
     ("status" , V.string (coverageText (Coverage.Coverage.status c))) ∷ ("reason" , V.string (Coverage.Coverage.reason c)) ∷ [])
 
+  candidate : Declaration.Candidate → V.Value
+  candidate (Declaration.belief key content memory source) = object
+    (("kind" , V.string (toList "belief")) ∷ ("key" , V.string key) ∷ ("content" , V.string content) ∷
+      ("memory_type" , V.string (Candidate.memoryText memory)) ∷ presentField "supporting_passage_id" uuid source)
+  candidate (Declaration.patternCandidate key situation approach) = object
+    (("kind" , V.string (toList "pattern")) ∷ ("key" , V.string key) ∷
+      ("situation" , V.string situation) ∷ ("approach" , V.string approach) ∷ [])
+
   review : R.Review → V.Value
   review r = object (("experience_id" , uuid (R.Review.experienceID r)) ∷
     ("experience_revision" , V.signed (R.Review.experienceRevision r)) ∷ ("reviewer" , V.string (R.Review.reviewer r)) ∷
     ("rationale" , V.string (R.Review.rationale r)) ∷ ("feedback" , V.array (map feedback (R.Review.feedbacks r))) ∷
     ("links" , V.array (map link (R.Review.links r))) ∷ ("superseded_beliefs" , V.array (map uuid (R.Review.superseded r))) ∷
-    ("candidates" , V.array (map Candidate.encode (R.Review.candidates r))) ∷
+    ("candidates" , V.array (map candidate (R.Review.candidates r))) ∷
     ("candidate_feedback" , V.array (map candidateFeedback (R.Review.candidateFeedbacks r))) ∷
     ("candidate_links" , V.array (map candidateLink (R.Review.candidateLinks r))) ∷
     (nonempty "assessments" assessment (R.Review.assessments r) ++ nonempty "extracted_items" item (R.Review.extracted r) ++

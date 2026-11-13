@@ -123,7 +123,7 @@ fn catalogue_keeps_first_match_and_optional_advertised_definitions() {
         .unwrap()
         .push(json!({"name":"get_learning_review",
         "inputSchema":{"properties":{"id":{"type":"string"}}}}));
-    assert_eq!(checked_tools(&valid).unwrap().len(), 12);
+    assert_eq!(checked_tools(&valid).unwrap().len(), 13);
     for name in [
         "get_lesson_assessment",
         "lesson_assessment_history",
