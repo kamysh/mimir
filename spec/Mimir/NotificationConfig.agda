@@ -53,9 +53,11 @@ record Config : Set where
     -- Optional daily reporting has no Mimir-selected delivery time. The
     -- external calendar boundary interprets this user's local clock setting.
     dailyReportAt : Maybe Text
+    -- User-configurable delivery controls, independent of review progress.
+    timeoutSeconds retrySeconds maxAttempts : ℕ
 
 defaults : Config
-defaults = config false nothing nothing nothing nothing [] nothing nothing nothing nothing nothing
+defaults = config false nothing nothing nothing nothing [] nothing nothing nothing nothing nothing 15 300 5
 
 Required : ∀ {A : Set} → (A → Set) → Maybe A → Set
 Required p nothing = ⊥
@@ -187,21 +189,26 @@ recipients? [] = no (λ ())
 recipients? (first ∷ rest) = address? first ×-dec all? address? rest
 
 EnabledValid : Config → Set
-EnabledValid cfg = Required Host (Config.host cfg) ×
+EnabledValid cfg = (Required Host (Config.host cfg) ×
   (Required (Range 65535) (Config.port cfg) × (Present (Config.tls cfg) ×
   (Required Address (Config.fromAddress cfg) × (Recipients (Config.recipients cfg) ×
-  Required (AuthValid cfg) (Config.auth cfg)))))
+  Required (AuthValid cfg) (Config.auth cfg)))))) ×
+  (1 ≤ Config.timeoutSeconds cfg × (1 ≤ Config.retrySeconds cfg × 1 ≤ Config.maxAttempts cfg))
 
 atCheck : ∀ {P : Set} → String → Dec P → Checked P
 atCheck name decision = at (key name) (check (fault [] malformedInput "invalid notification configuration field") decision)
 
 checkEnabled : ∀ cfg → Checked (EnabledValid cfg)
-checkEnabled cfg = combine (atCheck "host" (required? host? (Config.host cfg)))
+checkEnabled cfg = combine
+  (combine (atCheck "host" (required? host? (Config.host cfg)))
   (combine (atCheck "port" (required? (range? 65535) (Config.port cfg)))
   (combine (atCheck "tls" (present? (Config.tls cfg)))
   (combine (atCheck "from" (required? address? (Config.fromAddress cfg)))
   (combine (atCheck "to" (recipients? (Config.recipients cfg)))
-    (atCheck "auth" (required? (authValid? cfg) (Config.auth cfg)))))))
+    (atCheck "auth" (required? (authValid? cfg) (Config.auth cfg))))))))
+  (combine (atCheck "timeout_seconds" (1 ≤? Config.timeoutSeconds cfg))
+    (combine (atCheck "retry_seconds" (1 ≤? Config.retrySeconds cfg))
+      (atCheck "max_attempts" (1 ≤? Config.maxAttempts cfg))))
 
 Valid : Config → Set
 Valid cfg with Config.enabled cfg

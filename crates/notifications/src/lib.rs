@@ -54,6 +54,8 @@ pub enum Outcome {
 pub struct DigestState {
     pub through_day: Option<String>,
     #[serde(default)]
+    pub next_due: u64,
+    #[serde(default)]
     pub last_attempt_failed: bool,
 }
 
@@ -113,6 +115,14 @@ enum AlertError {
     Unavailable,
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Delivery {
+    #[default]
+    Pending,
+    Exhausted,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SendFailure {
     Retryable,
@@ -132,11 +142,17 @@ struct Alert {
     #[serde(default)]
     details: Option<String>,
     #[serde(default)]
+    attempts: usize,
+    #[serde(default)]
+    next_due: u64,
+    #[serde(default)]
+    delivery: Delivery,
+    #[serde(default)]
     last_error: Option<AlertError>,
 }
 
 impl Alert {
-    fn new(kind: AlertKind, event: &Event, code: &str, summary: &str, _now: u64) -> Self {
+    fn new(kind: AlertKind, event: &Event, code: &str, summary: &str, now: u64) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             kind,
@@ -144,6 +160,9 @@ impl Alert {
             code: code.into(),
             summary: summary.into(),
             details: event.details.clone(),
+            attempts: 0,
+            next_due: now,
+            delivery: Delivery::Pending,
             last_error: None,
         }
     }
@@ -235,6 +254,7 @@ fn reconcile(incident: &mut Incident, event: &Event, now: u64) {
 
 fn outcome(incident: &Incident) -> Outcome {
     match incident.outbox.as_ref() {
+        Some(alert) if alert.delivery == Delivery::Exhausted => Outcome::Exhausted,
         Some(alert) => match alert.last_error {
             Some(AlertError::AuthRequired) => Outcome::AuthRequired,
             Some(AlertError::Unavailable) => Outcome::Unavailable,
@@ -290,6 +310,24 @@ impl<'a> Notifier<'a> {
             .collect())
     }
 
+    /// The next configured retry wake, independent of review and queue events.
+    pub fn next_delivery_due(&self) -> Result<Option<u64>> {
+        let state = StateDir::lock(&self.state_dir)?;
+        let outbox: Outbox = state.read()?.unwrap_or_default();
+        let alert_due = outbox
+            .incidents
+            .values()
+            .filter_map(|incident| incident.outbox.as_ref())
+            .filter(|alert| alert.delivery == Delivery::Pending)
+            .map(|alert| alert.next_due)
+            .min();
+        let digest: DigestState = state.read_digest()?.unwrap_or_default();
+        Ok(alert_due
+            .into_iter()
+            .chain(digest.last_attempt_failed.then_some(digest.next_due))
+            .min())
+    }
+
     fn queue_at(&self, event: &Event, current: u64) -> Result<(String, Outcome)> {
         event.validate()?;
         if !self.config.enabled {
@@ -326,7 +364,7 @@ impl<'a> Notifier<'a> {
         Ok(state.read_digest()?.unwrap_or_default())
     }
 
-    /// Reserve an hourly retry before SMTP, then advance the cursor only on acceptance.
+    /// Use the configured retry delay; advance the cursor only on acceptance.
     pub async fn send_digest(&self, digest: &Digest) -> Result<Outcome> {
         self.send_digest_at(digest, now(), None::<NoSender>).await
     }
@@ -334,7 +372,7 @@ impl<'a> Notifier<'a> {
     async fn send_digest_at<F, Fut>(
         &self,
         digest: &Digest,
-        _current: u64,
+        current: u64,
         send_override: Option<F>,
     ) -> Result<Outcome>
     where
@@ -360,6 +398,12 @@ impl<'a> Notifier<'a> {
         if cursor.through_day.as_deref() >= Some(digest.through_day.as_str()) {
             return Ok(Outcome::NotNeeded);
         }
+        if cursor.last_attempt_failed && cursor.next_due > current {
+            return Ok(Outcome::RetryPending);
+        }
+        cursor.next_due = current.saturating_add(self.config.retry_seconds);
+        cursor.last_attempt_failed = true;
+        state.write_digest(&cursor)?;
         let message = smtp::digest_message(self.config, digest)?;
         drop(state);
         let sent = match send_override {
@@ -443,7 +487,7 @@ impl<'a> Notifier<'a> {
     async fn attempt_with<F, Fut>(
         &self,
         key: &str,
-        _current: u64,
+        current: u64,
         send_override: Option<F>,
     ) -> Result<Outcome>
     where
@@ -454,11 +498,26 @@ impl<'a> Notifier<'a> {
         // any network work. Review completion can enqueue mail while SMTP stalls.
         let original = {
             let state = StateDir::lock(&self.state_dir)?;
-            let outbox: Outbox = state.read()?.unwrap_or_default();
-            outbox
-                .incidents
-                .get(key)
-                .and_then(|incident| incident.outbox.clone())
+            let mut outbox: Outbox = state.read()?.unwrap_or_default();
+            let Some(incident) = outbox.incidents.get_mut(key) else {
+                return Ok(Outcome::NotNeeded);
+            };
+            let Some(alert) = incident.outbox.as_mut() else {
+                return Ok(Outcome::NotNeeded);
+            };
+            if alert.delivery == Delivery::Exhausted || alert.next_due > current {
+                return Ok(outcome(incident));
+            }
+            if alert.attempts >= self.config.max_attempts {
+                alert.delivery = Delivery::Exhausted;
+                state.write(&outbox)?;
+                return Ok(Outcome::Exhausted);
+            }
+            alert.attempts += 1;
+            alert.next_due = current.saturating_add(self.config.retry_seconds);
+            let original = alert.clone();
+            state.write(&outbox)?;
+            Some(original)
         };
         let Some(original) = original else {
             return Ok(Outcome::NotNeeded);
@@ -499,6 +558,9 @@ impl<'a> Notifier<'a> {
                     SendFailure::AuthRequired => Some(AlertError::AuthRequired),
                     SendFailure::Unavailable => Some(AlertError::Unavailable),
                 };
+                if alert.attempts >= self.config.max_attempts {
+                    alert.delivery = Delivery::Exhausted;
+                }
                 outcome(incident)
             }
         };

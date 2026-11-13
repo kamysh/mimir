@@ -360,7 +360,11 @@ Provider references: [Google SMTP XOAUTH2](https://developers.google.com/workspa
 and [Microsoft refresh-token rotation](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow).
 
 Each complete message is persisted before SMTP; a fresh delivery attempt
-reuses its Message-ID. SMTP acceptance means the
+reuses its Message-ID. Mail uses the configured `timeout_seconds`,
+`retry_seconds`, and `max_attempts`. Temporary failures retry automatically
+when their configured delay expires, even without new reviews or messages.
+Exhausted messages remain saved and are reported as needing attention.
+Network delivery runs separately from review work. SMTP acceptance means the
 relay accepted the message, not that it reached an inbox. A crash after relay
 acceptance and before the final outbox write may cause a duplicate; a crash
 before sending leaves the complete message pending for a fresh attempt.

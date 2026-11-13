@@ -208,7 +208,6 @@ pub fn start_worker(
                     None
                 }
             };
-        let mut attempted = std::collections::BTreeSet::new();
         let clock = match settings.email.daily_report_at.as_deref() {
             Some(value) => match chrono::NaiveTime::parse_from_str(value, "%H:%M") {
                 Ok(time) => Some(time),
@@ -223,25 +222,13 @@ pub fn start_worker(
             }
         };
         loop {
-            let pending = match notifier.pending_ids() {
-                Ok(pending) => pending,
-                Err(error) => {
-                    eprintln!("Cannot inspect pending mail: {error:#}. Correct the outbox problem and send SIGHUP to retry.");
-                    std::collections::BTreeSet::new()
-                }
-            };
-            let fresh = pending.iter().any(|id| !attempted.contains(id));
-            attempted.retain(|id| pending.contains(id));
-            attempted.extend(pending);
-            if fresh {
-                match notifier.retry_pending().await {
+            match notifier.retry_pending().await {
                 Ok(outcomes) => for (source, incident, outcome) in outcomes {
                     if !matches!(outcome, mimir_notifications::Outcome::Sent | mimir_notifications::Outcome::NotNeeded) {
-                        eprintln!("Mail for {source}/{incident}: {}. Correct the reported mail prerequisite and send SIGHUP to the watcher for a fresh attempt.", outcome.as_str());
+                        eprintln!("Mail for {source}/{incident}: {}. Pending deliveries retry at the configured interval; exhausted or authentication failures require attention.", outcome.as_str());
                     }
                 },
                 Err(error) => eprintln!("Mail delivery unavailable: {error:#}. Reviews continue. Correct the prerequisite and send SIGHUP to retry."),
-            }
             }
             if let Some(clock) = clock {
                 if let Err(error) =
@@ -250,7 +237,20 @@ pub fn start_worker(
                     eprintln!("Daily statistics unavailable: {error:#}. Reviews continue.");
                 }
             }
+            let due = notifier.next_delivery_due().unwrap_or_else(|error| {
+                eprintln!("Cannot schedule pending mail: {error:#}");
+                None
+            });
             tokio::select! {
+                _ = async {
+                    match due {
+                        Some(timestamp) => {
+                            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+                            tokio::time::sleep(std::time::Duration::from_secs(timestamp.saturating_sub(now))).await;
+                        },
+                        None => std::future::pending::<()>().await,
+                    }
+                } => {},
                 _ = AVAILABLE.notified() => {},
                 changed = async { match &mut outbox_events { Some(events) => events.changed().await, None => std::future::pending().await } } => {
                     if let Err(error) = changed { eprintln!("Mail outbox events unavailable: {error:#}"); outbox_events = None; }
@@ -267,6 +267,69 @@ pub fn start_worker(
 mod tests {
     use super::super::state::ConfirmedReview;
     use super::*;
+
+    #[tokio::test]
+    async fn queued_mail_retries_automatically_without_new_work() {
+        use std::os::unix::fs::PermissionsExt;
+        use tokio::io::AsyncWriteExt;
+        let root = std::env::temp_dir().join(format!("mimir-mail-worker-{}", Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let config_path = root.join("config.toml");
+        let state_path = root.join("state");
+        std::fs::write(&config_path, format!(
+            "config_version=1\n[logging]\ndirectory='{}'\n[database]\nhost='127.0.0.1'\nport=1\ndbname='unused'\nuser='unused'\n[judge]\nmcp_command='/bin/true'\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\n[email]\nenabled=true\nhost='127.0.0.1'\nport={}\ntls='starttls'\nfrom='mimir@example.test'\nto=['owner@example.test']\nauth='none'\ntimeout_seconds=1\nretry_seconds=1\nmax_attempts=2\n",
+            root.join("logs").display(), listener.local_addr().unwrap().port())).unwrap();
+        std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let settings = super::super::config::load(Some(&config_path)).unwrap();
+        let notifier = Notifier::new(&settings.email, &state_path).unwrap();
+        notifier
+            .enqueue(&Event {
+                source: "mail-fixture".into(),
+                incident_key: "one-message".into(),
+                status: EventStatus::Failure {
+                    code: "temporary".into(),
+                    summary: "Retry fixture".into(),
+                },
+                details: None,
+            })
+            .unwrap();
+        let mut events = super::super::config_events::ConfigEvents::new(
+            &state_path.join("notification-outbox.json"),
+        )
+        .unwrap();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                stream
+                    .write_all(b"421 Temporary service outage\r\n")
+                    .await
+                    .unwrap();
+                stream.shutdown().await.unwrap();
+            }
+        });
+        let mut worker = start_worker(Some(config_path), Some(state_path));
+        tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            server.await.unwrap();
+            loop {
+                if matches!(notifier.next_delivery_due(), Ok(None)) {
+                    break;
+                }
+                events.changed().await.unwrap();
+            }
+        })
+        .await
+        .expect("queued mail did not retry automatically and reach its configured attempt limit");
+        assert_eq!(
+            notifier.pending_ids().unwrap().len(),
+            1,
+            "exhaustion must retain the message"
+        );
+        worker.0.abort();
+        let _ = (&mut worker.0).await;
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn failure_and_recovery_mail_facts_distinguish_review_from_idle() {

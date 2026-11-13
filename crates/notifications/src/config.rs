@@ -53,6 +53,22 @@ pub struct EmailConfig {
     /// Daily report delivery in the computer's local time, e.g. "09:00".
     /// No default: daily reporting stays unavailable until the user chooses.
     pub daily_report_at: Option<String>,
+    #[serde(default = "default_timeout")]
+    pub timeout_seconds: u64,
+    #[serde(default = "default_retry")]
+    pub retry_seconds: u64,
+    #[serde(default = "default_attempts")]
+    pub max_attempts: usize,
+}
+
+fn default_timeout() -> u64 {
+    15
+}
+fn default_retry() -> u64 {
+    300
+}
+fn default_attempts() -> usize {
+    5
 }
 
 fn nonempty(value: &str, name: &'static str) -> Result<()> {
@@ -98,6 +114,15 @@ impl EmailConfig {
             !self.to.is_empty() && self.to.iter().all(|s| address(s)),
             "invalid email.to"
         );
+        ensure!(
+            self.timeout_seconds > 0,
+            "email.timeout_seconds must be positive"
+        );
+        ensure!(
+            self.retry_seconds > 0,
+            "email.retry_seconds must be positive"
+        );
+        ensure!(self.max_attempts > 0, "email.max_attempts must be positive");
         match self.auth.ok_or_else(|| anyhow!("email.auth is required"))? {
             Auth::Password => {
                 nonempty(
