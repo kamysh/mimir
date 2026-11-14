@@ -3,6 +3,8 @@ mod learning;
 mod learning_cycle_test;
 use mimir_core::catalogue as operation;
 #[cfg(test)]
+mod corrections_test;
+#[cfg(test)]
 mod retrieval_report_test;
 use anyhow::Result;
 use serde::ser::{SerializeMap, SerializeSeq};
