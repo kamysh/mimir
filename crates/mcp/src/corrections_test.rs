@@ -126,5 +126,31 @@ async fn missing_references_and_stale_revisions_are_correctable() -> Result<()> 
         retried["review_revision"] == 2,
         "resubmission with the current revision must succeed: {retried}"
     );
+
+    // 342: malformed local keys are refused before allocation, with the
+    // repair named, and nothing is stored.
+    let malformed_id = Uuid::new_v4();
+    let malformed = json!({"id":malformed_id,"project":project,"context":"key validation","action":"observe","outcome":"unknown","source":"agent_report","evidence":["event/2"],
+        "source_records":[{"source_ref":"event/2","actor":"agent","provenance":"agent_report","text":"I suggest checking twice."}],
+        "learning_items":[{"key":" padded-key ","kind":"suggestion","source_ref":"event/2","actor":"agent","statement":"I suggest checking twice.","conditions":"untried"}]});
+    let refused = handle_tool_call(
+        &service,
+        "record_experience",
+        &json!({"experience":malformed,"expected_revision":0}),
+    )
+    .await;
+    let key_error = refused.expect_err("malformed local key must be refused");
+    ensure!(
+        key_error
+            .to_string()
+            .contains("item key must be a nonempty trimmed string"),
+        "malformed key refusal must name the repair: {key_error}"
+    );
+    ensure!(
+        handle_tool_call(&service, "get_experience", &json!({"id":malformed_id}))
+            .await?
+            .is_null(),
+        "a refused experience must not be stored"
+    );
     Ok(())
 }
