@@ -1,7 +1,7 @@
 mod learning;
 #[cfg(test)]
 mod learning_cycle_test;
-mod operation;
+use mimir_core::catalogue as operation;
 #[cfg(test)]
 mod retrieval_report_test;
 use anyhow::Result;

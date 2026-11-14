@@ -1,11 +1,15 @@
-//! Closed public operation registry. Every registered tool must have a handler
-//! in the exhaustive dispatcher; tests check that schemas advertise this set.
+//! Closed public operation registry shared by every front end (MCP tools,
+//! CLI business commands, background routes). Every public business route
+//! must resolve to exactly one registered operation; tests check that no
+//! front end can advertise or dispatch an unregistered operation, so the
+//! catalogue cannot be bypassed at runtime.
+
 macro_rules! operations {
     ($($variant:ident => $wire:literal),+ $(,)?) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum Operation { $($variant),+ }
         impl Operation {
-            #[cfg(test)]
+            /// Every registered operation, for coverage tests in any crate.
             pub const ALL: &'static [Self] = &[$(Self::$variant),+];
             pub fn parse(name: &str) -> Option<Self> {
                 match name { $($wire => Some(Self::$variant),)+ _ => None }
