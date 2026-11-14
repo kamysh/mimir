@@ -415,6 +415,37 @@ fn positive_limit(value: &str) -> Result<usize, String> {
     }
 }
 
+/// The shared operation catalogue entry for a CLI business command. Every
+/// public business route must map to exactly one registered operation so no
+/// front end bypasses the catalogue (issue #469 items 86/92/194);
+/// `every_cli_leaf_is_catalogued` fails when a business command is added
+/// without a route here.
+#[cfg(test)]
+fn catalogue_route(command: &Command) -> Option<mimir_core::catalogue::Operation> {
+    use mimir_core::catalogue::Operation::*;
+    Some(match command {
+        Command::List { .. } => ListBeliefs,
+        Command::Patterns { .. } => ListPatterns,
+        Command::Query { .. } => QueryRelevant,
+        Command::Delete(DeleteCmd::Belief { .. }) => DeleteBelief,
+        Command::Delete(DeleteCmd::Pattern { .. }) => DeletePattern,
+        Command::Forget { .. } => DeleteProject,
+        Command::Decay { .. } => DecayAll,
+        Command::Contradictions { .. } => GetContradictions,
+        Command::SweepDefeated { .. } => SweepExpiredDefeated,
+        Command::Doc(DocCmd::Load { .. }) => LoadDocument,
+        Command::Doc(DocCmd::Query { .. }) => QueryDocument,
+        Command::Doc(DocCmd::Clear { .. }) => ClearDocument,
+        Command::Evidence(EvidenceCmd::Add { .. }) => AddEvidence,
+        Command::Evidence(EvidenceCmd::List { .. }) => GetEvidence,
+        Command::Intervene { .. } => QueryIntervention,
+        // Non-business commands: configuration, init, the judge, hooks,
+        // one-shot stats and the reembed maintenance loop are not public
+        // operation routes.
+        _ => return None,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // mimir init
 // ---------------------------------------------------------------------------
@@ -1197,4 +1228,111 @@ async fn cmd_hook_pretooluse() -> Result<()> {
     println!("{}", out);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod catalogue_routing_tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    fn leaves(cmd: &clap::Command, prefix: &str, out: &mut Vec<String>) {
+        for sub in cmd.get_subcommands() {
+            let path = if prefix.is_empty() {
+                sub.get_name().to_string()
+            } else {
+                format!("{prefix} {}", sub.get_name())
+            };
+            if sub.get_subcommands().next().is_some() {
+                leaves(sub, &path, out);
+            } else {
+                out.push(path);
+            }
+        }
+    }
+
+    fn parse(args: &[String]) -> Option<Command> {
+        Cli::try_parse_from(args).ok().map(|cli| cli.command)
+    }
+
+    /// Guard for issue #469 items 86/92/194: every CLI business leaf maps to
+    /// exactly one operation of the shared core catalogue. A new business
+    /// command without a route fails this test instead of silently bypassing
+    /// the catalogue.
+    #[test]
+    fn every_cli_leaf_is_catalogued() {
+        let mut all = Vec::new();
+        leaves(&Cli::command(), "", &mut all);
+        let non_business = [
+            "init",
+            "config check",
+            "config upgrade",
+            "judge run",
+            "judge watch",
+            "judge diagnose",
+            "judge diagnostics",
+            "judge check-config",
+            "judge status",
+            "stats",
+            "hook prompt",
+            "hook pretooluse",
+            "hook stop",
+            "hook set-project",
+            "reembed",
+        ];
+        let mut business: Vec<&String> = all
+            .iter()
+            .filter(|path| !non_business.contains(&path.as_str()))
+            .collect();
+        business.sort();
+        let expected = [
+            "contradictions",
+            "decay",
+            "delete belief",
+            "delete pattern",
+            "doc clear",
+            "doc load",
+            "doc query",
+            "evidence add",
+            "evidence list",
+            "forget",
+            "intervene",
+            "list",
+            "patterns",
+            "query",
+            "sweep-defeated",
+        ];
+        assert_eq!(
+            business.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+            expected,
+            "every CLI business leaf must be accounted for as catalogued or explicitly non-business"
+        );
+
+        // Each business leaf parses into a command whose route is a registered
+        // catalogue operation.
+        let fixture_id = "00000000-0000-4000-8000-000000000000";
+        let argv_for = |path: &str| -> Vec<String> {
+            let v: Vec<&str> = match path {
+                "delete belief" => vec!["mimir", "delete", "belief", fixture_id],
+                "delete pattern" => vec!["mimir", "delete", "pattern", fixture_id],
+                "doc clear" => vec!["mimir", "doc", "clear", "x.md"],
+                "doc load" => vec!["mimir", "doc", "load", "x.md"],
+                "doc query" => vec!["mimir", "doc", "query", "x"],
+                "evidence add" => vec!["mimir", "evidence", "add", fixture_id, fixture_id],
+                "evidence list" => vec!["mimir", "evidence", "list", fixture_id],
+                "forget" => vec!["mimir", "forget", "p"],
+                "intervene" => vec!["mimir", "intervene", fixture_id, "0.5"],
+                "query" => vec!["mimir", "query", "x"],
+                "sweep-defeated" => vec!["mimir", "sweep-defeated", "--threshold", "0.3"],
+                _ => vec!["mimir", path],
+            };
+            v.into_iter().map(str::to_string).collect()
+        };
+        for path in expected {
+            let command = parse(&argv_for(path)).unwrap_or_else(|| panic!("{path} must parse"));
+            assert!(
+                catalogue_route(&command).is_some(),
+                "CLI business leaf '{path}' has no shared-catalogue route"
+            );
+        }
+    }
 }
