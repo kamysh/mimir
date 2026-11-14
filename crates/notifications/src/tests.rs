@@ -36,7 +36,7 @@ struct Captured {
 }
 
 fn certificate() -> (PathBuf, Vec<u8>, Vec<u8>, Vec<u8>) {
-    let dir = PathBuf::from(format!("/var/tmp/mimir/step9/cert-{}", Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("mimir/step9/cert-{}", Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     let root = dir.join("root.pem");
     let root_key = dir.join("root-key.pem");
@@ -314,7 +314,7 @@ fn config() -> EmailConfig {
 }
 
 fn directory() -> PathBuf {
-    PathBuf::from(format!("/var/tmp/mimir/step9/state-{}", Uuid::new_v4()))
+    std::env::temp_dir().join(format!("mimir/step9/state-{}", Uuid::new_v4()))
 }
 
 fn failure(source: &str, incident: &str, code: &str) -> Event {
@@ -928,7 +928,7 @@ fn oauth_config(provider: OAuthProvider) -> EmailConfig {
 }
 
 fn oauth_directory() -> PathBuf {
-    PathBuf::from(format!("/var/tmp/mimir/step10/state-{}", Uuid::new_v4()))
+    std::env::temp_dir().join(format!("mimir/step10/state-{}", Uuid::new_v4()))
 }
 
 async fn token_fixture(

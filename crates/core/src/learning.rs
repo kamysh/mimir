@@ -386,6 +386,9 @@ pub struct PatternResult {
 #[derive(Debug, Serialize)]
 pub struct LearningContext {
     pub beliefs: Vec<Belief>,
+    /// Whether semantic (vector) retrieval ran for the belief search; a
+    /// lexical/graph result obtained without it is degraded, not complete.
+    pub semantic_search: crate::SemanticSearchStatus,
     pub patterns: Vec<PatternResult>,
     pub assessments: Vec<serde_json::Value>,
     pub assessments_truncated: bool,
@@ -539,17 +542,18 @@ impl crate::MimirService {
     /// Retrieve relevant procedures with observed results alongside beliefs.
     /// Relevance comes first; outcome estimates break ties between equally
     /// relevant procedures. A retrieval never counts as a successful use.
+    /// `limit = 0` selects all matching patterns and beliefs (no cap).
     pub async fn query_learning_context(
         &self,
         context: &str,
         project: &str,
         limit: usize,
     ) -> Result<LearningContext> {
-        ensure!(limit > 0, "limit must be positive");
         ensure!(!project.trim().is_empty(), "project must be explicit");
-        let beliefs = self
+        let report = self
             .query_relevant(context, limit, Some(project), None)
             .await?;
+        let beliefs = report.beliefs;
         let terms: std::collections::HashSet<_> = context
             .split(|c: char| !c.is_alphanumeric())
             .filter(|t| !t.is_empty())
@@ -581,9 +585,15 @@ impl crate::MimirService {
             .store
             .assessments_for_beliefs(project, &beliefs.iter().map(|b| b.id).collect::<Vec<_>>())
             .await?;
+        let patterns: Vec<PatternResult> = if limit > 0 {
+            ranked.into_iter().take(limit).map(|(_, p)| p).collect()
+        } else {
+            ranked.into_iter().map(|(_, p)| p).collect()
+        };
         Ok(LearningContext {
             beliefs,
-            patterns: ranked.into_iter().take(limit).map(|(_, p)| p).collect(),
+            semantic_search: report.semantic_search,
+            patterns,
             assessments,
             assessments_truncated,
         })

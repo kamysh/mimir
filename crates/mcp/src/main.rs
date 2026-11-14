@@ -2,6 +2,8 @@ mod learning;
 #[cfg(test)]
 mod learning_cycle_test;
 mod operation;
+#[cfg(test)]
+mod retrieval_report_test;
 use anyhow::Result;
 use serde::ser::{SerializeMap, SerializeSeq};
 use serde::{Serialize, Serializer};
@@ -15,6 +17,15 @@ use mimir_core::{
     learning::IndependentProvenance,
     MimirService,
 };
+
+/// Bounded opportunity given to an in-flight tool call to finish after the
+/// client's stdin reaches EOF. This is a connection-teardown drain heuristic,
+/// not a business deadline: a healthy call (even a slow list over a large
+/// graph) completes within this window and its reply — plus any pipelined
+/// requests behind it — is delivered; a call still blocked past it, e.g.
+/// waiting on a database lock for a client that has gone away, is abandoned
+/// so its owned work stops instead of waiting indefinitely.
+const DISCONNECT_DRAIN: std::time::Duration = std::time::Duration::from_secs(5);
 
 // ---------------------------------------------------------------------------
 // JSON-RPC helpers
@@ -408,14 +419,14 @@ fn tools_list() -> Value {
         },
         {
             "name": "sweep_expired_defeated",
-            "description": "Delete defeated beliefs whose grace period has elapsed (attenuated deletion — a defeated belief is deleted only once its probability has decayed below prob_threshold AND grace_hours have passed since it was last defeated, giving a wrong record_defeat call time to be caught and reversed first). Returns count of beliefs deleted. If project is given, restricts the sweep to that project's beliefs plus untagged (global) beliefs.",
+            "description": "Delete defeated beliefs whose grace period has elapsed (attenuated deletion — a defeated belief is deleted only once its probability has decayed below prob_threshold AND the user's configured [retirement].grace_hours have passed since it was last defeated, giving a wrong record_defeat call time to be caught and reversed first). The grace period is configuration-owned and cannot be overridden per call; when it is unset the sweep refuses and deletes nothing. Returns count of beliefs deleted. If project is given, restricts the sweep to that project's beliefs plus untagged (global) beliefs.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "prob_threshold": { "type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.3, "description": "Probability below which a defeated belief becomes eligible for deletion." },
-                    "grace_hours": { "type": "number", "minimum": 0.0, "default": 24.0, "description": "Hours since the belief was last defeated before it can be deleted." },
+                    "prob_threshold": { "type": "number", "minimum": 0.0, "maximum": 1.0, "description": "Probability below which a defeated belief becomes eligible for deletion." },
                     "project": { "type": "string", "description": "Restrict the sweep to this project's beliefs plus untagged (global) beliefs. Omit to sweep everything." }
-                }
+                },
+                "required": ["prob_threshold"]
             }
         },
         {
@@ -425,9 +436,9 @@ fn tools_list() -> Value {
                 "type": "object",
                 "properties": {
                     "context":          { "type": "string" },
-                    "limit":            { "type": "integer", "minimum": 0, "default": 10 },
+                    "limit":            { "type": "integer", "minimum": 1, "description": "Optional positive result count. Omit for all matching beliefs; zero is invalid." },
                     "include_evidence":   { "type": "boolean", "default": false },
-                    "evidence_per_belief":{ "type": "integer", "minimum": 0, "default": 3 },
+                    "evidence_per_belief":{ "type": "integer", "minimum": 1, "description": "Optional positive count of grounding passages per belief. Omit for all passages grounding each belief; zero is invalid." },
                     "project":          { "type": "string", "description": "Restrict the candidate pool to this project's beliefs plus untagged (global) beliefs. Omit to search everything." },
                     "prefer_type":      { "type": "string", "enum": ["fact", "experiential", "working"], "description": "Nudge ranking toward this memory type — a soft preference (same weight class as the probability prior), never strong enough to lift an off-topic belief of the preferred type over a real semantic match. Omit for type-neutral ranking." }
                 },
@@ -869,12 +880,13 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
         }
 
         SweepExpiredDefeated => {
-            let prob_threshold = args["prob_threshold"].as_f64().unwrap_or(0.3);
-            let grace_hours = args["grace_hours"].as_f64().unwrap_or(24.0);
+            // prob_threshold is required by admission; the grace period is the
+            // user's configuration, never a per-call argument.
+            let prob_threshold = args["prob_threshold"]
+                .as_f64()
+                .ok_or_else(|| anyhow::anyhow!("missing 'prob_threshold'"))?;
             let project = args["project"].as_str();
-            let count = svc
-                .sweep_expired_defeated(prob_threshold, grace_hours, project)
-                .await?;
+            let count = svc.sweep_expired_defeated(prob_threshold, project).await?;
             Ok(json!({ "deleted": count }))
         }
 
@@ -882,7 +894,8 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             let query = args["context"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'context'"))?;
-            let limit = args["limit"].as_u64().unwrap_or(10) as usize;
+            // Omitted limit selects all matches; admission rejects an explicit zero.
+            let limit = args["limit"].as_u64().unwrap_or(0) as usize;
             let include_evidence = args["include_evidence"].as_bool().unwrap_or(false);
             let project = args["project"].as_str();
             let prefer_type = args["prefer_type"]
@@ -890,16 +903,18 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
                 .map(|s| s.parse::<mimir_core::graph::MemoryType>())
                 .transpose()?;
             if !include_evidence {
-                let beliefs = svc
+                let report = svc
                     .query_relevant(query, limit, project, prefer_type)
                     .await?;
-                return Ok(serde_json::to_value(&beliefs)?);
+                return Ok(serde_json::to_value(&report)?);
             }
-            let per = args["evidence_per_belief"].as_u64().unwrap_or(3) as usize;
-            let grounded = svc
+            // Omitted evidence_per_belief selects all grounding passages.
+            let per = args["evidence_per_belief"].as_u64().unwrap_or(0) as usize;
+            let report = svc
                 .query_relevant_grounded(query, limit, per, project)
                 .await?;
-            let result: Vec<Value> = grounded
+            let beliefs: Vec<Value> = report
+                .beliefs
                 .into_iter()
                 .map(|gb| {
                     let mut belief_json = serde_json::to_value(&gb.belief).unwrap_or(json!({}));
@@ -922,7 +937,11 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
                     belief_json
                 })
                 .collect();
-            Ok(json!(result))
+            Ok(json!({
+                "context": report.context,
+                "beliefs": beliefs,
+                "semantic_search": report.semantic_search,
+            }))
         }
 
         AddEvidence => {
@@ -1088,13 +1107,21 @@ async fn main() -> Result<()> {
     let mut stdout = tokio::io::stdout();
     let mut reader = BufReader::new(stdin);
     let mut line = Vec::new();
+    // Requests pipelined while the previous business call was still running
+    // (stdio MCP is strictly sequential: each is answered after the running
+    // call's response is written, in arrival order).
+    let mut pending: std::collections::VecDeque<Vec<u8>> = std::collections::VecDeque::new();
 
     loop {
         line.clear();
-        let n = reader.read_until(b'\n', &mut line).await?;
-        if n == 0 {
-            // EOF
-            break;
+        if let Some(buffered) = pending.pop_front() {
+            line = buffered;
+        } else {
+            let n = reader.read_until(b'\n', &mut line).await?;
+            if n == 0 {
+                // EOF — the client disconnected between requests.
+                break;
+            }
         }
 
         if line.iter().all(u8::is_ascii_whitespace) {
@@ -1155,7 +1182,53 @@ async fn main() -> Result<()> {
                 let empty_obj = Value::Object(serde_json::Map::new());
                 let arguments = params.get("arguments").unwrap_or(&empty_obj);
 
-                match handle_tool_call(&svc, tool_name, arguments).await {
+                // Race the business call against the client's transport so a
+                // disconnect is noticed instead of waiting out blocked work.
+                // Pipelined request lines are buffered and answered in order
+                // after the running call's response.
+                //
+                // When EOF arrives mid-call the client has disconnected. The
+                // call gets a brief bounded opportunity to finish — a healthy
+                // fast reply is still delivered, and any pipelined requests
+                // behind it are still answered — after which it is abandoned:
+                // dropping the call stops its owned work (owned child
+                // processes are killed on drop; uncommitted statements roll
+                // back with their transaction) and the server exits instead of
+                // finishing work nobody is waiting for.
+                let mut call = std::pin::pin!(handle_tool_call(&svc, tool_name, arguments));
+                let call_result = loop {
+                    let mut next = Vec::new();
+                    tokio::select! {
+                        result = &mut call => break result,
+                        read = reader.read_until(b'\n', &mut next) => {
+                            match read {
+                                Ok(0) => {
+                                    match tokio::time::timeout(DISCONNECT_DRAIN, &mut call).await {
+                                        Ok(result) => break result,
+                                        Err(_) => {
+                                            tracing::warn!(
+                                                tool = tool_name,
+                                                "client disconnected during tool call; abandoned owned work"
+                                            );
+                                            return Ok(());
+                                        }
+                                    }
+                                }
+                                Ok(_) => {
+                                    if !next.iter().all(u8::is_ascii_whitespace) {
+                                        pending.push_back(next);
+                                    }
+                                }
+                                Err(error) => {
+                                    tracing::warn!(%error, tool = tool_name, "client transport failed during tool call; abandoned owned work");
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    }
+                };
+
+                match call_result {
                     Ok(result) => ok_response(
                         &id,
                         json!({ "content": [{ "type": "text", "text": agent_json_text(&result)? }] }),
@@ -1187,8 +1260,14 @@ async fn main() -> Result<()> {
         if !is_notification {
             let mut out = response.to_string();
             out.push('\n');
-            stdout.write_all(out.as_bytes()).await?;
-            stdout.flush().await?;
+            if let Err(error) = stdout.write_all(out.as_bytes()).await {
+                tracing::warn!(%error, "client disconnected before the reply could be written");
+                break;
+            }
+            if let Err(error) = stdout.flush().await {
+                tracing::warn!(%error, "client disconnected before the reply could be flushed");
+                break;
+            }
         }
     }
 
@@ -1233,6 +1312,77 @@ mod agent_json_tests {
         let result = json!({"z": [true, null], "a": {"beta": 2, "content": "not a belief"}});
         let text = agent_json_text(&result).unwrap();
         assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), result);
+    }
+
+    #[test]
+    fn selection_limits_are_optional_and_zero_is_rejected() {
+        for (tool, arguments) in [
+            ("query_relevant", json!({"context": "anything"})),
+            ("query_document", json!({"context": "anything"})),
+            (
+                "query_learning_context",
+                json!({"context": "anything", "project": "mimir"}),
+            ),
+        ] {
+            let mut supplied = arguments.clone();
+            assert!(
+                admit_tool_arguments(tool, &supplied).is_ok(),
+                "omitted limit must select all results for {tool}"
+            );
+            supplied["limit"] = json!(0);
+            assert!(
+                admit_tool_arguments(tool, &supplied).is_err(),
+                "explicit zero limit must be rejected for {tool}"
+            );
+            supplied["limit"] = json!(1000);
+            assert!(
+                admit_tool_arguments(tool, &supplied).is_ok(),
+                "positive limit must remain admissible for {tool}"
+            );
+        }
+        assert!(
+            admit_tool_arguments(
+                "query_relevant",
+                &json!({"context": "x", "evidence_per_belief": 0})
+            )
+            .is_err(),
+            "explicit zero evidence_per_belief must be rejected"
+        );
+        assert!(
+            admit_tool_arguments("query_relevant", &json!({"context": "x"})).is_ok(),
+            "omitted evidence_per_belief must select all grounding passages"
+        );
+    }
+
+    #[test]
+    fn semantic_search_status_matches_the_specification_encoding() {
+        use mimir_core::{SemanticSearchStatus, SemanticUnavailableCause};
+        assert_eq!(
+            serde_json::to_value(SemanticSearchStatus::Performed).unwrap(),
+            json!({"status": "performed"})
+        );
+        assert_eq!(
+            serde_json::to_value(SemanticSearchStatus::no_eligible_beliefs()).unwrap(),
+            json!({
+                "status": "not_needed",
+                "reason": "There are no eligible stored beliefs to search."
+            })
+        );
+        let unavailable = serde_json::to_value(SemanticSearchStatus::NotAvailable {
+            cause: SemanticUnavailableCause::NotConfigured,
+            reason: "why".to_string(),
+            next_action: "how".to_string(),
+        })
+        .unwrap();
+        assert_eq!(
+            unavailable,
+            json!({
+                "status": "unavailable",
+                "cause": "not_configured",
+                "reason": "why",
+                "next_action": "how"
+            })
+        );
     }
 }
 

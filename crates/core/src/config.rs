@@ -40,6 +40,29 @@ pub enum SslMode {
     VerifyFull,
 }
 
+// ── Retirement config ──────────────────────────────────────────────────────
+
+/// User-owned retention policy for the defeated-belief sweep. The user
+/// chooses `grace_hours` in configuration; absence never invents a deletion
+/// policy, and no CLI/MCP call may override it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RetirementConfig {
+    /// Hours since a belief was last defeated before it can be deleted.
+    /// Must be a finite nonnegative number; zero explicitly requests
+    /// immediate eligibility.
+    pub grace_hours: f64,
+}
+
+impl RetirementConfig {
+    fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.grace_hours.is_finite() && self.grace_hours >= 0.0,
+            "[retirement].grace_hours must be a finite nonnegative number"
+        );
+        Ok(())
+    }
+}
+
 // ── Database config ────────────────────────────────────────────────────────
 
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
@@ -100,6 +123,19 @@ pub struct Config {
     pub judge: Option<toml::Table>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<toml::Table>,
+    /// User-owned retention policy for the defeated-belief sweep. Unset means
+    /// sweeping is paused until the user chooses a grace period.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retirement: Option<RetirementConfig>,
+}
+
+impl Config {
+    fn validate(&self) -> anyhow::Result<()> {
+        if let Some(retirement) = &self.retirement {
+            retirement.validate()?;
+        }
+        Ok(())
+    }
 }
 
 impl std::fmt::Debug for Config {
@@ -170,9 +206,10 @@ impl Config {
             anyhow::anyhow!("invalid Mimir config TOML (source omitted to protect credentials)")
         })?;
         let operations = crate::operations::Operations::decode(&value)?;
-        let config = value
+        let config: Self = value
             .try_into()
             .map_err(|_| anyhow::anyhow!("invalid Mimir database/embedding configuration"))?;
+        config.validate()?;
         Ok((config, operations))
     }
 
@@ -319,6 +356,7 @@ impl Config {
             llm: None,
             judge: None,
             email: None,
+            retirement: None,
         };
         let content = crate::operations::Operations::defaults()?.header()?
             + &toml::to_string_pretty(&config)?;
@@ -404,6 +442,13 @@ user   = "mimir"       # PostgreSQL role used by mimir at runtime
 #
 # [email]
 # enabled = false
+#
+# Retention policy for the defeated-belief sweep (sweep_expired_defeated). The
+# USER chooses this; there is no per-call override and no default. While it is
+# unset, sweeping refuses and deletes nothing.
+#
+# [retirement]
+# grace_hours = 24
 "#;
 
 #[cfg(test)]
@@ -423,6 +468,30 @@ mod runtime_config_tests {
         assert_eq!(cfg.llm, again.llm);
         assert_eq!(cfg.email, again.email);
         assert_eq!(cfg.judge, again.judge);
+    }
+
+    #[test]
+    fn retirement_grace_hours_is_validated_and_optional() {
+        let base = "host='localhost'\nport=5432\ndbname='test'\nuser='test'\n";
+        let absent: Config = toml::from_str(&format!("[database]\n{base}")).unwrap();
+        assert!(
+            absent.retirement.is_none(),
+            "absence must not invent a policy"
+        );
+        let valid: Config =
+            toml::from_str(&format!("[database]\n{base}[retirement]\ngrace_hours=24\n")).unwrap();
+        assert_eq!(valid.retirement.unwrap().grace_hours, 24.0);
+        for bad in ["-1", "nan", "inf"] {
+            let text = format!("[database]\n{base}[retirement]\ngrace_hours={bad}\n");
+            let parsed: Config = toml::from_str(&text).unwrap();
+            assert!(
+                parsed.validate().is_err(),
+                "grace_hours={bad} must be rejected"
+            );
+        }
+        let zero: Config =
+            toml::from_str(&format!("[database]\n{base}[retirement]\ngrace_hours=0\n")).unwrap();
+        assert!(zero.validate().is_ok(), "zero is an explicit choice");
     }
 
     #[test]

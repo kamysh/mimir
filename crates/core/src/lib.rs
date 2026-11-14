@@ -101,16 +101,111 @@ pub struct GroundedBelief {
     pub evidence: Vec<EvidenceRef>,
 }
 
+/// Why semantic (vector) retrieval did not run for a query. Mirrors
+/// `UnavailableCause` in the specification (Mimir/RetrievalProtocol.agda); the
+/// cause must survive lexical/graph degradation into the public report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticUnavailableCause {
+    NotConfigured,
+    UnsupportedContent,
+    ProviderFailure,
+    InvalidProviderReply,
+}
+
+/// Whether semantic retrieval ran, and when it did not, why. A lexical/graph
+/// result obtained without it is degraded, not a completed search. Mirrors
+/// `SemanticStatus` in the specification; serialized to match `semanticSearch`
+/// in Mimir/ApplicationOutput.agda.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(tag = "status")]
+pub enum SemanticSearchStatus {
+    #[serde(rename = "performed")]
+    Performed,
+    #[serde(rename = "not_needed")]
+    NotNeeded { reason: String },
+    #[serde(rename = "unavailable")]
+    NotAvailable {
+        cause: SemanticUnavailableCause,
+        reason: String,
+        next_action: String,
+    },
+}
+
+impl SemanticSearchStatus {
+    /// No eligible stored beliefs: no retriever has anything to search.
+    pub fn no_eligible_beliefs() -> Self {
+        Self::NotNeeded {
+            reason: "There are no eligible stored beliefs to search.".to_string(),
+        }
+    }
+
+    /// No embedding provider is configured; lexical/graph legs still answer.
+    pub fn not_configured() -> Self {
+        Self::NotAvailable {
+            cause: SemanticUnavailableCause::NotConfigured,
+            reason: "Semantic search was not performed because no embedding provider is configured."
+                .to_string(),
+            next_action: "These results use lexical and graph retrieval. Configure an embedding provider if semantic search is required."
+                .to_string(),
+        }
+    }
+
+    /// The provider failed; lexical/graph legs still answer.
+    pub fn provider_failure(error: &str) -> Self {
+        Self::NotAvailable {
+            cause: SemanticUnavailableCause::ProviderFailure,
+            reason: format!(
+                "Semantic search was not performed because the embedding provider failed: {error}"
+            ),
+            next_action: "These results use lexical and graph retrieval. Resolve the embedding provider failure before requesting semantic search again."
+                .to_string(),
+        }
+    }
+
+    /// The provider's reply contained no query vector.
+    pub fn invalid_provider_reply() -> Self {
+        Self::NotAvailable {
+            cause: SemanticUnavailableCause::InvalidProviderReply,
+            reason: "Semantic search was not performed because the embedding provider returned no query vector."
+                .to_string(),
+            next_action: "These results use lexical and graph retrieval. Resolve the embedding provider response before requesting semantic search again."
+                .to_string(),
+        }
+    }
+}
+
+/// The retrieval report: the query context, the ranked beliefs, and whether
+/// semantic search ran. Mirrors `Report` in the specification
+/// (Mimir/RetrievalProtocol.agda); serialized to match `retrievalReport` in
+/// Mimir/ApplicationOutput.agda.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RetrievalReport<T> {
+    pub context: String,
+    pub beliefs: Vec<T>,
+    pub semantic_search: SemanticSearchStatus,
+}
+
 pub struct MimirService {
     store: AgeStore,
     inference: InferenceEngine,
     embeddings: Option<Box<dyn EmbeddingProvider>>,
+    /// User-owned retention policy for the defeated-belief sweep. `None`
+    /// means sweeping is paused until the user chooses a grace period.
+    retirement_grace_hours: Option<f64>,
 }
 
 impl MimirService {
     /// Supply the embedding implementation used by preparation and retrieval.
     pub fn with_embedding_provider(mut self, provider: Box<dyn EmbeddingProvider>) -> Self {
         self.embeddings = Some(provider);
+        self
+    }
+
+    /// Supply the user-owned retention grace period (hours) for
+    /// `sweep_expired_defeated`. Unset means sweeping is paused.
+    pub fn with_retirement_grace_hours(mut self, hours: f64) -> Self {
+        self.retirement_grace_hours = Some(hours);
         self
     }
 
@@ -122,6 +217,7 @@ impl MimirService {
             store: AgeStore::new(client, cfg.database.dbname.clone())?,
             inference: InferenceEngine::new(),
             embeddings,
+            retirement_grace_hours: cfg.retirement.as_ref().map(|r| r.grace_hours),
         })
     }
 
@@ -241,12 +337,20 @@ impl MimirService {
     /// absent (the vector half of `query_relevant` simply degrades to empty).
     /// Called by `add_belief` / `add_belief_in_project` and by the `reembed`
     /// CLI to backfill existing beliefs.
+    ///
+    /// A backfill entry is checked against the store right before its vector
+    /// is written: a belief (or its whole project) deleted while the embedding
+    /// was being computed has revoked the work — the vector must not be
+    /// published late for a belief that no longer exists.
     pub async fn embed_and_store_belief(&self, belief: &Belief) -> Result<()> {
         if let Some(embedder) = &self.embeddings {
             let mut vecs = embedder
                 .embed(std::slice::from_ref(&belief.content))
                 .await?;
             if let Some(v) = vecs.pop() {
+                if self.store.get_belief(belief.id).await?.is_none() {
+                    return Ok(());
+                }
                 self.store.insert_belief_embedding(belief.id, &v).await?;
             }
         }
@@ -500,19 +604,28 @@ impl MimirService {
     /// Delete defeated beliefs whose grace period has elapsed (attenuated
     /// deletion, not immediate hard deletion at record_defeat time). A
     /// defeated belief is deleted only once its probability has
-    /// decayed below `prob_threshold` AND `grace_period` has passed since it
+    /// decayed below `prob_threshold` AND the configured
+    /// `[retirement].grace_hours` has passed since it
     /// was last defeated, with no intervening reversal — this gives a wrong
     /// `record_defeat` call time to be caught and reversed before its target
-    /// is permanently removed. `project`, when given, restricts the sweep to
+    /// is permanently removed. The grace period is the user's configuration,
+    /// never a per-call argument; when it is unset the sweep refuses and
+    /// deletes nothing. `project`, when given, restricts the sweep to
     /// that project's beliefs plus untagged (global) ones, same semantics as
     /// `decay_beliefs` — a caller working in one project should not silently
     /// delete another project's beliefs. Returns the number of beliefs deleted.
     pub async fn sweep_expired_defeated(
         &self,
         prob_threshold: f64,
-        grace_hours: f64,
         project: Option<&str>,
     ) -> Result<usize> {
+        let grace_hours = self.retirement_grace_hours.ok_or_else(|| {
+            anyhow::anyhow!(
+                "Sweeping is paused: [retirement].grace_hours is unset. No deletion was attempted. \
+                 Ask the user to choose a retention period in configuration, then retry. \
+                 Do not choose it for the user or pass a per-call override."
+            )
+        })?;
         let edges = match project {
             Some(p) => self.store.get_defeats_with_timestamps_by_project(p).await?,
             None => self.store.get_defeats_with_timestamps().await?,
@@ -567,7 +680,7 @@ impl MimirService {
         limit: usize,
         project: Option<&str>,
         prefer_type: Option<MemoryType>,
-    ) -> Result<Vec<Belief>> {
+    ) -> Result<RetrievalReport<Belief>> {
         let (_, superseded) = self.store.learning_overlay().await?;
         let all: Vec<Belief> = match project {
             Some(p) => self.store.list_beliefs_by_project(p).await?,
@@ -579,7 +692,11 @@ impl MimirService {
         .filter(|b| b.memory_type != MemoryType::Working && !superseded.contains(&b.id))
         .collect();
         if all.is_empty() {
-            return Ok(vec![]);
+            return Ok(RetrievalReport {
+                context: query.to_string(),
+                beliefs: Vec::new(),
+                semantic_search: SemanticSearchStatus::no_eligible_beliefs(),
+            });
         }
 
         // ── Token list: beliefs whose lowercased content contains at least one
@@ -621,37 +738,47 @@ impl MimirService {
         };
 
         // ── Vector list: cosine top-k over belief_embeddings, when an
-        //    embedding backend is configured. The pool is intentionally larger
-        //    than `limit`; RRF + the probability sort + truncate decide the
-        //    final cut. If the embedder itself fails (model unavailable,
+        //    embedding backend is configured. The pool covers the requested
+        //    window; an unlimited query ranks every stored embedding instead of
+        //    a fixed sample. If the embedder itself fails (model unavailable,
         //    network error, etc.) we degrade to token-only with a warning
-        //    rather than failing the whole query — partial recall beats none.
-        let vector_ranked: Vec<Uuid> = if let Some(embedder) = &self.embeddings {
-            let pool_size = if limit > 0 { (limit * 4).max(20) } else { 50 };
-            match embedder.embed(&[query.to_string()]).await {
-                Ok(mut vecs) => match vecs.pop() {
-                    Some(qv) => match project {
-                        Some(_) => {
-                            let ids: Vec<Uuid> = all.iter().map(|b| b.id).collect();
-                            self.store
-                                .query_beliefs_by_vector_filtered(&qv, pool_size, &ids)
-                                .await?
+        //    rather than failing the whole query — partial recall beats none —
+        //    and the report records that semantic search was not performed.
+        let (vector_ranked, semantic_search): (Vec<Uuid>, SemanticSearchStatus) = match &self
+            .embeddings
+        {
+            None => (Vec::new(), SemanticSearchStatus::not_configured()),
+            Some(embedder) => {
+                let pool_size = if limit > 0 { (limit * 4).max(20) } else { 0 };
+                match embedder.embed(&[query.to_string()]).await {
+                    Ok(mut vecs) => match vecs.pop() {
+                        Some(qv) => {
+                            let ranked = match project {
+                                Some(_) => {
+                                    let ids: Vec<Uuid> = all.iter().map(|b| b.id).collect();
+                                    self.store
+                                        .query_beliefs_by_vector_filtered(&qv, pool_size, &ids)
+                                        .await?
+                                }
+                                None => self.store.query_beliefs_by_vector(&qv, pool_size).await?,
+                            };
+                            (ranked, SemanticSearchStatus::Performed)
                         }
-                        None => self.store.query_beliefs_by_vector(&qv, pool_size).await?,
+                        None => (Vec::new(), SemanticSearchStatus::invalid_provider_reply()),
                     },
-                    None => Vec::new(),
-                },
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "embedder failed for query — falling back to token-only retrieval. \
-                         Verify [embeddings] config and that the model is reachable."
-                    );
-                    Vec::new()
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "embedder failed for query — falling back to token-only retrieval. \
+                             Verify [embeddings] config and that the model is reachable."
+                        );
+                        (
+                            Vec::new(),
+                            SemanticSearchStatus::provider_failure(&e.to_string()),
+                        )
+                    }
                 }
             }
-        } else {
-            Vec::new()
         };
 
         // ── Candidate seed set: the deduplicated union of the token and vector
@@ -666,7 +793,11 @@ impl MimirService {
             .filter(|id| seen.insert(*id))
             .collect();
         if seed_ids.is_empty() {
-            return Ok(vec![]);
+            return Ok(RetrievalReport {
+                context: query.to_string(),
+                beliefs: Vec::new(),
+                semantic_search,
+            });
         }
 
         // ── Materialise the candidate beliefs from the already-loaded list.
@@ -816,7 +947,11 @@ impl MimirService {
         if limit > 0 {
             matched.truncate(limit);
         }
-        Ok(matched)
+        Ok(RetrievalReport {
+            context: query.to_string(),
+            beliefs: matched,
+            semantic_search,
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -980,20 +1115,25 @@ impl MimirService {
         Ok(out)
     }
 
-    /// `query_relevant`, enriched with the top-k grounding passages per belief.
-    /// `query_relevant` itself is unchanged (backward compatible); this is purely
-    /// additive. `evidence_per_belief = 0` means no cap.
+    /// `query_relevant`, enriched with the grounding passages per belief, as a
+    /// retrieval report carrying the query context and semantic-search status.
+    /// `evidence_per_belief = 0` means no cap (all grounding passages per belief).
     pub async fn query_relevant_grounded(
         &self,
         query: &str,
         limit: usize,
         evidence_per_belief: usize,
         project: Option<&str>,
-    ) -> Result<Vec<GroundedBelief>> {
-        let beliefs = self.query_relevant(query, limit, project, None).await?;
-        if beliefs.is_empty() {
-            return Ok(vec![]);
+    ) -> Result<RetrievalReport<GroundedBelief>> {
+        let report = self.query_relevant(query, limit, project, None).await?;
+        if report.beliefs.is_empty() {
+            return Ok(RetrievalReport {
+                context: report.context,
+                beliefs: Vec::new(),
+                semantic_search: report.semantic_search,
+            });
         }
+        let beliefs = report.beliefs;
         let ids: Vec<Uuid> = beliefs.iter().map(|b| b.id).collect();
         let ev = self.store.get_evidence_for_beliefs(&ids).await?;
 
@@ -1049,7 +1189,11 @@ impl MimirService {
                 evidence: refs,
             });
         }
-        Ok(out)
+        Ok(RetrievalReport {
+            context: query.to_string(),
+            beliefs: out,
+            semantic_search: report.semantic_search,
+        })
     }
 
     /// Collect graph statistics.

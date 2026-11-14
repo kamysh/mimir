@@ -339,8 +339,9 @@ mod tests {
     struct Fixture(PathBuf);
     impl Fixture {
         fn new(mode: u32) -> Self {
-            let base = Path::new("/var/tmp/mimir/step4");
-            std::fs::create_dir_all(base).unwrap();
+            let base = std::env::temp_dir().join("mimir/step4");
+            std::fs::create_dir_all(&base).unwrap();
+            std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
             let path = base.join(format!("fixture-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir(&path).unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();

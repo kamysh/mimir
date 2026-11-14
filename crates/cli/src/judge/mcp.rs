@@ -505,13 +505,14 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_malformed_transport_and_kills_descendants_on_cancellation() {
+        let unused_config = std::env::temp_dir().join("mimir/step5/unused-config");
         let crashed = Client::start(
             "bash",
             &[
                 "-c".into(),
                 "read -r request; echo startup-failure >&2; exit 7".into(),
             ],
-            Path::new("/var/tmp/mimir/step5/unused-config"),
+            &unused_config,
         )
         .await;
         assert!(crashed
@@ -522,7 +523,7 @@ mod tests {
         let malformed = Client::start(
             "bash",
             &["-c".into(), "read -r request; printf 'not-json\\n'".into()],
-            Path::new("/var/tmp/mimir/step5/unused-config"),
+            &unused_config,
         )
         .await;
         assert!(malformed.is_err());
@@ -535,11 +536,7 @@ mod tests {
         );
         let cancelled = tokio::time::timeout(
             Duration::from_secs(1),
-            Client::start(
-                "bash",
-                &["-c".into(), script],
-                Path::new("/var/tmp/mimir/step5/unused-config"),
-            ),
+            Client::start("bash", &["-c".into(), script], &unused_config),
         )
         .await;
         assert!(cancelled.is_err());
