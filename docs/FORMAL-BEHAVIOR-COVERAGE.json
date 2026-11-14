@@ -295,7 +295,7 @@
       "source": "crates/mcp/src/main.rs:575",
       "step": 3,
       "group": "read",
-      "interface_evidence": "optional project/type; absent limit means unbounded; supplied limit 1..10; offset requires limit",
+      "interface_evidence": "context-free; optional project/type; absent limit returns the full unbounded array; supplied limit positive with no maximum; offset requires limit",
       "existing_modules": [
         "spec/Mimir/Graph.agda",
         "spec/Mimir/CandidateGraph.agda",
@@ -405,7 +405,7 @@
       "source": "crates/mcp/src/main.rs:637",
       "step": 3,
       "group": "inference",
-      "interface_evidence": "prob_threshold default 0.3; grace_hours default 24; optional project",
+      "interface_evidence": "prob_threshold required (no default); grace period is [retirement].grace_hours configuration only \u2014 no per-call override; unset refuses with guidance",
       "existing_modules": [
         "spec/Mimir/Beta.agda",
         "spec/Mimir/Inference.agda",
@@ -434,7 +434,7 @@
       "source": "crates/mcp/src/main.rs:647",
       "step": 3,
       "group": "retrieval",
-      "interface_evidence": "context; limit default 10; optional project/prefer_type; include_evidence false; evidence_per_belief 3",
+      "interface_evidence": "context; limit optional positive (omitted selects all, zero refused); optional project/prefer_type; include_evidence default false; evidence_per_belief optional positive (omitted selects all); reply carries context, beliefs and semantic_search availability",
       "existing_modules": [
         "spec/Mimir/Graph.agda",
         "spec/Mimir/Evidence.agda",
@@ -598,7 +598,7 @@
       "source": "crates/mcp/src/main.rs:774",
       "step": 5,
       "group": "documents",
-      "interface_evidence": "context; optional project; limit default 5",
+      "interface_evidence": "context; optional project; limit optional positive (omitted selects all, zero refused)",
       "existing_modules": [
         "spec/Mimir/DocumentStore.agda",
         "spec/Mimir/EmbeddingBatch.agda",
@@ -859,7 +859,7 @@
       "source": "crates/mcp/src/learning.rs:152",
       "step": 2,
       "group": "pending",
-      "interface_evidence": "optional project; limit default 10; exclude_ids default empty",
+      "interface_evidence": "optional project; limit optional positive (omitted selects all pending, zero refused); exclude_ids default empty",
       "existing_modules": [
         "spec/Mimir/PendingSelection.agda",
         "spec/Mimir/ReviewObservation.agda",
@@ -1000,7 +1000,7 @@
       "source": "crates/mcp/src/learning.rs:166",
       "step": 3,
       "group": "context",
-      "interface_evidence": "context,project; limit default 5; service requires 1..20",
+      "interface_evidence": "context,project required; limit optional positive (omitted selects all, zero refused); reply carries beliefs, semantic_search availability, patterns, assessments",
       "existing_modules": [
         "spec/Mimir/Graph.agda",
         "spec/Mimir/AssessmentSelection.agda",
@@ -1187,7 +1187,7 @@
         "spec/Mimir/ApplicationProtocol.agda"
       ],
       "status": "behavior-defined-and-aggregate-checked",
-      "baseline_gap": "Reuse sweep semantics; threshold .3, grace 24 hours.",
+      "baseline_gap": "Reuse sweep semantics; threshold is a required caller argument, and the grace period comes only from [retirement].grace_hours configuration (no per-call override; unset refuses with guidance).",
       "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
     },
     {

@@ -24,6 +24,7 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
         llm: None,
         judge: None,
         email: None,
+        retirement: None,
     })
     .await?
     .with_embedding_provider(Box::new(Provider));

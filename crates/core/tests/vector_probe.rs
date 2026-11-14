@@ -110,6 +110,7 @@ async fn full_query_relevant_ranking() {
         llm: None,
         judge: None,
         email: None,
+        retirement: None,
     };
     let svc = MimirService::connect(&cfg).await.expect("connect");
 
@@ -121,7 +122,8 @@ async fn full_query_relevant_ranking() {
         let res = svc
             .query_relevant(q, 10, None, None)
             .await
-            .expect("query_relevant");
+            .expect("query_relevant")
+            .beliefs;
         let elapsed = t0.elapsed();
         let rank = res
             .iter()

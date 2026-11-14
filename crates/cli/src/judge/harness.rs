@@ -36,12 +36,12 @@ struct Call {
 struct RunDir(PathBuf);
 impl RunDir {
     fn new() -> Result<Self> {
-        let base = Path::new("/var/tmp/mimir");
+        let base = std::env::temp_dir().join("mimir");
         if !base.exists() {
-            fs::DirBuilder::new().mode(0o700).create(base)?;
+            fs::DirBuilder::new().mode(0o700).create(&base)?;
         }
         ensure!(
-            base.is_dir() && !fs::symlink_metadata(base)?.file_type().is_symlink(),
+            base.is_dir() && !fs::symlink_metadata(&base)?.file_type().is_symlink(),
             "unsafe harness temp root"
         );
         let path = base.join(format!("judge-{}", Uuid::new_v4()));

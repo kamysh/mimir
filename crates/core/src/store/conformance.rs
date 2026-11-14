@@ -278,6 +278,7 @@ mod tests {
             llm: None,
             judge: None,
             email: None,
+            retirement: None,
         })
         .await
         .unwrap();

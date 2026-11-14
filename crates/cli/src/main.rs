@@ -51,9 +51,9 @@ enum Command {
         #[arg(long, short)]
         project: Option<String>,
 
-        /// Maximum number of results (0 = no limit).
-        #[arg(long, short, default_value_t = 0)]
-        limit: usize,
+        /// Optional maximum number of results. Omit to retrieve all.
+        #[arg(long, short, value_parser = positive_limit)]
+        limit: Option<usize>,
     },
 
     /// List patterns.
@@ -62,9 +62,9 @@ enum Command {
         #[arg(long, short)]
         project: Option<String>,
 
-        /// Maximum number of results (0 = no limit).
-        #[arg(long, short, default_value_t = 0)]
-        limit: usize,
+        /// Optional maximum number of results. Omit to retrieve all.
+        #[arg(long, short, value_parser = positive_limit)]
+        limit: Option<usize>,
     },
 
     /// Hybrid search: text match plus graph expansion via SUPPORTS/CAUSES edges.
@@ -72,9 +72,9 @@ enum Command {
         /// Search text (case-insensitive substring match).
         text: String,
 
-        /// Maximum number of results (0 = no limit).
-        #[arg(long, short, default_value_t = 10)]
-        limit: usize,
+        /// Optional maximum number of results. Omit to retrieve all.
+        #[arg(long, short, value_parser = positive_limit)]
+        limit: Option<usize>,
 
         /// Also show the document passages that ground each belief.
         #[arg(long)]
@@ -128,12 +128,8 @@ enum Command {
     /// deletion, so a wrong defeat can still be caught before it's gone).
     SweepDefeated {
         /// Probability below which a defeated belief becomes eligible for deletion.
-        #[arg(long, short, default_value_t = 0.3)]
+        #[arg(long, short)]
         threshold: f64,
-
-        /// Hours since the belief was last defeated before it can be deleted.
-        #[arg(long, short, default_value_t = 24.0)]
-        grace_hours: f64,
 
         /// Restrict the sweep to this project plus untagged beliefs.
         #[arg(long, short)]
@@ -299,9 +295,9 @@ enum DocCmd {
         #[arg(long, short)]
         project: Option<String>,
 
-        /// Maximum number of results (0 = no limit).
-        #[arg(long, short, default_value_t = 5)]
-        limit: usize,
+        /// Optional maximum number of results. Omit to retrieve all.
+        #[arg(long, short, value_parser = positive_limit)]
+        limit: Option<usize>,
     },
     /// Remove all chunks and embeddings for a document path.
     Clear {
@@ -350,32 +346,39 @@ async fn main() -> Result<()> {
         Command::Init { pairs } => cmd_init(pairs)?,
         Command::Config(command) => configuration::dispatch(command)?,
         Command::Stats => cmd_stats().await?,
-        Command::List { project, limit } => cmd_list(project, limit).await?,
-        Command::Patterns { project, limit } => cmd_patterns(project, limit).await?,
+        Command::List { project, limit } => cmd_list(project, limit.unwrap_or(0)).await?,
+        Command::Patterns { project, limit } => cmd_patterns(project, limit.unwrap_or(0)).await?,
         Command::Query {
             text,
             limit,
             evidence,
             project,
             prefer_type,
-        } => cmd_query(&text, limit, evidence, project.as_deref(), prefer_type).await?,
+        } => {
+            cmd_query(
+                &text,
+                limit.unwrap_or(0),
+                evidence,
+                project.as_deref(),
+                prefer_type,
+            )
+            .await?
+        }
         Command::Evidence(cmd) => cmd_evidence(cmd).await?,
         Command::Delete(DeleteCmd::Belief { id }) => cmd_delete(&id).await?,
         Command::Delete(DeleteCmd::Pattern { id }) => cmd_delete_pattern(&id).await?,
         Command::Forget { project } => cmd_forget(&project).await?,
         Command::Decay { factor, project } => cmd_decay(factor, project.as_deref()).await?,
         Command::Contradictions { project } => cmd_contradictions(project.as_deref()).await?,
-        Command::SweepDefeated {
-            threshold,
-            grace_hours,
-            project,
-        } => cmd_sweep_defeated(threshold, grace_hours, project.as_deref()).await?,
+        Command::SweepDefeated { threshold, project } => {
+            cmd_sweep_defeated(threshold, project.as_deref()).await?
+        }
         Command::Doc(DocCmd::Load { path, project }) => cmd_load(&path, project.as_deref()).await?,
         Command::Doc(DocCmd::Query {
             context,
             project,
             limit,
-        }) => cmd_query_doc(&context, project.as_deref(), limit).await?,
+        }) => cmd_query_doc(&context, project.as_deref(), limit.unwrap_or(0)).await?,
         Command::Doc(DocCmd::Clear { path }) => cmd_clear_doc(&path).await?,
         Command::Reembed => cmd_reembed().await?,
         Command::Intervene { id, value } => cmd_intervene(&id, value).await?,
@@ -403,17 +406,12 @@ async fn connect() -> Result<MimirService> {
     MimirService::connect(&cfg).await
 }
 
-fn trunc(s: &str, max: usize) -> String {
-    let s = s.trim();
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let end: usize = s
-            .char_indices()
-            .nth(max - 1)
-            .map(|(i, _)| i)
-            .unwrap_or(s.len());
-        format!("{}…", &s[..end])
+fn positive_limit(value: &str) -> Result<usize, String> {
+    match value.parse::<usize>() {
+        Ok(0) | Err(_) => {
+            Err("limit must be a positive integer; omit --limit to retrieve all".to_string())
+        }
+        Ok(limit) => Ok(limit),
     }
 }
 
@@ -504,7 +502,7 @@ async fn cmd_list(project: Option<String>, limit: usize) -> Result<()> {
             b.id,
             b.probability.value(),
             b.confidence.value(),
-            trunc(&b.content, 70),
+            b.content,
             mt,
             proj,
         );
@@ -543,8 +541,8 @@ async fn cmd_patterns(project: Option<String>, limit: usize) -> Result<()> {
             "{}  rate={:.3}  [{}] → [{}]",
             p.id,
             p.success_rate.value(),
-            trunc(&p.situation, 40),
-            trunc(&p.approach, 40),
+            p.situation,
+            p.approach,
         );
     }
 
@@ -565,12 +563,13 @@ async fn cmd_query(
     let svc = connect().await?;
 
     if evidence {
-        let grounded = svc.query_relevant_grounded(text, limit, 3, project).await?;
-        if grounded.is_empty() {
+        let report = svc.query_relevant_grounded(text, limit, 0, project).await?;
+        note_semantic_search(&report.semantic_search);
+        if report.beliefs.is_empty() {
             println!("(no results)");
             return Ok(());
         }
-        for gb in &grounded {
+        for gb in &report.beliefs {
             let b = &gb.belief;
             let proj = b
                 .project
@@ -582,7 +581,7 @@ async fn cmd_query(
                 b.id,
                 b.probability.value(),
                 b.confidence.value(),
-                trunc(&b.content, 70),
+                b.content,
                 proj,
             );
             for e in &gb.evidence {
@@ -592,21 +591,22 @@ async fn cmd_query(
                     format!(" § {}", e.section_path.join(" > "))
                 };
                 println!("    ↳ w={:.2}  {}{}", e.weight, e.document_path, section,);
-                println!("        {}", trunc(&e.snippet, 100));
+                println!("        {}", e.snippet);
             }
         }
         return Ok(());
     }
 
-    let beliefs = svc
+    let report = svc
         .query_relevant(text, limit, project, prefer_type)
         .await?;
-    if beliefs.is_empty() {
+    note_semantic_search(&report.semantic_search);
+    if report.beliefs.is_empty() {
         println!("(no results)");
         return Ok(());
     }
 
-    for b in &beliefs {
+    for b in &report.beliefs {
         let proj = b
             .project
             .as_deref()
@@ -617,12 +617,27 @@ async fn cmd_query(
             b.id,
             b.probability.value(),
             b.confidence.value(),
-            trunc(&b.content, 70),
+            b.content,
             proj,
         );
     }
 
     Ok(())
+}
+
+// Tell the human when the semantic leg did not run, without polluting the
+// result lines: a lexical/graph answer is degraded, not a complete search.
+fn note_semantic_search(status: &mimir_core::SemanticSearchStatus) {
+    use mimir_core::SemanticSearchStatus as Status;
+    match status {
+        Status::Performed => {}
+        Status::NotNeeded { reason } => eprintln!("semantic search: {reason}"),
+        Status::NotAvailable {
+            reason,
+            next_action,
+            ..
+        } => eprintln!("semantic search: {reason} {next_action}"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -665,7 +680,7 @@ async fn cmd_evidence(cmd: EvidenceCmd) -> Result<()> {
                     "{}  w={:.2}  {}{}",
                     e.chunk_id, e.weight, e.document_path, section
                 );
-                println!("    {}", trunc(&e.snippet, 100));
+                println!("    {}", e.snippet);
             }
         }
     }
@@ -694,7 +709,7 @@ async fn cmd_intervene(id: &str, value: f64) -> Result<()> {
         let content = svc
             .get_belief(*uid)
             .await?
-            .map(|b| trunc(&b.content, 70))
+            .map(|b| b.content.clone())
             .unwrap_or_default();
         println!("{}  p_proj={:.3}  {}", uid, prob.value(), content);
     }
@@ -766,15 +781,10 @@ async fn cmd_decay(factor: f64, project: Option<&str>) -> Result<()> {
 // mimir sweep-defeated
 // ---------------------------------------------------------------------------
 
-async fn cmd_sweep_defeated(threshold: f64, grace_hours: f64, project: Option<&str>) -> Result<()> {
+async fn cmd_sweep_defeated(threshold: f64, project: Option<&str>) -> Result<()> {
     let svc = connect().await?;
-    let count = svc
-        .sweep_expired_defeated(threshold, grace_hours, project)
-        .await?;
-    println!(
-        "deleted {}  [threshold: {:.2}, grace: {:.1}h]",
-        count, threshold, grace_hours
-    );
+    let count = svc.sweep_expired_defeated(threshold, project).await?;
+    println!("deleted {}  [threshold: {:.2}]", count, threshold);
     Ok(())
 }
 
@@ -812,7 +822,7 @@ async fn cmd_query_doc(context: &str, project: Option<&str>, limit: usize) -> Re
             format!("  § {}", r.section_path.join(" > "))
         };
         println!("{}{}", r.document_path, section);
-        println!("  {}", trunc(&r.content, 120));
+        println!("  {}", r.content);
         println!();
     }
 
@@ -862,11 +872,11 @@ async fn cmd_contradictions(project: Option<&str>) -> Result<()> {
         let bb = svc.get_belief(*b).await?;
         let ca = ba
             .as_ref()
-            .map(|b| trunc(&b.content, 50))
+            .map(|b| b.content.clone())
             .unwrap_or_else(|| a.to_string());
         let cb = bb
             .as_ref()
-            .map(|b| trunc(&b.content, 50))
+            .map(|b| b.content.clone())
             .unwrap_or_else(|| b.to_string());
         println!("  [{}]  ⟺  [{}]", ca, cb);
     }
@@ -911,7 +921,7 @@ async fn cmd_reembed() -> Result<()> {
         }
         svc.embed_and_store_belief(belief).await?;
         embedded += 1;
-        println!("  embedded {}  {}", belief.id, trunc(&belief.content, 60));
+        println!("  embedded {}  {}", belief.id, belief.content);
     }
 
     println!(
@@ -979,7 +989,7 @@ async fn cmd_hook_set_project(name: &str) -> Result<()> {
                     working.len()
                 );
                 for b in &working {
-                    println!("  {}  {}", b.id, trunc(&b.content, 160));
+                    println!("  {}  {}", b.id, b.content);
                 }
             }
         }
@@ -1087,7 +1097,7 @@ async fn cmd_hook_stop(project: Option<&str>) -> Result<()> {
         working.len()
     );
     for b in &working {
-        msg.push_str(&format!("  {}  {}\n", b.id, trunc(&b.content, 160)));
+        msg.push_str(&format!("  {}  {}\n", b.id, b.content));
     }
     eprintln!("{}", msg.trim_end());
     std::process::exit(2);
@@ -1106,17 +1116,17 @@ async fn cmd_hook_prompt() -> Result<()> {
 
     let project = session_project_from_hook_json(&v);
     let svc = connect().await?;
-    let beliefs = svc
-        .query_relevant(&trunc(&prompt, 500), 5, project.as_deref(), None)
+    let report = svc
+        .query_relevant(&prompt, 0, project.as_deref(), None)
         .await?;
-    if beliefs.is_empty() {
+    if report.beliefs.is_empty() {
         return Ok(());
     }
 
     println!(
         "[Prior knowledge from past sessions — apply directly, do not rediscover empirically:]"
     );
-    for b in &beliefs {
+    for b in &report.beliefs {
         let proj = b
             .project
             .as_deref()
@@ -1154,15 +1164,15 @@ async fn cmd_hook_pretooluse() -> Result<()> {
 
     let project = session_project_from_hook_json(&v);
     let svc = connect().await?;
-    let beliefs = svc
-        .query_relevant(&trunc(query_raw, 200), 3, project.as_deref(), None)
+    let report = svc
+        .query_relevant(query_raw, 0, project.as_deref(), None)
         .await?;
-    if beliefs.is_empty() {
+    if report.beliefs.is_empty() {
         return Ok(());
     }
 
     let mut lines = String::from("Prior knowledge relevant to this action — apply directly:\n");
-    for b in &beliefs {
+    for b in &report.beliefs {
         let proj = b
             .project
             .as_deref()
@@ -1173,7 +1183,7 @@ async fn cmd_hook_pretooluse() -> Result<()> {
             b.id,
             b.probability.value(),
             b.confidence.value(),
-            trunc(&b.content, 200),
+            b.content,
             proj,
         ));
     }

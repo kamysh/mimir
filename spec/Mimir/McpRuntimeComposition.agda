@@ -1,6 +1,8 @@
 {-# OPTIONS --safe #-}
 -- Request-loop composition: a complete exchange requires concrete application
--- executions, and no next read occurs before its response is delivered.
+-- executions, and no held or fresh request is processed before the running
+-- exchange's response is delivered. Transport EOF during an exchange
+-- abandons it without a reply.
 module Mimir.McpRuntimeComposition where
 
 open import Data.List using (List; []; _∷_; map; _++_)
@@ -33,8 +35,8 @@ module Run (environment : Application.Environment) (format : Encoding.Formatting
         R.Step R.reading (R.read input wholeLine) after →
         Step R.reading store (read input wholeLine) after store
       failedRead : ∀ message store → Step R.reading store (readError message) (R.exited (R.readFailure message)) store
-      exchanged : ∀ program before events after result → Bound.Runs program before events after result →
-        Step (R.executing program) before (exchange events result) (R.finish result) after
+      exchanged : ∀ held program before events after result → Bound.Runs program before events after result →
+        Step (R.executing held program) before (exchange events result) (R.finish held result) after
 
     data Trace : R.State → Store.World → List Event → R.State → Store.World → Set where
       empty : ∀ state store → Trace state store [] state store
