@@ -272,3 +272,82 @@ async fn undeclared_candidate_references_are_refused() -> Result<()> {
     );
     Ok(())
 }
+
+/// 315: completed review answers stay readable after the candidate belief
+/// they created is deleted — ordinary stored history, not replay machinery.
+#[tokio::test]
+async fn review_history_stays_readable_after_candidate_deletion() -> Result<()> {
+    struct Provider;
+    impl mimir_core::embed::EmbeddingProvider for Provider {
+        fn embed<'a>(&'a self, texts: &'a [String]) -> mimir_core::embed::EmbedFuture<'a> {
+            Box::pin(async move { Ok(vec![vec![1.0, 0.0]; texts.len()]) })
+        }
+    }
+    let service = MimirService::connect(&Config {
+        database: isolation::fixture().database_config(),
+        embeddings: None,
+        llm: None,
+        judge: None,
+        email: None,
+        retirement: None,
+    })
+    .await?
+    .with_embedding_provider(Box::new(Provider));
+
+    let project = format!("history-{}", Uuid::new_v4());
+    let document = std::env::temp_dir().join(format!("mimir-315-{}.md", Uuid::new_v4()));
+    std::fs::write(&document, "# Fixture\n\nthe supporting passage text\n")?;
+    service
+        .load_document(&document.to_string_lossy(), Some(&project))
+        .await?;
+    let passage = service
+        .query_document("supporting passage", Some(&project), 1)
+        .await?;
+    ensure!(!passage.is_empty(), "fixture passage must be indexed");
+    let passage_id = Uuid::parse_str(&passage[0].id)?;
+
+    let experience_id = Uuid::new_v4();
+    handle_tool_call(
+        &service,
+        "record_experience",
+        &json!({"experience":sourced_experience(experience_id, &project),"expected_revision":0}),
+    )
+    .await?;
+    let reviewed = handle_tool_call(
+        &service,
+        "review_experience",
+        &json!({"review":{"experience_id":experience_id,"experience_revision":1,"reviewer":"history-fixture","rationale":"publish one candidate",
+            "extracted_items":[],"source_coverage":[{"source_ref":"event/9","status":"unresolved","reason":"untried"}],
+            "candidates":[{"kind":"belief","key":"history-candidate","content":"A stored lesson","memory_type":"Fact","supporting_passage_id":passage_id}]},"expected_review_revision":0}),
+    )
+    .await?;
+    let candidate_id = Uuid::parse_str(
+        reviewed["item_ids"]["history-candidate"]
+            .as_str()
+            .unwrap_or_default(),
+    )?;
+
+    ensure!(
+        service.delete_belief(candidate_id).await?,
+        "fixture candidate must be deletable"
+    );
+    ensure!(
+        !handle_tool_call(
+            &service,
+            "get_learning_review",
+            &json!({"id":experience_id})
+        )
+        .await?["review"]
+            .is_null(),
+        "the completed review must stay readable after candidate deletion"
+    );
+    let history =
+        handle_tool_call(&service, "experience_history", &json!({"id":experience_id})).await?;
+    ensure!(
+        history["reviews"]
+            .as_array()
+            .is_some_and(|rs| !rs.is_empty()),
+        "review history must stay readable after candidate deletion: {history}"
+    );
+    Ok(())
+}
