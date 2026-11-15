@@ -154,3 +154,121 @@ async fn missing_references_and_stale_revisions_are_correctable() -> Result<()> 
     );
     Ok(())
 }
+
+fn sourced_experience(id: Uuid, project: &str) -> Value {
+    json!({"id":id,"project":project,"context":"sourced observation","action":"observe","outcome":"unknown","source":"agent_report","evidence":["event/9"],
+        "source_records":[{"source_ref":"event/9","actor":"agent","provenance":"agent_report","text":"The lock waits for a slow statement."}]})
+}
+
+fn sourced_review(experience_id: Uuid, items: Value) -> Value {
+    json!({"review":{"experience_id":experience_id,"experience_revision":1,"reviewer":"correction-fixture","rationale":"verify source admission",
+        "extracted_items":items,
+        "source_coverage":[{"source_ref":"event/9","status":"unresolved","reason":"later outcome"}],
+        "feedback":[],"candidate_feedback":[],"links":[],"candidate_links":[]},"expected_review_revision":0})
+}
+
+/// 319: source/actor/quotation mistakes are explained at the exact field
+/// before any embedding or publication, with copy-the-source guidance.
+#[tokio::test]
+async fn source_actor_and_quotation_mistakes_are_explained() -> Result<()> {
+    let service = MimirService::connect(&Config {
+        database: isolation::fixture().database_config(),
+        embeddings: None,
+        llm: None,
+        judge: None,
+        email: None,
+        retirement: None,
+    })
+    .await?;
+    let project = format!("sources-{}", Uuid::new_v4());
+    let experience_id = Uuid::new_v4();
+    handle_tool_call(
+        &service,
+        "record_experience",
+        &json!({"experience":sourced_experience(experience_id, &project),"expected_revision":0}),
+    )
+    .await?;
+
+    let wrong_actor = sourced_review(
+        experience_id,
+        json!([{"key":"actor-item","kind":"suggestion","source_ref":"event/9","actor":"someone_else","statement":"The lock waits for a slow statement.","conditions":"untried"}]),
+    );
+    let error = handle_tool_call(&service, "review_experience", &wrong_actor)
+        .await
+        .expect_err("actor mismatch must be refused");
+    ensure!(
+        error.to_string().contains("extracted_items[0].actor"),
+        "actor refusal must locate the field: {error}"
+    );
+
+    let wrong_quote = sourced_review(
+        experience_id,
+        json!([{"key":"quote-item","kind":"suggestion","source_ref":"event/9","actor":"agent","statement":"a paraphrase, not a quote","conditions":"untried"}]),
+    );
+    let error = handle_tool_call(&service, "review_experience", &wrong_quote)
+        .await
+        .expect_err("quotation mismatch must be refused");
+    ensure!(
+        error.to_string().contains("extracted_items[0].statement"),
+        "quotation refusal must locate the field: {error}"
+    );
+
+    ensure!(
+        handle_tool_call(
+            &service,
+            "get_learning_review",
+            &json!({"id":experience_id})
+        )
+        .await?["review"]
+            .is_null(),
+        "refused reviews must commit nothing"
+    );
+    Ok(())
+}
+
+/// 336/314: candidate feedback naming a candidate this review never declared
+/// is refused as a conflict, with the stable key identified.
+#[tokio::test]
+async fn undeclared_candidate_references_are_refused() -> Result<()> {
+    let service = MimirService::connect(&Config {
+        database: isolation::fixture().database_config(),
+        embeddings: None,
+        llm: None,
+        judge: None,
+        email: None,
+        retirement: None,
+    })
+    .await?;
+    let project = format!("candidates-{}", Uuid::new_v4());
+    let experience_id = Uuid::new_v4();
+    handle_tool_call(
+        &service,
+        "record_experience",
+        &json!({"experience":sourced_experience(experience_id, &project),"expected_revision":0}),
+    )
+    .await?;
+
+    let undeclared = json!({"review":{"experience_id":experience_id,"experience_revision":1,"reviewer":"correction-fixture","rationale":"undeclared candidate",
+        "extracted_items":[],"source_coverage":[{"source_ref":"event/9","status":"unresolved","reason":"untried"}],
+        "candidate_feedback":[{"target":{"candidate_key":"ghost"},"verdict":"support","weight":0.5}]},"expected_review_revision":0});
+    let error = handle_tool_call(&service, "review_experience", &undeclared)
+        .await
+        .expect_err("undeclared candidate reference must be refused");
+    ensure!(
+        error
+            .to_string()
+            .contains("must be declared in this review"),
+        "undeclared candidate refusal must identify the conflict: {error}"
+    );
+    ensure!(
+        handle_tool_call(
+            &service,
+            "get_learning_review",
+            &json!({"id":experience_id})
+        )
+        .await?["review"]
+            .is_null(),
+        "refused reviews must commit nothing"
+    );
+    Ok(())
+}
