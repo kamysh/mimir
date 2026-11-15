@@ -322,7 +322,7 @@ async fn review_history_stays_readable_after_candidate_deletion() -> Result<()> 
     )
     .await?;
     let candidate_id = Uuid::parse_str(
-        reviewed["item_ids"]["history-candidate"]
+        reviewed["candidate_ids"]["history-candidate"]
             .as_str()
             .unwrap_or_default(),
     )?;
@@ -348,6 +348,95 @@ async fn review_history_stays_readable_after_candidate_deletion() -> Result<()> 
             .as_array()
             .is_some_and(|rs| !rs.is_empty()),
         "review history must stay readable after candidate deletion: {history}"
+    );
+    Ok(())
+}
+
+/// 317/318: corrections cannot move an experience to another project, drop
+/// original source records, or re-extract an already-recorded original item;
+/// each refusal names the valid repair.
+#[tokio::test]
+async fn protected_originals_are_explained_on_correction() -> Result<()> {
+    let service = MimirService::connect(&Config {
+        database: isolation::fixture().database_config(),
+        embeddings: None,
+        llm: None,
+        judge: None,
+        email: None,
+        retirement: None,
+    })
+    .await?;
+    let project = format!("protected-{}", Uuid::new_v4());
+    let experience_id = Uuid::new_v4();
+    let original = json!({"id":experience_id,"project":project,"context":"protected observation","action":"observe","outcome":"unknown","source":"agent_report","evidence":["event/7"],
+        "source_records":[{"source_ref":"event/7","actor":"agent","provenance":"agent_report","text":"The original statement."}],
+        "learning_items":[{"key":"original-item","kind":"suggestion","source_ref":"event/7","actor":"agent","statement":"The original statement.","conditions":"untried"}]});
+    handle_tool_call(
+        &service,
+        "record_experience",
+        &json!({"experience":original,"expected_revision":0}),
+    )
+    .await?;
+    let recorded =
+        handle_tool_call(&service, "get_experience", &json!({"id":experience_id})).await?;
+    let recorded_item_id = Uuid::parse_str(
+        recorded["experience"]["learning_items"][0]["id"]
+            .as_str()
+            .unwrap_or_default(),
+    )?;
+
+    // 317: moving the experience to another project is refused.
+    let mut moved = serde_json::from_value::<serde_json::Value>(serde_json::to_value(
+        json!({"id":experience_id,"project":"some-other-project","context":"protected observation","action":"observe","outcome":"unknown","source":"agent_report","evidence":["event/7"],
+            "source_records":[{"source_ref":"event/7","actor":"agent","provenance":"agent_report","text":"The original statement."}],
+            "learning_items":[{"id":recorded_item_id,"key":"original-item","kind":"suggestion","source_ref":"event/7","actor":"agent","statement":"The original statement.","conditions":"untried"}]}),
+    )?)?;
+    moved["experience_revision"] = json!(1);
+    let error = handle_tool_call(
+        &service,
+        "record_experience",
+        &json!({"experience":moved,"expected_revision":1}),
+    )
+    .await
+    .expect_err("moving an experience to another project must be refused");
+    ensure!(
+        error
+            .to_string()
+            .contains("experience project is immutable"),
+        "project change refusal must be explicit: {error}"
+    );
+
+    // 317: dropping the original source record is refused.
+    let dropped = json!({"id":experience_id,"project":project,"context":"protected observation","action":"observe","outcome":"unknown","source":"agent_report","evidence":["event/7","event/8"],
+        "source_records":[{"source_ref":"event/8","actor":"agent","provenance":"user_feedback","text":"A later correction."}],
+        "learning_items":[{"id":recorded_item_id,"key":"original-item","kind":"suggestion","source_ref":"event/7","actor":"agent","statement":"The original statement.","conditions":"untried"}]});
+    let error = handle_tool_call(
+        &service,
+        "record_experience",
+        &json!({"experience":dropped,"expected_revision":1}),
+    )
+    .await
+    .expect_err("dropping original source records must be refused");
+    ensure!(
+        error
+            .to_string()
+            .contains("source corrections must retain original records"),
+        "source-drop refusal must name the repair: {error}"
+    );
+
+    // 318: re-extracting an already-recorded original item id in a review is
+    // refused with guidance to reference it in the assessment instead.
+    let review = json!({"review":{"experience_id":experience_id,"experience_revision":1,"reviewer":"protected-fixture","rationale":"rewrite original",
+        "extracted_items":[{"id":recorded_item_id,"key":"original-item","kind":"suggestion","source_ref":"event/7","actor":"agent","statement":"The original statement.","conditions":"untried"}],
+        "source_coverage":[{"source_ref":"event/7","status":"unresolved","reason":"untried"}]},"expected_review_revision":0});
+    let error = handle_tool_call(&service, "review_experience", &review)
+        .await
+        .expect_err("reusing a recorded item id must be refused");
+    ensure!(
+        error
+            .to_string()
+            .contains("must be allocated and distinct from existing"),
+        "rewritten-original refusal must identify the conflict: {error}"
     );
     Ok(())
 }
