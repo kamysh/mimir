@@ -220,9 +220,15 @@ async fn scoped_tool(
     }
     match name {
         "query_relevant" => {
-            let beliefs = value
-                .as_array()
-                .ok_or_else(|| anyhow!("invalid belief search result"))?;
+            // Current servers return the retrieval report (context, beliefs,
+            // semantic_search); a bare array is accepted from older servers.
+            let beliefs = if value.is_array() {
+                value.as_array().unwrap()
+            } else {
+                value["beliefs"]
+                    .as_array()
+                    .ok_or_else(|| anyhow!("invalid belief search result"))?
+            };
             ensure!(
                 beliefs
                     .iter()
