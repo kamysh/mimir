@@ -386,12 +386,11 @@ async fn protected_originals_are_explained_on_correction() -> Result<()> {
     )?;
 
     // 317: moving the experience to another project is refused.
-    let mut moved = serde_json::from_value::<serde_json::Value>(serde_json::to_value(
+    let moved = serde_json::from_value::<serde_json::Value>(serde_json::to_value(
         json!({"id":experience_id,"project":"some-other-project","context":"protected observation","action":"observe","outcome":"unknown","source":"agent_report","evidence":["event/7"],
             "source_records":[{"source_ref":"event/7","actor":"agent","provenance":"agent_report","text":"The original statement."}],
             "learning_items":[{"id":recorded_item_id,"key":"original-item","kind":"suggestion","source_ref":"event/7","actor":"agent","statement":"The original statement.","conditions":"untried"}]}),
     )?)?;
-    moved["experience_revision"] = json!(1);
     let error = handle_tool_call(
         &service,
         "record_experience",
@@ -407,7 +406,7 @@ async fn protected_originals_are_explained_on_correction() -> Result<()> {
     );
 
     // 317: dropping the original source record is refused.
-    let dropped = json!({"id":experience_id,"project":project,"context":"protected observation","action":"observe","outcome":"unknown","source":"agent_report","evidence":["event/7","event/8"],
+    let dropped = json!({"id":experience_id,"project":project,"context":"protected observation","action":"observe","outcome":"unknown","source":"agent_report","evidence":["event/8"],
         "source_records":[{"source_ref":"event/8","actor":"agent","provenance":"user_feedback","text":"A later correction."}],
         "learning_items":[{"id":recorded_item_id,"key":"original-item","kind":"suggestion","source_ref":"event/7","actor":"agent","statement":"The original statement.","conditions":"untried"}]});
     let error = handle_tool_call(
