@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  isolated:
+    name: Isolated recovery and correction checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@v14
+        with:
+          flakehub: false
+
+      # The harness builds with --locked --offline; warm the cargo cache so
+      # the offline builds find every dependency.
+      - name: Fetch locked dependencies
+        run: nix develop --command cargo fetch --locked
+
+      - name: Run the isolated checks
+        run: nix develop --command bash scripts/test-isolated.sh --check=all

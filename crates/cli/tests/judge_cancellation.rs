@@ -3,8 +3,6 @@ use std::{
     fs,
     os::unix::fs::PermissionsExt,
     process::{Child, Command, Stdio},
-    thread,
-    time::{Duration, Instant},
 };
 use uuid::Uuid;
 #[allow(dead_code)]
@@ -17,9 +15,73 @@ impl Drop for Owned {
         let _ = self.0.wait();
     }
 }
-fn alive(pid: u32) -> bool {
-    fs::read_to_string(format!("/proc/{pid}/stat"))
-        .is_ok_and(|s| s.split_whitespace().nth(2) != Some("Z"))
+
+/// Process/file events instead of polling (issue #469 items 256/356/359/362/377).
+#[cfg(target_os = "linux")]
+fn wait_for_file(path: &std::path::Path) {
+    use std::os::unix::ffi::OsStrExt;
+    let dir = path.parent().unwrap();
+    let name = path.file_name().unwrap().as_bytes();
+    unsafe {
+        let ifd = libc::inotify_init1(libc::IN_CLOEXEC);
+        assert!(ifd >= 0, "inotify_init failed");
+        let c_dir = std::ffi::CString::new(dir.as_os_str().as_bytes()).unwrap();
+        let wd = libc::inotify_add_watch(ifd, c_dir.as_ptr(), libc::IN_CREATE | libc::IN_MOVED_TO);
+        assert!(
+            wd >= 0,
+            "inotify_add_watch failed: {:?}",
+            std::io::Error::last_os_error()
+        );
+        if path.exists() {
+            libc::close(ifd);
+            return;
+        }
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = libc::read(ifd, buf.as_mut_ptr() as *mut libc::c_void, buf.len());
+            assert!(n > 0, "inotify read failed");
+            let mut off = 0usize;
+            while off + 16 <= n as usize {
+                let ev = &*(buf.as_ptr().add(off) as *const libc::inotify_event);
+                let len = ev.len as usize;
+                if len > 0 && off + 16 + len <= n as usize {
+                    let raw = std::slice::from_raw_parts(buf.as_ptr().add(off + 16), len);
+                    let end = raw.iter().position(|&b| b == 0).unwrap_or(len);
+                    if &raw[..end] == name {
+                        libc::close(ifd);
+                        return;
+                    }
+                }
+                off += 16 + len;
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn wait_for_exit(pid: u32) {
+    unsafe {
+        let fd = libc::syscall(libc::SYS_pidfd_open, pid as libc::c_int, 0) as libc::c_int;
+        if fd < 0 {
+            assert_eq!(
+                *libc::__errno_location(),
+                libc::ESRCH,
+                "pidfd_open({pid}) failed"
+            );
+            return;
+        }
+        let mut pollfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        assert_eq!(
+            libc::poll(&mut pollfd, 1, -1),
+            1,
+            "pidfd poll failed for {pid}"
+        );
+        libc::close(fd);
+    }
 }
 #[test]
 fn stop_signals_cancel_active_run_and_watch_and_owned_children() {
@@ -56,31 +118,9 @@ fn stop_signals_cancel_active_run_and_watch_and_owned_children() {
                     .spawn()
                     .unwrap(),
             );
-            let deadline = Instant::now() + Duration::from_secs(10);
-            while !dir.join("model-pids").exists() {
-                assert!(
-                    child.0.try_wait().unwrap().is_none(),
-                    "CLI exited: {}",
-                    fs::read_to_string(dir.join("stderr")).unwrap()
-                );
-                assert!(
-                    Instant::now() < deadline,
-                    "fixture model did not start: {}",
-                    fs::read_to_string(dir.join("stderr")).unwrap()
-                );
-                thread::sleep(Duration::from_millis(10));
-            }
+            wait_for_file(&dir.join("model-pids"));
             assert_eq!(unsafe { libc::kill(child.0.id() as i32, signal) }, 0);
-            let status = loop {
-                if let Some(status) = child.0.try_wait().unwrap() {
-                    break status;
-                }
-                assert!(
-                    Instant::now() < deadline,
-                    "stop did not interrupt active {mode}"
-                );
-                thread::sleep(Duration::from_millis(10));
-            };
+            let status = child.0.wait().unwrap();
             assert!(status.success());
             for file in ["model-pids", "mcp-pids"] {
                 for pid in fs::read_to_string(dir.join(file))
@@ -88,13 +128,7 @@ fn stop_signals_cancel_active_run_and_watch_and_owned_children() {
                     .lines()
                     .map(|s| s.parse::<u32>().unwrap())
                 {
-                    while alive(pid) && Instant::now() < deadline {
-                        thread::sleep(Duration::from_millis(10));
-                    }
-                    assert!(
-                        !alive(pid),
-                        "owned child {pid} survived {mode} cancellation"
-                    );
+                    wait_for_exit(pid);
                 }
             }
             fs::remove_dir_all(dir).unwrap();

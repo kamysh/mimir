@@ -252,19 +252,10 @@ fn actor(arm: &Arm, run: &RunDir, name: &str, context: &Value) -> Result<Value> 
         .take()
         .ok_or_else(|| anyhow!("actor stdin missing"))?
         .write_all(prompt.as_bytes())?;
-    let deadline = Instant::now() + Duration::from_secs(300);
-    loop {
-        if let Some(status) = child.try_wait()? {
-            ensure!(status.success(), "later-action actor failed");
-            break;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            bail!("later-action actor timed out");
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    // Actor completion is the readiness event: no polling interval and no
+    // invented startup deadline (issue #469 items 172/356/362).
+    let status = child.wait()?;
+    ensure!(status.success(), "later-action actor failed");
     serde_json::from_slice(&fs::read(answer)?).map_err(|_| anyhow!("invalid later-action answer"))
 }
 
