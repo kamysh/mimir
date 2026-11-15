@@ -673,24 +673,16 @@ fn analyze(path: &Path, judge_path: Option<&Path>, min_n_override: Option<usize>
     Ok(())
 }
 
-fn run_script(script: &Path, args: &[&str], timeout: Duration) -> Result<std::process::Output> {
-    let mut child = Command::new("bash")
+fn run_script(script: &Path, args: &[&str]) -> Result<std::process::Output> {
+    let child = Command::new("bash")
         .arg(script)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
-    let start = Instant::now();
-    loop {
-        if let Some(_) = child.try_wait()? {
-            return Ok(child.wait_with_output()?);
-        }
-        if start.elapsed() > timeout {
-            child.kill()?;
-            return child.wait_with_output().map_err(Into::into);
-        }
-        std::thread::sleep(Duration::from_millis(30));
-    }
+    // Child completion is the event: no polling interval and no
+    // application-invented deadline (issue #469 items 175 and 356).
+    Ok(child.wait_with_output()?)
 }
 fn task_check(dir: &Path) -> Result<()> {
     let required = [
@@ -748,7 +740,6 @@ fn task_check(dir: &Path) -> Result<()> {
     let out = run_script(
         &dir.join("setup.sh"),
         &[pristine.to_str().unwrap()],
-        Duration::from_secs(30),
     )?;
     if !out.status.success() {
         bail!("setup.sh failed")
@@ -776,7 +767,6 @@ fn task_check(dir: &Path) -> Result<()> {
         let o = run_script(
             &dir.join(naive),
             &[pristine.to_str().unwrap()],
-            Duration::from_secs(30),
         )?;
         if !o.status.success() {
             bail!("naive state materialization failed")
@@ -785,7 +775,6 @@ fn task_check(dir: &Path) -> Result<()> {
     let verify = run_script(
         &dir.join("verify.sh"),
         &[pristine.to_str().unwrap()],
-        Duration::from_secs(30),
     )?;
     if verify.status.success() {
         bail!("control-fails contract violated: pristine task solves")
@@ -795,7 +784,6 @@ fn task_check(dir: &Path) -> Result<()> {
     let out = run_script(
         &dir.join("setup.sh"),
         &[fixed.to_str().unwrap()],
-        Duration::from_secs(30),
     )?;
     if !out.status.success() {
         bail!("setup.sh failed for solution fixture")
@@ -803,7 +791,6 @@ fn task_check(dir: &Path) -> Result<()> {
     let out = run_script(
         &dir.join("solution.sh"),
         &[fixed.to_str().unwrap()],
-        Duration::from_secs(30),
     )?;
     if !out.status.success() {
         bail!("solution.sh failed")
@@ -811,7 +798,6 @@ fn task_check(dir: &Path) -> Result<()> {
     let out = run_script(
         &dir.join("verify.sh"),
         &[fixed.to_str().unwrap()],
-        Duration::from_secs(30),
     )?;
     if !out.status.success() {
         bail!("solution does not satisfy verify.sh")
@@ -1008,10 +994,7 @@ fn preflight(cfg: &Value, skip: bool) -> Result<Value> {
             format!(
                 "psql-rc={}:{}",
                 o.status.code().unwrap_or(-1),
-                String::from_utf8_lossy(&o.stderr)
-                    .chars()
-                    .take(200)
-                    .collect::<String>()
+                String::from_utf8_lossy(&o.stderr).into_owned()
             ),
         ),
         Err(e) => (None, format!("psql-error:{e}")),
@@ -1396,7 +1379,7 @@ fn tripwire(paths: &[PathBuf]) -> Result<()> {
                 println!(
                     "{}: {}",
                     p.display(),
-                    line.chars().take(400).collect::<String>()
+                    line.to_string()
                 )
             }
         }
@@ -1429,7 +1412,7 @@ fn positive_gate(cfg: &Value) -> Result<()> {
             fs::remove_dir_all(&wd)?
         }
         fs::create_dir(&wd)?;
-        let setup = run_shell(&dir.join("setup.sh"), &wd, 60)?;
+        let setup = run_shell(&dir.join("setup.sh"), &wd)?;
         if !setup.status.success() {
             bail!("probe setup failed")
         };
@@ -1438,7 +1421,7 @@ fn positive_gate(cfg: &Value) -> Result<()> {
         let cmd = actor_cmd(&task, inject, cfg, &mcp);
         let (raw, _, _) = sandbox_run(&cmd, &wd, cfg["timeout_seconds"].as_u64().unwrap_or(600))?;
         fs::write(out.join(format!("{label}.ndjson")), &raw)?;
-        let verify = run_shell(&dir.join("verify.sh"), &wd, 60)?;
+        let verify = run_shell(&dir.join("verify.sh"), &wd)?;
         let _ = fs::remove_dir_all(wd);
         Ok((verify.status.success(), raw))
     };
@@ -1470,7 +1453,7 @@ fn tripwire_lines(text: &str) -> Vec<String> {
                     && l.contains("c=")
                     && Regex::new(r"p=\d").unwrap().is_match(l))
         })
-        .map(|l| l.chars().take(400).collect())
+        .map(str::to_string)
         .collect()
 }
 fn judge(results: &Path, sample: usize, cfg: &Value) -> Result<()> {
@@ -1483,7 +1466,7 @@ fn judge(results: &Path, sample: usize, cfg: &Value) -> Result<()> {
     if sample > 0 {
         rows.truncate(sample)
     }
-    let parent = PathBuf::from("/var/tmp/mimir");
+    let parent = std::env::temp_dir().join("mimir");
     fs::create_dir_all(&parent)?;
     let empty = parent.join(format!("mimir-eval-empty-mcp-{}.json", std::process::id()));
     fs::write(&empty, "{\"mcpServers\":{}}")?;
@@ -1579,25 +1562,16 @@ fn load_tasks(cfg: &Value, filter: Option<&str>) -> Result<Vec<Task>> {
         })
         .collect()
 }
-fn run_shell(script: &Path, wd: &Path, seconds: u64) -> Result<std::process::Output> {
-    let mut c = Command::new("bash")
+fn run_shell(script: &Path, wd: &Path) -> Result<std::process::Output> {
+    let c = Command::new("bash")
         .arg(script)
         .arg(wd)
         .current_dir(wd)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
-    let start = Instant::now();
-    loop {
-        if c.try_wait()?.is_some() {
-            return Ok(c.wait_with_output()?);
-        }
-        if start.elapsed() > Duration::from_secs(seconds) {
-            c.kill()?;
-            return c.wait_with_output().map_err(Into::into);
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
+    // Completion is the event: no polling interval and no invented deadline.
+    Ok(c.wait_with_output()?)
 }
 fn injection(task: &Task, arm: &str, cfg: &Value) -> Result<(Option<String>, Option<bool>)> {
     let content = task.belief["content"].as_str().unwrap_or("");
@@ -1951,7 +1925,7 @@ fn run_matrix(
                     fs::remove_dir_all(&wd)?
                 }
                 fs::create_dir(&wd)?;
-                let setup = run_shell(&task.dir.join("setup.sh"), &wd, 60)?;
+                let setup = run_shell(&task.dir.join("setup.sh"), &wd)?;
                 if !setup.status.success() {
                     bail!(
                         "setup failed for {}: {}",
@@ -1980,7 +1954,7 @@ fn run_matrix(
                 rec["returncode"] = if timed { Value::Null } else { json!(rc) };
                 rec["timed_out"] = json!(timed);
                 rec["wall_s"] = json!(start.elapsed().as_secs_f64());
-                let verify = run_shell(&task.dir.join("verify.sh"), &wd, 60)?;
+                let verify = run_shell(&task.dir.join("verify.sh"), &wd)?;
                 rec["solved"] = json!(verify.status.success());
                 if timed || rc != 0 {
                     rec["is_error"] = json!(true)

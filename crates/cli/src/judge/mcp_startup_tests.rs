@@ -234,19 +234,23 @@ impl Fixture {
 
     async fn stopped(&self) {
         for pid in self.pids() {
-            let mut alive = true;
-            for _ in 0..40 {
-                alive = fs::read_to_string(format!("/proc/{pid}/stat"))
-                    .is_ok_and(|state| state.split_whitespace().nth(2) != Some("Z"));
-                if !alive {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(25)).await;
-            }
-            assert!(
-                !alive,
-                "owned fixture process {pid} survived client cleanup"
+            // The pidfd exit notification is the event: no polling interval
+            // and no invented deadline (issue #469 items 256/356/377).
+            let fd = unsafe {
+                libc::syscall(libc::SYS_pidfd_open, pid as libc::c_int, 0) as libc::c_int
+            };
+            assert!(fd >= 0, "pidfd_open({pid}) failed");
+            let mut pollfd = libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            assert_eq!(
+                unsafe { libc::poll(&mut pollfd, 1, -1) },
+                1,
+                "pidfd poll failed for {pid}"
             );
+            unsafe { libc::close(fd) };
         }
     }
 }
