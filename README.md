@@ -251,6 +251,14 @@ xattr -d com.apple.quarantine ~/.local/bin/mimir ~/.local/bin/mimir-mcp
 
 `curl` downloads do **not** set this attribute, so the command above is unnecessary if you used the `curl` snippet. (It will print "Permission denied" or "no such xattr" — that's expected, not a problem.)
 
+**Verify the download** — each release publishes a `${TARBALL}.sha256` file:
+
+```bash
+curl -fL "https://github.com/kamysh/mimir/releases/download/v3.1.0/${TARBALL}" -o "${TARBALL}"
+curl -fL "https://github.com/kamysh/mimir/releases/download/v3.1.0/${TARBALL}.sha256" -o "${TARBALL}.sha256"
+sha256sum -c "${TARBALL}.sha256"   # macOS: shasum -a 256 -c "${TARBALL}.sha256"
+```
+
 **Verify:**
 
 ```bash

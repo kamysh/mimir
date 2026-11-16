@@ -71,11 +71,18 @@ jobs:
           tar -czf mimir-${{ matrix.artifact }}.tar.gz \
             -C "$pkg_dir" \
             mimir mimir-mcp
+          if command -v sha256sum >/dev/null; then
+            sha256sum "mimir-${{ matrix.artifact }}.tar.gz" > "mimir-${{ matrix.artifact }}.tar.gz.sha256"
+          else
+            shasum -a 256 "mimir-${{ matrix.artifact }}.tar.gz" > "mimir-${{ matrix.artifact }}.tar.gz.sha256"
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
           name: mimir-${{ matrix.artifact }}
-          path: mimir-${{ matrix.artifact }}.tar.gz
+          path: |
+            mimir-${{ matrix.artifact }}.tar.gz
+            mimir-${{ matrix.artifact }}.tar.gz.sha256
 
   release:
     needs: [source, build]
@@ -92,8 +99,11 @@ jobs:
         with:
           files: |
             mimir-linux-amd64/mimir-linux-amd64.tar.gz
+            mimir-linux-amd64/mimir-linux-amd64.tar.gz.sha256
             mimir-linux-arm64/mimir-linux-arm64.tar.gz
+            mimir-linux-arm64/mimir-linux-arm64.tar.gz.sha256
             mimir-darwin-arm64/mimir-darwin-arm64.tar.gz
+            mimir-darwin-arm64/mimir-darwin-arm64.tar.gz.sha256
 
       # Keep only THIS release's per-platform binaries as Actions artifacts.
       # The distributable binaries live on the GitHub Release (published above)
