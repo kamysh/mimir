@@ -50,10 +50,26 @@ jobs:
       - name: Build
         run: nix build .#mimir-static
 
+      # macOS 26 taskgated rejects the linker-emitted adhoc signature on the
+      # MCP binaries (SIGKILL at exec, "Taskgated Invalid Signature") even
+      # though codesign --verify passes. Re-sign with Apple's codesign and
+      # smoke-execute each binary: exec is the only check that catches it.
+      - name: Re-sign and smoke-test darwin binaries
+        if: matrix.artifact == 'darwin-arm64'
+        run: |
+          mkdir -p bin-dist
+          cp result/bin/mimir result/bin/mimir-mcp bin-dist/
+          codesign --force --sign - bin-dist/mimir bin-dist/mimir-mcp
+          codesign --verify --strict bin-dist/mimir bin-dist/mimir-mcp
+          bin-dist/mimir --version
+          bin-dist/mimir-mcp --version
+
       - name: Package
         run: |
+          pkg_dir=result/bin
+          [ "${{ matrix.artifact }}" = darwin-arm64 ] && pkg_dir=bin-dist
           tar -czf mimir-${{ matrix.artifact }}.tar.gz \
-            -C result/bin \
+            -C "$pkg_dir" \
             mimir mimir-mcp
 
       - uses: actions/upload-artifact@v4
