@@ -5,7 +5,7 @@
 module Mimir.JudgeBatchReadback where
 
 open import Data.Bool using (Bool; true; false)
-open import Data.List using (List; []; _∷_; map; length)
+open import Data.List using (List; []; _∷_; _++_; map; length)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ)
 open import Data.Product using (Σ; _×_; _,_)
@@ -84,6 +84,17 @@ report {pins} before failed observations deferred = record before
   summary = Batch.finish observations deferred
   status = Batch.Report.status summary
 
+-- A pin whose final readback stays pending — the stored revision still
+-- matches the selection but no review was confirmed — joins the deferred
+-- set instead of leaving the batch without deferrals. Deferral excludes the
+-- pin from subsequent selections and schedules reconciliation against fresh
+-- reads (Mimir.DeferredReviews); it never parks unrelated pending work.
+pendingDeferrals : ∀ {pins} → Batch.Batch pins → List O.Deferred
+pendingDeferrals Batch.empty = []
+pendingDeferrals (Batch.entry {pin = pin} (O.found observed valid (O.pending identity same unconfirmed)) rest) =
+  O.deferred (O.Pin.identity pin) (O.Pin.sourceRevision pin) ∷ pendingDeferrals rest
+pendingDeferrals (Batch.entry receipt rest) = pendingDeferrals rest
+
 finish : (pins : List O.Pin) → R.Report → Bool → List O.Deferred →
   Script (Σ R.Report (λ result → Maybe (Acknowledgement.BatchEvidence (R.Report.selectedIds result))))
 finish pins before failed deferred = readAll pins before >>= λ { (observations , updated) →
@@ -91,11 +102,15 @@ finish pins before failed deferred = readAll pins before >>= λ { (observations 
   where
   finishObserved : Batch.Batch pins → R.Report →
     Script (Σ R.Report (λ result → Maybe (Acknowledgement.BatchEvidence (R.Report.selectedIds result))))
-  finishObserved observations updated with Batch.Report.status (Batch.finish observations deferred) in status
-  ... | Judge.Completion.complete = done (report updated failed observations deferred , just
+  finishObserved observations updated with Batch.Report.status
+    (Batch.finish observations (deferred ++ pendingDeferrals observations)) in status
+  ... | Judge.Completion.complete = done (report updated failed observations
+        (deferred ++ pendingDeferrals observations) , just
     (Acknowledgement.batchEvidence pins refl
-      (Batch.completeRequiresEvidenceForEverySelection observations deferred status)))
-  ... | _ = done (report updated failed observations deferred , nothing)
+      (Batch.completeRequiresEvidenceForEverySelection observations
+        (deferred ++ pendingDeferrals observations) status)))
+  ... | _ = done (report updated failed observations
+        (deferred ++ pendingDeferrals observations) , nothing)
 
 selectionRetained : ∀ {pins} before failed (observations : Batch.Batch pins) deferred →
   R.Report.selectedIds (report before failed observations deferred) ≡ map O.Pin.identity pins

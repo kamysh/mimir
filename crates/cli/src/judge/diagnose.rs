@@ -21,7 +21,7 @@ fn cause(code: Option<&str>) -> &'static str {
         Some("backend_timeout") => "The model did not finish within the configured batch deadline.",
         Some("model_budget_exhausted") => "The model used the configured request budget before completing the review.",
         Some("tool_error") => "A database or tool operation failed; its outcome must be read back.",
-        Some("review_deferred") => "The review was deferred after incompatible candidate declarations.",
+        Some("review_deferred") => "The review was deferred; the pin is excluded until the experience is corrected or reviewed by another caller.",
         _ => "The batch could not complete. Inspect the local diagnostic report for the exact failure.",
     }
 }
@@ -97,7 +97,7 @@ pub fn show(config_path: Option<&Path>, state_dir: Option<&Path>) -> anyhow::Res
             );
         }
     }
-    println!("Public summary ends here. Private diagnostics may contain source text; review and redact them before sharing.\nHelp: https://github.com/kamysh/mimir/blob/v3.0.0/docs/operations.md\nReport a persistent problem: https://github.com/kamysh/mimir/issues");
+    println!("Public summary ends here. Private diagnostics may contain source text; review and redact them before sharing.\nHelp: https://github.com/kamysh/mimir/blob/v3.1.0/docs/operations.md\nReport a persistent problem: https://github.com/kamysh/mimir/issues");
     Ok(())
 }
 

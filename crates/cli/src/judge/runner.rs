@@ -431,11 +431,25 @@ async fn run_inner<B: Backend>(
     .await?;
     // A rejected source revision is held until it is corrected or reviewed by
     // another caller. Reconcile against the database before excluding it.
+    // Spec (Mimir.DeferredReviews.ListValid): the retained list is bounded,
+    // its revisions are valid, and no identity appears twice.
     let previous = state::read(state.path())?;
-    for deferred in previous
+    let carried = previous
         .into_iter()
         .flat_map(|report| report.deferred_reviews)
+        .collect::<Vec<_>>();
+    ensure!(
+        carried.len() <= 1000,
+        "deferred review list exceeds the supported size"
+    );
     {
+        let mut ids = std::collections::HashSet::new();
+        for item in &carried {
+            ensure!(item.revision > 0, "invalid deferred review revision");
+            ensure!(ids.insert(item.id), "duplicate deferred review");
+        }
+    }
+    for deferred in carried {
         let current = client
             .tool("get_experience", json!({"id":deferred.id}))
             .await?;
@@ -443,6 +457,12 @@ async fn run_inner<B: Backend>(
             continue;
         }
         let current = parse_state(current)?;
+        // Spec (Mimir.DeferredReviews.checkIdentity): the deferred lookup
+        // must return the same experience, not merely matching revisions.
+        ensure!(
+            current.experience.id == deferred.id,
+            "deferred lookup returned another experience"
+        );
         let in_scope = settings
             .judge
             .project
@@ -787,7 +807,26 @@ async fn run_inner<B: Backend>(
         match observe(&mut client, selected).await {
             Ok("confirmed") => report.confirmed += 1,
             Ok("corrected") => report.corrected += 1,
-            Ok("pending") => report.pending += 1,
+            Ok("pending") => {
+                report.pending += 1;
+                // Spec (Mimir.JudgeBatchReadback.pendingDeferrals): a pin
+                // whose final readback stays pending — the stored revision
+                // still matches the selection but no review was confirmed —
+                // joins the deferred set. It is excluded from subsequent
+                // selections and reconciled against fresh reads, so one
+                // conflicted experience cannot park the whole watcher.
+                // The deferred set is unique per pin; the candidate-conflict
+                // path may already hold this pin.
+                let deferred = report.deferred_reviews.iter().any(|item| {
+                    item.id == selected.experience.id && item.revision == selected.revision
+                });
+                if !deferred {
+                    report.deferred_reviews.push(DeferredReview {
+                        id: selected.experience.id,
+                        revision: selected.revision,
+                    });
+                }
+            }
             Ok(_) => report.unavailable += 1,
             Err(error) => {
                 report.unavailable += 1;
@@ -815,7 +854,12 @@ async fn run_inner<B: Backend>(
         "blocked"
     }
     .into();
-    if failed && report.block_reason.is_none() {
+    if report.status == "complete" {
+        // Spec (Mimir.JudgeBatchReadback.reason): a completed readback
+        // replaces an earlier blocking reason — the retained diagnostic and
+        // failure detail still explain the attempt.
+        report.block_reason = None;
+    } else if failed && report.block_reason.is_none() {
         report.block_reason = Some("incomplete".into());
     }
     if report.status != "complete" && report.block_reason.is_none() {
@@ -1254,7 +1298,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn requests_beyond_old_budget_are_counted_and_pending_review_keeps_trace() {
+    async fn requests_beyond_old_budget_are_counted_and_pending_readback_defers() {
         use std::os::unix::fs::PermissionsExt;
 
         let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/judge/retry_fixture.sh");
@@ -1262,15 +1306,23 @@ mod tests {
         std::fs::create_dir(&dir).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         let config_path = dir.join("config.toml");
-        std::fs::write(
-            &config_path,
-            format!(
-                "config_version=1\n[logging]\ndirectory='{}'\n[database]\nhost='127.0.0.1'\nport=1\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nbatch_size=1\nmcp_command='bash'\nmcp_args=['{}','{}']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\n",
-                dir.join("logs").display(), fixture.display(), Uuid::new_v4()
-            ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let experience_id = Uuid::new_v4();
+        let write_config = |mode: &str| {
+            std::fs::write(
+                &config_path,
+                format!(
+                    "config_version=1\n[logging]\ndirectory='{}'\n[database]\nhost='127.0.0.1'\nport=1\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nbatch_size=1\nmcp_command='bash'\nmcp_args=['{}','{}','{}','{}']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\n",
+                    dir.join("logs").display(),
+                    fixture.display(),
+                    experience_id,
+                    dir.join("reviews.jsonl").display(),
+                    mode
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        };
+        write_config("standard");
         let settings = super::super::config::load(Some(&config_path)).unwrap();
         let state = State::lock(dir.join("state")).unwrap().unwrap();
         let mut backend = NoReview { calls: 0 };
@@ -1278,8 +1330,12 @@ mod tests {
         assert_eq!(failed.status, "blocked");
         assert_eq!(
             failed.block_reason.as_deref(),
-            Some("revision_not_confirmed")
+            Some("review_deferred"),
+            "a pending final readback joins the deferred set \
+             (Mimir.JudgeBatchReadback.pendingDeferrals)"
         );
+        assert_eq!(failed.pending, 1);
+        assert_eq!(failed.deferred_reviews.len(), 1);
         assert!(failed.diagnostic.is_none());
         assert_eq!(backend.calls, 26);
         let id = failed.diagnostics_id.unwrap();
@@ -1301,12 +1357,30 @@ mod tests {
             "all diagnostic events must survive"
         );
         assert_eq!(trace.events[1].tool.as_deref(), Some("get_experience"));
+
+        // The deferred pin is excluded from subsequent selections: the next
+        // batch is empty and makes no model calls instead of re-selecting
+        // the same experience.
+        let mut parked = NoReview { calls: 0 };
+        let excluded = run(&settings, &state, &mut parked).await;
+        assert_eq!(excluded.status, "blocked");
+        assert_eq!(excluded.block_reason.as_deref(), Some("review_deferred"));
+        assert_eq!(excluded.selected, 0);
+        assert_eq!(excluded.pending, 0);
+        assert_eq!(parked.calls, 0);
+
+        // A later revision change (a correction by another caller) drops the
+        // deferral and the batch completes normally; the first attempt's
+        // diagnostic trace stays retained.
+        write_config("revision-bump");
+        let settings = super::super::config::load(Some(&config_path)).unwrap();
         let mut recovery = ToolCorrection {
             case: RejectionCase::LocalValidation,
             calls: 0,
         };
         let completed = run(&settings, &state, &mut recovery).await;
         assert_eq!(completed.status, "complete");
+        assert!(completed.deferred_reviews.is_empty());
         assert!(state::read_diagnostics(state.path())
             .unwrap()
             .attempts
@@ -1325,7 +1399,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn undeclared_candidate_is_refused_before_mcp_and_stays_eligible() {
+    async fn undeclared_candidate_is_refused_before_mcp_and_pending_readback_defers() {
         use std::os::unix::fs::PermissionsExt;
 
         let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/judge/retry_fixture.sh");
@@ -1363,7 +1437,11 @@ mod tests {
             if !correct {
                 assert_eq!(report.block_reason.as_deref(), Some("tool_rejected"));
                 assert_eq!(report.pending, 1);
-                assert!(report.deferred_reviews.is_empty());
+                assert_eq!(
+                    report.deferred_reviews.len(),
+                    1,
+                    "the pending readback defers the unreviewed experience"
+                );
                 assert!(report
                     .diagnostic
                     .as_ref()

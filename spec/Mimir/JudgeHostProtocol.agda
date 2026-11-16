@@ -211,7 +211,8 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   once watch = ask loadConfig (afterConfig watch)
 
   -- No batch result terminates watch mode. Successful work proceeds
-  -- immediately; idle and blocked states wait for their respective events.
+  -- immediately; deferred batches continue to the next batch; idle and
+  -- failed states wait for their respective events.
   data WatchState : Set where
     subscribing : WatchState
     watching : WorkSubscription → Script Host.Outcome → WatchState
@@ -236,6 +237,13 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   afterWatch subscription (Host.outcome Host.success false false) = watching subscription (once true)
   afterWatch subscription (Host.outcome Host.success false true) =
     controlling (ask (waitForWork subscription) (afterWork subscription))
+  -- A deferred batch is not a failed attempt (Mimir.JudgeHost.outcomeOf maps
+  -- watch ∧ isDeferred to success): its pins are excluded from subsequent
+  -- selections and reconciled against fresh reads, so the next batch can
+  -- select other pending work. Continuing immediately lets one unconfirmable
+  -- experience drain the rest of the queue instead of parking the watcher
+  -- until a repair signal.
+  afterWatch subscription (Host.outcome Host.success true false) = watching subscription (once true)
   afterWatch subscription problem = controlling (ask (dropWorkSubscription subscription)
     (λ _ → awaitRepair (toList "The current batch could not complete")))
 

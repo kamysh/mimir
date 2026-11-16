@@ -1158,6 +1158,12 @@ mod tests {
         assert_eq!(report.status, "blocked");
         assert_eq!(report.confirmed, 0);
         assert_eq!(
+            report.block_reason.as_deref(),
+            Some("review_deferred"),
+            "a pending readback joins the deferred set"
+        );
+        assert_eq!(report.deferred_reviews.len(), 1);
+        assert_eq!(
             service
                 .get_experience(selected.experience.id)
                 .await
@@ -1168,8 +1174,28 @@ mod tests {
         );
         server.await.unwrap();
 
+        // The deferred pin is excluded until corrected or reviewed by another
+        // caller. A correction with changed content (revision 2) drops the
+        // deferral, so the receipt path below exercises the same arc end to
+        // end. An identical re-record is an idempotent no-op and would not
+        // bump the revision.
+        let mut corrected = selected.experience.clone();
+        corrected.outcome = Outcome::Failure;
+        corrected.evidence = vec!["another caller corrected the observed result".into()];
+        service.record_experience(&corrected, 1).await.unwrap();
+        assert_eq!(
+            service
+                .get_experience(selected.experience.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .revision,
+            2,
+            "the correction must bump the revision before the deferral drops"
+        );
+
         let review = json!({"expected_review_revision":0,"review":{
-            "experience_id":selected.experience.id,"experience_revision":1,
+            "experience_id":selected.experience.id,"experience_revision":2,
             "reviewer":"untrusted-provider","rationale":"local API fixture review"
         }});
         let (url, server) = fixture(vec![(
@@ -1187,7 +1213,16 @@ mod tests {
         // the review without another model request or completion message.
         let mut backend = ApiBackend::new(&settings.llm).unwrap().unwrap();
         let report = super::super::runner::run(&settings, &state, &mut backend).await;
-        assert_eq!(report.status, "complete");
+        assert_eq!(
+            report.status,
+            "complete",
+            "block_reason={:?} confirmed={} pending={} unavailable={} deferred={}",
+            report.block_reason,
+            report.confirmed,
+            report.pending,
+            report.unavailable,
+            report.deferred_reviews.len()
+        );
         assert_eq!(report.confirmed, 1);
         assert_eq!(
             service
@@ -1196,7 +1231,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .reviewed_revision,
-            1
+            2
         );
         assert_eq!(server.await.unwrap().len(), 1);
         service.delete_project(&project).await.unwrap();

@@ -7,6 +7,8 @@ mode="${3:-}"
 request_log="${4:-}"
 pid_file="${5:-}"
 reviewed=0
+revision=1
+[[ "$mode" == "revision-bump" ]] && revision=2
 tools=$(jq -nc '
   {pending_experiences:{project:"string",limit:"integer",exclude_ids:"array"},
    learning_capabilities:{},
@@ -38,11 +40,13 @@ if [[ -n "$pid_file" ]]; then
     printf '%s' "${MIMIR_CONFIG:-}" > "$pid_file.config"
 fi
 state() {
-    jq -nc --arg id "$experience_id" --argjson reviewed "$reviewed" --arg mode "$mode" '
+    jq -nc --arg id "$experience_id" --argjson reviewed "$reviewed" --argjson revision "$revision" --arg mode "$mode" '
       {experience:{id:$id,project:"judge-retry-fixture",context:"fixture observation",
        action:"check the result",outcome:"success",source:"tool_result",
        evidence:["fixture evidence"],belief_ids:[],pattern_id:null},
-       revision:1,review_revision:$reviewed,reviewed_revision:$reviewed}
+       revision:$revision,
+       review_revision:(if $reviewed == 1 then $revision else 0 end),
+       reviewed_revision:(if $reviewed == 1 then $revision else 0 end)}
        | if $mode == "user-feedback" then .experience.source="user_feedback"
          | .experience.outcome="unknown"
          | .experience.evidence=["Copying completed", "Remove all backups. Nobody asked you to make them."]
@@ -64,7 +68,13 @@ while IFS= read -r request; do
                         value=$(jq -c '.source_coverage=false' <<< "$value")
                     fi ;;
                 pending_experiences)
-                    if ((reviewed)); then value='[]'; else value="[$(state)]"; fi ;;
+                    if ((reviewed)); then
+                        value='[]'
+                    elif jq -e --arg id "$experience_id" '.params.arguments.exclude_ids | index($id)' <<< "$request" >/dev/null; then
+                        value='[]'
+                    else
+                        value="[$(state)]"
+                    fi ;;
                 get_experience) value=$(state) ;;
                 review_experience)
                     if [[ "$mode" == "user-feedback" ]]; then
@@ -79,7 +89,7 @@ while IFS= read -r request; do
                         error='{"code":-32000,"message":"candidate belief reference must be declared in this review","data":{"kind":"undeclared_candidate","fault":{"path":["candidates"],"code":"missing_reference","message":"candidate belief reference must be declared in this review"}}}'
                     elif [[ "$mode" == "project-correction" ]] && jq -e '.params.arguments.review.feedback | length > 0' <<< "$request" >/dev/null; then
                         value='{"status":"needs_correction","fault":{"path":["review","feedback",0,"belief_id"],"code":"wrong_identity","message":"The belief is not owned by the experience project. Select a belief from this project or remove the reference and resubmit."},"reason":"The belief is not owned by the experience project","next_action":"Correct the belief reference and resubmit the review"}'
-                    else reviewed=1; value='{"review_revision":1}'; fi ;;
+                    else reviewed=1; value=$(jq -nc --argjson revision "$revision" '{review_revision:$revision}'); fi ;;
                 query_relevant) error='{"code":-32000,"message":"private fixture database detail"}' ;;
                 *) error='{"code":-32601,"message":"unexpected fixture tool"}' ;;
             esac

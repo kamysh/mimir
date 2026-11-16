@@ -26,7 +26,9 @@ fn reason(report: &Report) -> String {
         Some("tool_budget_exhausted") => "tool call limit reached".into(),
         Some("backend_timeout") => "model response timed out".into(),
         Some("backend_error") => "model backend failed".into(),
-        Some("review_deferred") => "review deferred after a rejected candidate".into(),
+        Some("review_deferred") => {
+            "review deferred; excluded until corrected or reviewed by another caller".into()
+        }
         Some(other) => format!("review incomplete ({other})"),
         None => "review incomplete".into(),
     }
