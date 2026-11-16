@@ -33,6 +33,7 @@ pub fn summary(report: Option<&state::Report>) -> String {
     let code = classified(report);
     let action = match code {
         Some("invalid_config") => "Run mimir config check. If required settings are missing, run mimir config upgrade --log-directory /absolute/path/to/logs, then check again.",
+        Some("review_deferred") => "No repair is required: the watcher continues with other pending work. The deferred experience stays excluded until it is corrected or reviewed by another caller.",
         Some(_) => "Run mimir judge diagnose on this computer. It shows the cause, affected work and private diagnostic location. If failures persist, attach its public summary to a Mimir issue.",
         None => "No repair is indicated by this snapshot.",
     };

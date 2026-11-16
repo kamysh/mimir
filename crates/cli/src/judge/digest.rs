@@ -49,11 +49,17 @@ fn first_day(last: Option<&str>, through: NaiveDate) -> Result<Option<NaiveDate>
 }
 
 fn latest_status(report: Option<&state::Report>) -> &'static str {
-    match report.map(|report| report.status.as_str()) {
-        Some("blocked" | "partial") => "needs attention",
-        Some("idle") => "idle",
-        Some("complete") => "batch complete",
-        _ => "unavailable",
+    match report {
+        Some(report) if report.block_reason.as_deref() == Some("review_deferred") => {
+            "reviewing with deferred work"
+        }
+        Some(report) => match report.status.as_str() {
+            "blocked" | "partial" => "needs attention",
+            "idle" => "idle",
+            "complete" => "batch complete",
+            _ => "unavailable",
+        },
+        None => "unavailable",
     }
 }
 
@@ -223,7 +229,16 @@ pub async fn tick(
     )
     .await?;
     body.push_str(&super::diagnose::summary(report.as_ref()));
-    body.push_str("A failed attempt is cleaned up. Correct the reported prerequisite and edit configuration or send SIGHUP to restart the original work. A retry is not confirmation that the problem is resolved.\nHelp: https://github.com/kamysh/mimir/blob/v3.1.0/docs/operations.md\n");
+    if report
+        .as_ref()
+        .and_then(|report| report.block_reason.as_deref())
+        == Some("review_deferred")
+    {
+        body.push_str("Deferred work stays excluded until the experience is corrected or reviewed by another caller; the watcher continues with other pending work.\n");
+    } else {
+        body.push_str("A failed attempt is cleaned up. Correct the reported prerequisite and edit configuration or send SIGHUP to restart the original work. A retry is not confirmation that the problem is resolved.\n");
+    }
+    body.push_str("Help: https://github.com/kamysh/mimir/blob/v3.1.0/docs/operations.md\n");
     let digest = Digest {
         through_day: through.to_string(),
         body,
