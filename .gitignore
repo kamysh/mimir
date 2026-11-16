@@ -9,3 +9,5 @@ spec/_build/
 /result-*
 /.direnv/
 assumptions/_build/
+/tests/eval/target
+/tools/qa/target
