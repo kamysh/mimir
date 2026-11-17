@@ -22,9 +22,11 @@ fn review_guidance(selected: &mimir_core::learning::ExperienceState) -> String {
     )
 }
 
+use chrono::Timelike;
 use clap::Subcommand;
 use serde_json::json;
 use std::path::PathBuf;
+use std::time::Duration;
 
 const INVALID_CONFIG: i32 = 2;
 const UNAVAILABLE: i32 = 5;
@@ -240,6 +242,40 @@ struct RunOutcome {
     code: i32,
     degraded: bool,
     idle: bool,
+    /// A provider-declared usage limit arms an automatic resume: the repair
+    /// wait wakes after this delay instead of waiting for a human SIGHUP.
+    auto_resume: Option<Duration>,
+}
+
+/// Delay until the next occurrence of the local time a provider message
+/// declares as its limit reset ("resets 6:50am"). `now_minutes` is the
+/// current local time in minutes since midnight; returned minutes are added
+/// to it modulo 1440. Falls back to 60 minutes when the message does not
+/// carry a parseable reset time, keeping outage attempts bounded to one per
+/// hour.
+fn provider_resume_delay(detail: &str, now_minutes: u32) -> u32 {
+    let Some(idx) = detail.find("resets") else {
+        return 60;
+    };
+    let rest = detail[idx + "resets".len()..].trim_start();
+    let Some(colon) = rest.find(':') else {
+        return 60;
+    };
+    let Ok(hour) = rest[..colon].trim().parse::<u32>() else {
+        return 60;
+    };
+    let Ok(minute) = rest[colon + 1..colon + 3].trim().parse::<u32>() else {
+        return 60;
+    };
+    let suffix = rest[colon + 3..].trim_start();
+    let is_pm = suffix.starts_with('p') || suffix.starts_with('P');
+    let target = ((hour % 12) + if is_pm { 12 } else { 0 }) * 60 + minute;
+    let delta = (target + 1440 - now_minutes) % 1440;
+    if delta == 0 {
+        1440
+    } else {
+        delta
+    }
 }
 
 fn record_invalid_configuration(state_dir: Option<&std::path::Path>, error: &anyhow::Error) {
@@ -276,6 +312,7 @@ async fn run_once(
                 code: INVALID_CONFIG,
                 degraded: true,
                 idle: false,
+                auto_resume: None,
             };
         }
     };
@@ -292,6 +329,7 @@ async fn run_once(
                 code: INVALID_CONFIG,
                 degraded: true,
                 idle: false,
+                auto_resume: None,
             };
         }
     };
@@ -305,6 +343,7 @@ async fn run_once(
                 code: ALREADY_RUNNING,
                 degraded: true,
                 idle: false,
+                auto_resume: None,
             };
         }
         Err(_) => {
@@ -318,6 +357,7 @@ async fn run_once(
                 code: UNAVAILABLE,
                 degraded: true,
                 idle: false,
+                auto_resume: None,
             };
         }
     };
@@ -350,15 +390,21 @@ async fn run_once(
             }
         },
     };
+    let detail: String = report
+        .failure_detail
+        .as_deref()
+        .map(|detail| detail.chars().take(300).collect())
+        .unwrap_or_else(|| "none".into());
     let _ = settings.operations.logging.event(
         "judge",
         &format!(
-            "batch {}; confirmed={}; pending={}; unavailable={}; reason={}; diagnostics={}",
+            "batch {}; confirmed={}; pending={}; unavailable={}; reason={}; detail={}; diagnostics={}",
             report.status,
             report.confirmed,
             report.pending,
             report.unavailable,
             report.block_reason.as_deref().unwrap_or("none"),
+            detail,
             report
                 .diagnostics_id
                 .map_or_else(|| "none".into(), |id| id.to_string())
@@ -378,10 +424,19 @@ async fn run_once(
         );
     }
     let deferred = report.block_reason.as_deref() == Some("review_deferred");
+    let auto_resume = (report.block_reason.as_deref() == Some("provider_usage_limit")).then(|| {
+        let now = chrono::Local::now();
+        let minutes = provider_resume_delay(
+            report.failure_detail.as_deref().unwrap_or(""),
+            now.hour() * 60 + now.minute(),
+        );
+        Duration::from_secs(u64::from(minutes) * 60)
+    });
     RunOutcome {
         code: if watch_mode && deferred { 0 } else { code },
         degraded: matches!(report.status.as_str(), "blocked" | "partial"),
         idle: report.status == "idle",
+        auto_resume,
     }
 }
 
@@ -389,6 +444,20 @@ async fn run_once(
 mod watch_tests {
     use super::*;
     use std::os::unix::fs::OpenOptionsExt;
+
+    #[test]
+    fn provider_reset_delay_targets_the_declared_local_time() {
+        let message = "You've hit your 5-hour limit · resets 6:50am (America/Los_Angeles)";
+        assert_eq!(provider_resume_delay(message, 120), 290); // 02:00 -> 06:50
+        assert_eq!(provider_resume_delay(message, 420), 1430); // 07:00 -> next 06:50
+        assert_eq!(provider_resume_delay(message, 410), 1440); // exactly 06:50 -> next day
+    }
+
+    #[test]
+    fn provider_reset_delay_handles_pm_and_unparseable_messages() {
+        assert_eq!(provider_resume_delay("resets 11:30pm", 0), 1410);
+        assert_eq!(provider_resume_delay("some unrelated failure", 0), 60);
+    }
 
     #[tokio::test]
     async fn invalid_configuration_replaces_stale_status_and_preserves_incident() {

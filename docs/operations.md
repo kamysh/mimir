@@ -58,7 +58,13 @@ command. A backlog is work still awaiting review. Successful batches continue
 immediately. An empty queue waits for PostgreSQL notifications. After a failed
 attempt, correct the reported problem and edit the configuration or send
 `kill -HUP WATCHER_PID` to start a fresh attempt. There is no polling interval,
-retry timer or backoff. Configuration changes are observed through file events.
+retry timer or backoff, with one exception: when the model provider itself
+declares a usage limit (the failure is classified `provider_usage_limit` and
+carries the provider's own message, including its reset time), the repair wait
+arms a single wake at the declared reset and resumes the documented retry
+without a human event. If the message carries no parseable reset time the wake
+falls back to one hour, bounding outage attempts to one per hour.
+Configuration changes are observed through file events.
 
 Common cases:
 

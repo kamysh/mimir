@@ -235,6 +235,12 @@ pub async fn tick(
         == Some("review_deferred")
     {
         body.push_str("Deferred work stays excluded until the experience is corrected or reviewed by another caller; the watcher continues with other pending work.\n");
+    } else if report
+        .as_ref()
+        .and_then(|report| report.block_reason.as_deref())
+        == Some("provider_usage_limit")
+    {
+        body.push_str("No repair is required: the watcher resumes automatically when the provider limit resets. The report repeats only if the automatic resume cannot complete a batch.\n");
     } else {
         body.push_str("A failed attempt is cleaned up. Correct the reported prerequisite and edit configuration or send SIGHUP to restart the original work. A retry is not confirmation that the problem is resolved.\n");
     }

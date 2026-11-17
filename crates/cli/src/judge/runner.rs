@@ -348,15 +348,45 @@ pub async fn run<B: Backend>(settings: &RuntimeConfig, state: &State, backend: &
     finish_report(settings, state, report).await
 }
 
+/// One recorded step of a review attempt: the event kind, work counters and
+/// the tool name; the detail is private and stays out of the shared log.
+struct Step<'a> {
+    kind: &'a str,
+    counts: (usize, usize),
+    tool: Option<&'a str>,
+    detail: Option<&'a str>,
+}
+
 fn trace(
+    operations: &mimir_core::operations::Operations,
     state: &State,
     report: &Report,
     selected: &ExperienceState,
-    kind: &str,
-    (model_used, tool_used): (usize, usize),
-    tool: Option<&str>,
-    detail: Option<&str>,
+    step: Step<'_>,
 ) -> Result<()> {
+    let Step {
+        kind,
+        counts: (model_used, tool_used),
+        tool,
+        detail,
+    } = step;
+    // Operational progress: step kind, counters and tool name only — no
+    // model text, arguments or source excerpts ever reach the shared log.
+    let progress = format!(
+        "attempt {}; step={}; experience={}; model_requests={}; tool_attempts={}; tool={}",
+        report
+            .diagnostics_id
+            .map_or_else(|| "none".into(), |id| id.to_string()),
+        kind,
+        selected.experience.id,
+        model_used,
+        tool_used,
+        tool.unwrap_or("none")
+    );
+    eprintln!("judge: {progress}");
+    if let Err(error) = operations.logging.event("judge", &progress) {
+        eprintln!("Operational logging is unavailable; reviews continue: {error:#}");
+    }
     if let Some(id) = report.diagnostics_id {
         if let Err(error) = state.trace_event(
             id,
@@ -545,13 +575,16 @@ async fn run_inner<B: Backend>(
                 model_used = model_used.saturating_add(1);
                 let detail = last.as_ref().map(Value::to_string);
                 trace(
+                    &settings.operations,
                     state,
                     report,
                     selected,
-                    "model_request",
-                    (model_used, tool_used),
-                    None,
-                    detail.as_deref(),
+                    Step {
+                        kind: "model_request",
+                        counts: (model_used, tool_used),
+                        tool: None,
+                        detail: detail.as_deref(),
+                    },
                 )?;
             }
             let action = match backend
@@ -561,17 +594,29 @@ async fn run_inner<B: Backend>(
                 Ok(action) => action,
                 Err(error) => {
                     trace(
+                        &settings.operations,
                         state,
                         report,
                         selected,
-                        "model_error",
-                        (model_used, tool_used),
-                        None,
-                        Some(&format!("{error:#}")),
+                        Step {
+                            kind: "model_error",
+                            counts: (model_used, tool_used),
+                            tool: None,
+                            detail: Some(&format!("{error:#}")),
+                        },
                     )?;
                     if candidate_rejections == 0 {
                         failed = true;
-                        report.block_reason = Some("backend_error".into());
+                        report.block_reason = Some(
+                            if error
+                                .downcast_ref::<super::harness::ProviderLimit>()
+                                .is_some()
+                            {
+                                "provider_usage_limit".into()
+                            } else {
+                                "backend_error".into()
+                            },
+                        );
                         report.failure_detail = Some(format!("{error:#}"));
                         report.capture_source(&error);
                     }
@@ -581,25 +626,31 @@ async fn run_inner<B: Backend>(
             match action {
                 Action::Done => {
                     trace(
+                        &settings.operations,
                         state,
                         report,
                         selected,
-                        "model_done",
-                        (model_used, tool_used),
-                        None,
-                        None,
+                        Step {
+                            kind: "model_done",
+                            counts: (model_used, tool_used),
+                            tool: None,
+                            detail: None,
+                        },
                     )?;
                     break;
                 }
                 Action::RejectedTool { name, source } => {
                     trace(
+                        &settings.operations,
                         state,
                         report,
                         selected,
-                        "tool_parse_rejection",
-                        (model_used, tool_used),
-                        Some(&name),
-                        Some(&source.excerpt),
+                        Step {
+                            kind: "tool_parse_rejection",
+                            counts: (model_used, tool_used),
+                            tool: Some(&name),
+                            detail: Some(&source.excerpt),
+                        },
                     )?;
                     tool_used = tool_used.saturating_add(1);
                     // The model already knows its input. Return only the parser's
@@ -611,26 +662,32 @@ async fn run_inner<B: Backend>(
                 }
                 Action::Tool { name, arguments } => {
                     trace(
+                        &settings.operations,
                         state,
                         report,
                         selected,
-                        "tool_request",
-                        (model_used, tool_used),
-                        Some(&name),
-                        Some(&arguments.to_string()),
+                        Step {
+                            kind: "tool_request",
+                            counts: (model_used, tool_used),
+                            tool: Some(&name),
+                            detail: Some(&arguments.to_string()),
+                        },
                     )?;
                     tool_used = tool_used.saturating_add(1);
                     let attempted_review = arguments.get("review").cloned();
                     match scoped_tool(&mut client, selected, &name, arguments).await {
                         Ok(value) => {
                             trace(
+                                &settings.operations,
                                 state,
                                 report,
                                 selected,
-                                "tool_result",
-                                (model_used, tool_used),
-                                Some(&name),
-                                Some(&value.to_string()),
+                                Step {
+                                    kind: "tool_result",
+                                    counts: (model_used, tool_used),
+                                    tool: Some(&name),
+                                    detail: Some(&value.to_string()),
+                                },
                             )?;
                             if value.get("status").and_then(Value::as_str) == Some("needs_input") {
                                 failed = true;
@@ -656,13 +713,16 @@ async fn run_inner<B: Backend>(
                                 && error.downcast_ref::<CandidateConflict>().is_some() =>
                         {
                             trace(
+                                &settings.operations,
                                 state,
                                 report,
                                 selected,
-                                "candidate_conflict",
-                                (model_used, tool_used),
-                                Some(&name),
-                                Some(&format!("{error:#}")),
+                                Step {
+                                    kind: "candidate_conflict",
+                                    counts: (model_used, tool_used),
+                                    tool: Some(&name),
+                                    detail: Some(&format!("{error:#}")),
+                                },
                             )?;
                             candidate_rejections += 1;
                             candidate_rejection_detail = Some(format!("{error:#}"));
@@ -681,13 +741,16 @@ async fn run_inner<B: Backend>(
                                 ) =>
                         {
                             trace(
+                                &settings.operations,
                                 state,
                                 report,
                                 selected,
-                                "tool_rejection",
-                                (model_used, tool_used),
-                                Some(&name),
-                                Some(&format!("{error:#}")),
+                                Step {
+                                    kind: "tool_rejection",
+                                    counts: (model_used, tool_used),
+                                    tool: Some(&name),
+                                    detail: Some(&format!("{error:#}")),
+                                },
                             )?;
                             // Only typed validation faults are correction feedback.
                             // Preserve the exact path, code and explanation.
@@ -736,13 +799,16 @@ async fn run_inner<B: Backend>(
                         }
                         Err(error) => {
                             trace(
+                                &settings.operations,
                                 state,
                                 report,
                                 selected,
-                                "tool_error",
-                                (model_used, tool_used),
-                                Some(&name),
-                                Some(&format!("{error:#}")),
+                                Step {
+                                    kind: "tool_error",
+                                    counts: (model_used, tool_used),
+                                    tool: Some(&name),
+                                    detail: Some(&format!("{error:#}")),
+                                },
                             )?;
                             failed = true;
                             report.block_reason = Some("tool_error".into());
@@ -1324,6 +1390,7 @@ mod tests {
             std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600)).unwrap();
         };
         write_config("standard");
+        std::fs::create_dir(dir.join("logs")).unwrap();
         let settings = super::super::config::load(Some(&config_path)).unwrap();
         let state = State::lock(dir.join("state")).unwrap().unwrap();
         let mut backend = NoReview { calls: 0 };
@@ -1338,6 +1405,12 @@ mod tests {
         assert_eq!(failed.pending, 1);
         assert_eq!(failed.deferred_reviews.len(), 1);
         assert!(failed.diagnostic.is_none());
+        // The operational log records per-step activity during the batch —
+        // step kinds and tool names only, never model text or arguments.
+        let operational = std::fs::read_to_string(dir.join("logs/mimir.log")).unwrap();
+        assert!(operational.contains("step=model_request"));
+        assert!(operational.contains("tool=get_experience"));
+        assert!(!operational.contains("exec_command"));
         assert_eq!(backend.calls, 26);
         let id = failed.diagnostics_id.unwrap();
         let diagnostics = state::read_diagnostics(state.path()).unwrap();
