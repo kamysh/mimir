@@ -16,7 +16,9 @@ jobs:
       - name: Rust lint
         run: nix develop --command cargo clippy --workspace --all-targets -- -D warnings
       - name: Rust unit tests
-        run: nix develop --command cargo test --workspace --all-targets
+        # The isolated runner tests need the local bwrap sandbox and run via
+        # the repository's isolated harness scripts.
+        run: nix develop --command cargo test --workspace --lib --bins
       - name: Agda aggregate
         run: nix develop --command sh -c 'cd spec && agda Mimir.agda'
       - name: Formal coverage
