@@ -1027,6 +1027,7 @@ mod tests {
         }
     }
 
+    #[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
     #[test]
     fn rejects_bad_calls_usage_and_classifies_provider_errors() {
         let config = config(Provider::Openai, "http://127.0.0.1:1/v1".into());
@@ -1117,6 +1118,7 @@ mod tests {
         assert_eq!(backend.history.last().unwrap()["content"], large);
     }
 
+    #[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
     #[tokio::test]
     async fn isolated_runner_requires_database_receipt_after_api_claim() {
         let database_fixture = isolation::fixture();

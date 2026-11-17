@@ -946,6 +946,7 @@ mod tests {
         }
     }
 
+    #[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
     #[test]
     fn deferred_revision_is_reconsidered_only_after_change_or_external_review() {
         let item = DeferredReview {
@@ -1454,6 +1455,7 @@ mod tests {
         }
     }
 
+    #[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
     #[tokio::test]
     async fn isolated_mcp_review_cycle() {
         let fixture = isolation::fixture();

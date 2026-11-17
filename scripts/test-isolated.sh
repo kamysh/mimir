@@ -172,7 +172,7 @@ if [[ $selected == installed || $selected == runtime ]]; then
     run judge-adapter-fixtures bash "$repo/tests/judge-adapters.sh"
 fi
 if [[ $selected == all || $selected == workspace ]]; then
-    run workspace-tests cargo test --workspace --all-targets --no-fail-fast --locked --offline -- --test-threads=1
+    run workspace-tests cargo test --workspace --all-targets --no-fail-fast --locked --offline -- --ignored --test-threads=1
     mapfile -t binaries < <(find "$root/target/debug/deps" -maxdepth 1 -type f -executable -name 'store_integration-*')
     ((${#binaries[@]} == 1)) || { echo 'Expected one store integration test binary' >&2; exit 1; }
     run refuse-conflicting-database cargo run --quiet --offline --manifest-path "$repo/tools/qa/Cargo.toml" -- decoy-guard "${binaries[0]}"

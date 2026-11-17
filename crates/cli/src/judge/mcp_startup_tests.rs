@@ -317,6 +317,7 @@ async fn startup_and_calls_share_ids_and_owned_process_group() {
     );
 }
 
+#[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
 #[tokio::test]
 async fn rejected_capability_stops_before_selection_and_drops_owned_children() {
     let fixture = Fixture::new();
