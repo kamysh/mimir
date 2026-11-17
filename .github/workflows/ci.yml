@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v14
+      - name: Rust format
+        run: nix develop --command cargo fmt --all -- --check
+      - name: Rust lint
+        run: nix develop --command cargo clippy --workspace --all-targets -- -D warnings
+      - name: Rust unit tests
+        run: nix develop --command cargo test --workspace --all-targets
+      - name: Agda aggregate
+        run: nix develop --command sh -c 'cd spec && agda Mimir.agda'
+      - name: Formal coverage
+        run: bash scripts/formal/check-coverage.sh
