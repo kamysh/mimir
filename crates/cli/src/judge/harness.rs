@@ -21,6 +21,58 @@ use uuid::Uuid;
 
 const SCHEMA: &str = r#"{"type":"object","additionalProperties":false,"properties":{"calls":{"type":"array","items":{"type":"object","additionalProperties":false,"properties":{"name":{"type":"string"},"arguments_json":{"type":"string"}},"required":["name","arguments_json"]}}},"required":["calls"]}"#;
 
+/// A provider-declared usage limit (e.g. the claude.ai 5-hour window). The
+/// judge classifies it separately from an opaque backend failure: the repair
+/// wait arms an automatic resume at the provider-declared reset instead of
+/// waiting for a human SIGHUP. The message carries the provider's own text.
+#[derive(Debug)]
+pub struct ProviderLimit {
+    pub message: String,
+}
+impl std::fmt::Display for ProviderLimit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+impl std::error::Error for ProviderLimit {}
+
+/// The provider's own message when the envelope declares a usage limit.
+fn usage_limit_message(wrapper: &Value) -> Option<String> {
+    (wrapper["api_error"].as_str() == Some("usage_limit_reached")).then(|| {
+        wrapper["result"]
+            .as_str()
+            .unwrap_or("no detail")
+            .to_string()
+    })
+}
+
+/// Classify a failed harness exit: a provider usage limit declared in the
+/// captured output becomes a ProviderLimit carrying the provider's message.
+fn classify_exit(error: &anyhow::Error) -> Option<ProviderLimit> {
+    let exit = error.downcast_ref::<process::HarnessExit>()?;
+    let envelope = serde_json::from_str::<Value>(&exit.output).ok()?;
+    usage_limit_message(&envelope).map(|message| ProviderLimit { message })
+}
+
+/// Bound for a single replayed tool result, and for the whole history.
+/// The review protocol re-sends every tool result with each model turn, so
+/// an unbounded result (query_learning_context can return megabytes) blows
+/// the provider's prompt limit on the next turn.
+const MAX_REPLAY_ENTRY_CHARS: usize = 64 * 1024;
+const MAX_REPLAY_TOTAL_CHARS: usize = 256 * 1024;
+
+/// A tool result within the entry bound is replayed as-is; a larger one is
+/// replayed as a truncated preview with an explicit flag, so the model
+/// never mistakes the preview for the complete result.
+fn bounded_history_entry(result: &Value) -> Value {
+    let text = result.to_string();
+    if text.len() <= MAX_REPLAY_ENTRY_CHARS {
+        return json!({"tool_results":[{"result":result}]});
+    }
+    let preview: String = text.chars().take(MAX_REPLAY_ENTRY_CHARS).collect();
+    json!({"tool_results":[{"truncated":true,"result_preview":preview}]})
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Reply {
@@ -294,8 +346,18 @@ impl<'a> Harness<'a> {
             self.pending.clear();
         }
         if let Some(result) = last {
-            self.history
-                .push(json!({"tool_results":[{"result":result}]}));
+            self.history.push(bounded_history_entry(result));
+            // Bound the whole replayed history: drop the oldest entries when
+            // the total exceeds the budget, so a series of large results
+            // cannot push the prompt past the provider's limit.
+            let mut total: usize = self
+                .history
+                .iter()
+                .map(|entry| entry.to_string().len())
+                .sum();
+            while total > MAX_REPLAY_TOTAL_CHARS && !self.history.is_empty() {
+                total -= self.history.remove(0).to_string().len();
+            }
         }
         if let Some(action) = self.pending.pop_front() {
             return Ok(action);
@@ -313,13 +375,27 @@ impl<'a> Harness<'a> {
         });
         let bytes = serde_json::to_vec(&payload)?;
         let args = self.arguments(&work)?;
-        let output = process::run(&self.program, &args, work.path(), &bytes).await?;
+        let output = match process::run(&self.program, &args, work.path(), &bytes).await {
+            Ok(output) => output,
+            Err(error) => {
+                if let Some(limit) = classify_exit(&error) {
+                    return Err(limit.into());
+                }
+                return Err(error);
+            }
+        };
         let reply_value = match self.config.backend {
             Kind::ClaudeCode => {
                 let wrapper: Value = serde_json::from_slice(&output.stdout).map_err(|error| {
                     SourceFailure::json("invalid Claude result", &output.stdout, error)
                 })?;
-                ensure!(wrapper["is_error"] == false, "Claude reported failure");
+                if wrapper["is_error"] == true {
+                    if let Some(message) = usage_limit_message(&wrapper) {
+                        return Err(ProviderLimit { message }.into());
+                    }
+                    let message = wrapper["result"].as_str().unwrap_or("no detail");
+                    bail!("Claude reported failure: {message}");
+                }
                 if !wrapper["structured_output"].is_null() {
                     wrapper["structured_output"].clone()
                 } else {
@@ -373,6 +449,68 @@ mod tests {
     use super::*;
     use crate::judge::state::Report;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn oversized_tool_results_are_replayed_as_bounded_previews() {
+        let small = json!({"ok": true});
+        let entry = bounded_history_entry(&small);
+        assert_eq!(entry["tool_results"][0]["result"], json!({"ok": true}));
+        let large = json!({"blob": "x".repeat(MAX_REPLAY_ENTRY_CHARS + 10)});
+        let entry = bounded_history_entry(&large);
+        assert_eq!(entry["tool_results"][0]["truncated"], true);
+        assert!(
+            entry["tool_results"][0]["result_preview"]
+                .as_str()
+                .unwrap()
+                .len()
+                <= MAX_REPLAY_ENTRY_CHARS
+        );
+    }
+
+    #[test]
+    fn usage_limit_envelope_yields_the_provider_message() {
+        let wrapper = json!({
+            "is_error": true,
+            "api_error": "usage_limit_reached",
+            "api_error_status": 429,
+            "result": "You've hit your 5-hour limit · resets 6:50am (America/Los_Angeles)"
+        });
+        assert_eq!(
+            usage_limit_message(&wrapper).as_deref(),
+            Some("You've hit your 5-hour limit · resets 6:50am (America/Los_Angeles)")
+        );
+    }
+
+    #[test]
+    fn ordinary_failures_are_not_usage_limits() {
+        let wrapper = json!({
+            "is_error": true,
+            "api_error": "overloaded",
+            "result": "The model backend is temporarily unavailable"
+        });
+        assert_eq!(usage_limit_message(&wrapper), None);
+    }
+
+    #[test]
+    fn exit_one_envelope_with_usage_limit_is_classified() {
+        // The live shape: the CLI exits 1 and prints the result envelope to
+        // stdout; the harness must still classify the provider's limit.
+        let envelope = r#"{"is_error":true,"api_error":"usage_limit_reached","api_error_status":429,"result":"You've hit your 5-hour limit · resets 6:50am (America/Los_Angeles)"}"#;
+        let error: anyhow::Error = process::HarnessExit {
+            code: Some(1),
+            output: envelope.to_string(),
+            diagnostic: String::new(),
+        }
+        .into();
+        let classified = classify_exit(&error).expect("usage limit classified");
+        assert_eq!(
+            classified.message,
+            "You've hit your 5-hour limit · resets 6:50am (America/Los_Angeles)"
+        );
+        let ordinary: anyhow::Error =
+            anyhow!("harness exited with status Some(1): some shell error");
+        assert!(classify_exit(&ordinary).is_none());
+    }
 
     // An offline executable that reproduces Codex's human prompt echo and the
     // distinct Codex/Claude answer transports. It never starts an actual model.
@@ -442,7 +580,7 @@ esac
     }
 
     #[tokio::test]
-    async fn adapters_deliver_large_history_without_prompt_echo_overflow() {
+    async fn oversized_history_is_replayed_as_a_bounded_preview() {
         for backend in ["codex", "claude-code", "command"] {
             let work = RunDir::new().unwrap();
             let program = fixture(&work);
@@ -464,9 +602,18 @@ esac
                 &fs::read(work.path().join("harness-fixture.payload")).unwrap(),
             )
             .unwrap();
+            // The replay is bounded: an oversized result is delivered as a
+            // truncated preview with an explicit flag, never verbatim.
             assert_eq!(
-                delivered["history"][1]["tool_results"][0]["result"],
-                history
+                delivered["history"][1]["tool_results"][0]["truncated"],
+                json!(true)
+            );
+            assert!(
+                delivered["history"][1]["tool_results"][0]["result_preview"]
+                    .as_str()
+                    .unwrap()
+                    .len()
+                    <= MAX_REPLAY_ENTRY_CHARS
             );
             assert_eq!(
                 delivered["experience"]["experience"]["id"],

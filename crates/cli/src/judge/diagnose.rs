@@ -21,6 +21,7 @@ fn cause(code: Option<&str>) -> &'static str {
         Some("backend_timeout") => "The model did not finish within the configured batch deadline.",
         Some("model_budget_exhausted") => "The model used the configured request budget before completing the review.",
         Some("tool_error") => "A database or tool operation failed; its outcome must be read back.",
+        Some("provider_usage_limit") => "The model provider's usage limit is active; the watcher resumes automatically when the limit resets.",
         Some("review_deferred") => "The review was deferred; the pin is excluded until the experience is corrected or reviewed by another caller.",
         _ => "The batch could not complete. Inspect the local diagnostic report for the exact failure.",
     }
@@ -34,6 +35,7 @@ pub fn summary(report: Option<&state::Report>) -> String {
     let action = match code {
         Some("invalid_config") => "Run mimir config check. If required settings are missing, run mimir config upgrade --log-directory /absolute/path/to/logs, then check again.",
         Some("review_deferred") => "No repair is required: the watcher continues with other pending work. The deferred experience stays excluded until it is corrected or reviewed by another caller.",
+        Some("provider_usage_limit") => "No repair is required: the watcher resumes automatically when the provider limit resets. The report repeats only if the automatic resume cannot complete a batch.",
         Some(_) => "Run mimir judge diagnose on this computer. It shows the cause, affected work and private diagnostic location. If failures persist, attach its public summary to a Mimir issue.",
         None => "No repair is indicated by this snapshot.",
     };

@@ -53,6 +53,31 @@ async fn read_diagnostic<R: AsyncRead + Unpin>(mut reader: R) -> Result<Vec<u8>>
     Ok(bytes)
 }
 
+/// A nonzero harness exit carrying both captured streams: `output` (stdout,
+/// where result envelopes land) for classification and `diagnostic` (stderr)
+/// for the human-readable failure text.
+#[derive(Debug)]
+pub struct HarnessExit {
+    pub code: Option<i32>,
+    pub output: String,
+    pub diagnostic: String,
+}
+impl std::fmt::Display for HarnessExit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Enough to include a provider error envelope's classification
+        // fields (api_error, api_error_status, result); the full capture
+        // stays in the private diagnostic store.
+        let diagnostic: String = self.diagnostic.chars().take(4000).collect();
+        let output: String = self.output.chars().take(4000).collect();
+        write!(
+            f,
+            "harness exited with status {:?}: {diagnostic} {output}",
+            self.code
+        )
+    }
+}
+impl std::error::Error for HarnessExit {}
+
 pub async fn run(program: &str, args: &[String], cwd: &Path, input: &[u8]) -> Result<Output> {
     let mut command = Command::new(program);
     command
@@ -107,8 +132,22 @@ pub async fn run(program: &str, args: &[String], cwd: &Path, input: &[u8]) -> Re
         let exit = child.child.wait().await?;
         child.group = None;
         if !exit.success() {
-            let detail = String::from_utf8_lossy(&stderr);
-            return Err(anyhow!("harness exited with {exit}: {detail}"));
+            let diagnostic: String = String::from_utf8_lossy(&stderr)
+                .trim()
+                .chars()
+                .take(65536)
+                .collect();
+            let output: String = String::from_utf8_lossy(&stdout)
+                .trim()
+                .chars()
+                .take(65536)
+                .collect();
+            return Err(HarnessExit {
+                code: exit.code(),
+                output,
+                diagnostic,
+            }
+            .into());
         }
         Ok::<_, anyhow::Error>(Output { stdout })
     }

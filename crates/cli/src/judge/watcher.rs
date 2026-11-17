@@ -106,8 +106,23 @@ pub(super) async fn run(config: Option<PathBuf>, state_dir: Option<PathBuf>) -> 
             }
             NextBatch::Repair => {
                 subscription = None;
-                eprintln!("Review attempt stopped; unfinished reviews remain pending. Run `mimir judge diagnose`, correct the prerequisite, then edit configuration or run `kill -HUP {}` for a fresh attempt.", std::process::id());
-                tokio::select! { _ = retry.recv() => {}, changed = configuration_change(&mut files) => { if let Err(error) = changed { eprintln!("Configuration events: {error:#}"); files = None; } } }
+                match outcome.auto_resume {
+                    Some(delay) => {
+                        // The provider declared its own reset; the documented
+                        // explicitRetry event is raised by this timer instead
+                        // of a human SIGHUP.
+                        eprintln!("Review attempt stopped by a provider usage limit; resuming automatically in {delay:?}.");
+                        tokio::select! {
+                            _ = retry.recv() => {},
+                            changed = configuration_change(&mut files) => { if let Err(error) = changed { eprintln!("Configuration events: {error:#}"); files = None; } }
+                            _ = tokio::time::sleep(delay) => {},
+                        }
+                    }
+                    None => {
+                        eprintln!("Review attempt stopped; unfinished reviews remain pending. Run `mimir judge diagnose`, correct the prerequisite, then edit configuration or run `kill -HUP {}` for a fresh attempt.", std::process::id());
+                        tokio::select! { _ = retry.recv() => {}, changed = configuration_change(&mut files) => { if let Err(error) = changed { eprintln!("Configuration events: {error:#}"); files = None; } } }
+                    }
+                }
                 _mail = super::notification::start_worker(config.clone(), state_dir.clone());
             }
         }
@@ -123,7 +138,8 @@ mod tests {
             next_batch(&RunOutcome {
                 code: 0,
                 idle: false,
-                degraded: false
+                degraded: false,
+                auto_resume: None
             }),
             NextBatch::Immediately
         );
@@ -131,7 +147,8 @@ mod tests {
             next_batch(&RunOutcome {
                 code: 0,
                 idle: true,
-                degraded: false
+                degraded: false,
+                auto_resume: None
             }),
             NextBatch::WorkEvent
         );
@@ -139,7 +156,8 @@ mod tests {
             next_batch(&RunOutcome {
                 code: 3,
                 idle: false,
-                degraded: true
+                degraded: true,
+                auto_resume: None
             }),
             NextBatch::Repair
         );
@@ -148,7 +166,8 @@ mod tests {
             next_batch(&RunOutcome {
                 code: 0,
                 idle: false,
-                degraded: true
+                degraded: true,
+                auto_resume: None
             }),
             NextBatch::Immediately
         );
