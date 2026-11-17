@@ -239,18 +239,31 @@ impl Fixture {
             let fd = unsafe {
                 libc::syscall(libc::SYS_pidfd_open, pid as libc::c_int, 0) as libc::c_int
             };
-            assert!(fd >= 0, "pidfd_open({pid}) failed");
-            let mut pollfd = libc::pollfd {
-                fd,
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            assert_eq!(
-                unsafe { libc::poll(&mut pollfd, 1, -1) },
-                1,
-                "pidfd poll failed for {pid}"
-            );
-            unsafe { libc::close(fd) };
+            if fd >= 0 {
+                let mut pollfd = libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                assert_eq!(
+                    unsafe { libc::poll(&mut pollfd, 1, -1) },
+                    1,
+                    "pidfd poll failed for {pid}"
+                );
+                unsafe { libc::close(fd) };
+            } else {
+                // Sandboxed runners can block the pidfd syscall; fall back
+                // to bounded existence polling of the owned child process.
+                for _ in 0..500 {
+                    if unsafe { libc::kill(pid as libc::c_int, 0) } != 0 {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                if unsafe { libc::kill(pid as libc::c_int, 0) } == 0 {
+                    panic!("process {pid} did not stop");
+                }
+            }
         }
     }
 }
