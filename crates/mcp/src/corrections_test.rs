@@ -20,6 +20,7 @@ fn review(experience_id: Uuid, expected_review_revision: i64, feedback: Value) -
     json!({"review":{"experience_id":experience_id,"experience_revision":1,"reviewer":"correction-fixture","rationale":"verify correction dialogue","extracted_items":[],"source_coverage":[],"feedback":feedback},"expected_review_revision":expected_review_revision})
 }
 
+#[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
 #[tokio::test]
 async fn missing_references_and_stale_revisions_are_correctable() -> Result<()> {
     let service = MimirService::connect(&Config {
@@ -169,6 +170,7 @@ fn sourced_review(experience_id: Uuid, items: Value) -> Value {
 
 /// 319: source/actor/quotation mistakes are explained at the exact field
 /// before any embedding or publication, with copy-the-source guidance.
+#[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
 #[tokio::test]
 async fn source_actor_and_quotation_mistakes_are_explained() -> Result<()> {
     let service = MimirService::connect(&Config {
@@ -228,6 +230,7 @@ async fn source_actor_and_quotation_mistakes_are_explained() -> Result<()> {
 
 /// 336/314: candidate feedback naming a candidate this review never declared
 /// is refused as a conflict, with the stable key identified.
+#[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
 #[tokio::test]
 async fn undeclared_candidate_references_are_refused() -> Result<()> {
     let service = MimirService::connect(&Config {
@@ -275,6 +278,7 @@ async fn undeclared_candidate_references_are_refused() -> Result<()> {
 
 /// 315: completed review answers stay readable after the candidate belief
 /// they created is deleted — ordinary stored history, not replay machinery.
+#[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
 #[tokio::test]
 async fn review_history_stays_readable_after_candidate_deletion() -> Result<()> {
     struct Provider;
@@ -355,6 +359,7 @@ async fn review_history_stays_readable_after_candidate_deletion() -> Result<()> 
 /// 317/318: corrections cannot move an experience to another project, drop
 /// original source records, or re-extract an already-recorded original item;
 /// each refusal names the valid repair.
+#[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
 #[tokio::test]
 async fn protected_originals_are_explained_on_correction() -> Result<()> {
     let service = MimirService::connect(&Config {
