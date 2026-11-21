@@ -18,6 +18,8 @@ fn cause(code: Option<&str>) -> &'static str {
         None => "No failure recorded.",
         Some("quotation_mismatch") => "The proposed review contained a quotation that does not occur literally in its cited source.",
         Some("invalid_config") => "The configuration is incompatible or incomplete; no review can start.",
+        Some("database_unavailable") => "Mimir lost its PostgreSQL connection or could not establish it. Reviews remain pending.",
+        Some("database_setup") => "Mimir could not set up its PostgreSQL work subscription.",
         Some("backend_timeout") => "The model did not finish within the configured batch deadline.",
         Some("model_budget_exhausted") => "The model used the configured request budget before completing the review.",
         Some("tool_error") => "A database or tool operation failed; its outcome must be read back.",
@@ -34,6 +36,8 @@ pub fn summary(report: Option<&state::Report>) -> String {
     let code = classified(report);
     let action = match code {
         Some("invalid_config") => "Run mimir config check. If required settings are missing, run mimir config upgrade --log-directory /absolute/path/to/logs, then check again.",
+        Some("database_unavailable") => "The running watcher retries automatically. Check PostgreSQL availability if the outage persists.",
+        Some("database_setup") => "Check the local diagnostic for the database error. Correct the access or setup problem, then send SIGHUP or edit the configuration to retry.",
         Some("review_deferred") => "No repair is required: the watcher continues with other pending work. The deferred experience stays excluded until it is corrected or reviewed by another caller.",
         Some("provider_usage_limit") => "No repair is required: the watcher resumes automatically when the provider limit resets. The report repeats only if the automatic resume cannot complete a batch.",
         Some(_) => "Run mimir judge diagnose on this computer. It shows the cause, affected work and private diagnostic location. If failures persist, attach its public summary to a Mimir issue.",
@@ -100,7 +104,7 @@ pub fn show(config_path: Option<&Path>, state_dir: Option<&Path>) -> anyhow::Res
             );
         }
     }
-    println!("Public summary ends here. Private diagnostics may contain source text; review and redact them before sharing.\nHelp: https://github.com/kamysh/mimir/blob/v3.1.0/docs/operations.md\nReport a persistent problem: https://github.com/kamysh/mimir/issues");
+    println!("Public summary ends here. Private diagnostics may contain source text; review and redact them before sharing.\nHelp: https://github.com/kamysh/mimir/blob/v3.1.2/docs/operations.md\nReport a persistent problem: https://github.com/kamysh/mimir/issues");
     Ok(())
 }
 

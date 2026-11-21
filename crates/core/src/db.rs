@@ -179,7 +179,10 @@ impl WorkSubscription {
     }
 
     pub async fn changed(&mut self) -> Result<()> {
-        self.events.recv().await.ok_or_else(|| anyhow::anyhow!("The database work listener disconnected. Check the database and send SIGHUP to retry."))?
+        self.events
+            .recv()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("The database work listener disconnected."))?
     }
 }
 

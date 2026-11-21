@@ -279,6 +279,15 @@ fn provider_resume_delay(detail: &str, now_minutes: u32) -> u32 {
 }
 
 fn record_invalid_configuration(state_dir: Option<&std::path::Path>, error: &anyhow::Error) {
+    record_startup_failure(state_dir, "invalid_config", error, None);
+}
+
+fn record_startup_failure(
+    state_dir: Option<&std::path::Path>,
+    reason: &str,
+    error: &anyhow::Error,
+    phase: Option<&str>,
+) {
     let Ok(path) = state::resolve(state_dir) else {
         return;
     };
@@ -286,10 +295,13 @@ fn record_invalid_configuration(state_dir: Option<&std::path::Path>, error: &any
         return;
     };
     let mut report = state::Report::new("blocked", 0, 0, 0, 0, 0);
-    report.block_reason = Some("invalid_config".into());
+    report.block_reason = Some(reason.into());
     report.failure_detail = Some(format!("{error:#}"));
     let _ = state.record_incident(&report);
     let _ = state.write(&report);
+    if let Some(phase) = phase {
+        let _ = state.write_runtime(&json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"phase":phase,"needs_attention":true}));
+    }
 }
 
 async fn run_once(

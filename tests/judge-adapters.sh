@@ -191,7 +191,7 @@ jq -e '.phase == "awaiting_repair" and .needs_attention == true' "$base/state-wa
 "$bin" judge status --state-dir "$base/state-watch" \
     | jq -e '.report.status == "blocked" and .report.block_reason == "backend_error"
         and .report.diagnostics_id != null
-        and (.report.failure_detail | contains("exit status: 7"))' >/dev/null
+        and (.report.failure_detail | contains("harness exited with status Some(7)"))' >/dev/null
 call_tool "$config" pending_experiences "$(jq -nc --arg project "$project" '{project:$project,limit:1}')" | jq -e 'length == 1' >/dev/null
 call_tool "$config" delete_project "$(jq -nc --arg project "$project" '{project:$project}')" >/dev/null
 current_project=

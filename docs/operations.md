@@ -55,11 +55,17 @@ With a custom configuration or state directory, pass `--config PATH` and/or
 
 The daily email includes a cause, batch impact, next action and this diagnostic
 command. A backlog is work still awaiting review. Successful batches continue
-immediately. An empty queue waits for PostgreSQL notifications. After a failed
-attempt, correct the reported problem and edit the configuration or send
-`kill -HUP WATCHER_PID` to start a fresh attempt. There is no polling interval,
-retry timer or backoff, with one exception: when the model provider itself
-declares a usage limit (the failure is classified `provider_usage_limit` and
+immediately. An empty queue waits for PostgreSQL notifications.
+If PostgreSQL refuses the connection at startup or a work subscription drops,
+the watcher retries every five seconds until it reconnects. For example, if
+Mimir starts before PostgreSQL after a reboot, the delay avoids a tight loop
+and lets work resume automatically. After subscribing, it immediately checks
+for work queued during the outage. This timer runs only while disconnected.
+Mimir records one diagnostic per outage, even when many retries fail.
+
+For failures that require a repair, correct the reported problem and edit the
+configuration or send `kill -HUP WATCHER_PID` to start a fresh attempt. When
+the model provider itself declares a usage limit (classified `provider_usage_limit` and
 carries the provider's own message, including its reset time), the repair wait
 arms a single wake at the declared reset and resumes the documented retry
 without a human event. If the message carries no parseable reset time the wake
@@ -71,6 +77,7 @@ Common cases:
 | Cause | Action |
 | --- | --- |
 | Missing/incompatible configuration | Run `mimir config check`; upgrade missing operational settings as above. |
+| PostgreSQL unavailable | The running watcher retries automatically. Check database availability if the condition persists. |
 | Source quotation rejected | The proposed quotation differs from the stored source, including literal JSON escapes. The judge receives the exact field path and correction explanation. Keep exact-quotation validation enabled. Persistent failure belongs in a bug report. |
 | Historical deadline/request-budget failure | This can appear in retained reports from an older binary. The current judge imposes neither limit. Run `mimir config upgrade`, check configuration, restart the existing application, and inspect a fresh attempt. |
 | Tool/database error | Inspect the private diagnostic trace. Mimir reads the review back to determine what actually committed; an opaque tool error is not proof that nothing changed. |

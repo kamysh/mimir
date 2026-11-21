@@ -153,9 +153,11 @@ when a required account or permission step remains unresolved.
 `mimir judge check-config` validates settings locally. `mimir judge run` reviews
 one selected batch through `mimir-mcp`; `mimir judge watch` starts the next
 batch immediately after successful work. An empty queue waits for database
-notifications and makes no model call. Failed attempts release owned work and
-wait for a configuration edit or an explicit `kill -HUP WATCHER_PID` after the
-reported problem is repaired. There is no review polling interval or backoff.
+notifications and makes no model call. A temporary connection failure or lost
+subscription triggers an automatic database retry every five seconds. The
+watcher checks pending work immediately after resubscribing. Failed attempts
+release owned work. When a failure needs a repair, edit the configuration or
+send `kill -HUP WATCHER_PID` after correcting the reported problem.
 `mimir judge status` reads the last local report and gives
 the ID of a retained failure trace. `mimir judge diagnostics` reads the first
 failure trace of the current incident; `--list` shows retained attempt IDs and

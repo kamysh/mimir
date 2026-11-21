@@ -168,6 +168,9 @@ fi
 if [[ $selected == all || $selected == fixtures || $selected == runtime || $selected == installed ]]; then
     run runtime-recovery bash "$repo/tests/runtime-recovery.sh"
 fi
+if [[ $selected == all || $selected == runtime ]]; then
+    run judge-database-recovery cargo test -p mimir --test judge_database_recovery --locked --offline -- --ignored
+fi
 if [[ $selected == installed || $selected == runtime ]]; then
     run judge-adapter-fixtures bash "$repo/tests/judge-adapters.sh"
 fi
