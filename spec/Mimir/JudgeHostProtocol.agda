@@ -49,10 +49,13 @@ data Output : Set where
   invalidConfig : Text → Output
   reportOutput : R.Report → Output
 
--- Work notifications wake an idle watcher. A blocked watcher resumes on a
--- configuration edit or the already agreed explicit SIGHUP retry signal.
+-- Work notifications wake an idle watcher. A temporary database outage has
+-- its own retry event, which does not depend on an operator or a subscription.
 data WorkWake : Set where workAvailable configurationChanged explicitRetry : WorkWake
 data RepairWake : Set where configurationChanged explicitRetry : RepairWake
+data ReconnectWake : Set where retryDue configurationChanged explicitRetry : ReconnectWake
+data SubscriptionFailure : Set where
+  configurationFailure databaseUnavailable databaseSetupFailure : Text → SubscriptionFailure
 record WorkSubscription : Set where
   constructor workSubscription
   field handle : Text
@@ -113,7 +116,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     incident status : L.Locked → R.Report → Effect
     stdout : Output → Effect
     reportDiagnostic : Text → Effect
-    subscribeWork waitForRepair : Effect
+    subscribeWork waitForRepair waitForReconnect : Effect
     waitForWork dropWorkSubscription : WorkSubscription → Effect
 
   Reply : Effect → Set
@@ -128,26 +131,27 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   Reply (status held report) = Text ⊎ ⊤
   Reply (stdout _) = ⊤
   Reply (reportDiagnostic _) = ⊤
-  Reply subscribeWork = Text ⊎ WorkSubscription
+  Reply subscribeWork = SubscriptionFailure ⊎ WorkSubscription
   Reply (waitForWork _) = Text ⊎ WorkWake
   Reply (dropWorkSubscription _) = ⊤
   Reply waitForRepair = RepairWake
+  Reply waitForReconnect = ReconnectWake
   module P = Effects.Protocol Effect Reply
   open P using (Script; done; ask; _>>=_)
 
-  invalidReport : Maybe ℕ → Text → R.Report
-  invalidReport observed detail = record (R.newReport observed (toList "blocked"))
-    { blockReason = just (toList "invalid_config") ; failureDetail = just detail }
+  blockedReport : Text → Maybe ℕ → Text → R.Report
+  blockedReport reason observed detail = record (R.newReport observed (toList "blocked"))
+    { blockReason = just reason ; failureDetail = just detail }
 
-  persistInvalid : Text → Script ⊤
-  persistInvalid detail = ask resolveState λ where
+  persistBlocked : Text → Text → Script ⊤
+  persistBlocked reason detail = ask resolveState λ where
     (inj₁ _) → done tt
     (inj₂ resolvedPaths) → ask (acquire (StatePath.Resolved.path resolvedPaths)) λ where
       (inj₁ _) → done tt
       (inj₂ nothing) → done tt
       (inj₂ (just held)) → ask clock (λ observed →
-        ask (incident held (invalidReport observed detail)) (λ _ →
-          ask (status held (invalidReport observed detail)) (λ _ → ask (release held) done)))
+        ask (incident held (blockedReport reason observed detail)) (λ _ →
+          ask (status held (blockedReport reason observed detail)) (λ _ → ask (release held) done)))
 
   emit : Bool → Output → Script ⊤
   emit true output = done tt
@@ -200,7 +204,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     rewrite failure = P.replied _ _ tt execution
 
   afterConfig : Bool → C.Result → Script Host.Outcome
-  afterConfig watch (inj₁ detail) = persistInvalid detail >>= λ _ → announce watch
+  afterConfig watch (inj₁ detail) = persistBlocked (toList "invalid_config") detail >>= λ _ → announce watch
     where
     announce : Bool → Script Host.Outcome
     announce true = ask (reportDiagnostic detail) (λ _ → done (Host.outcome Host.invalidConfig true false))
@@ -214,24 +218,40 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   -- immediately; deferred batches continue to the next batch; idle and
   -- failed states wait for their respective events.
   data WatchState : Set where
-    subscribing : WatchState
+    subscribing : (outageReported : Bool) → WatchState
     watching : WorkSubscription → Script Host.Outcome → WatchState
     controlling : Script WatchState → WatchState
 
   awaitRepair : Text → Script WatchState
   awaitRepair detail = ask (reportDiagnostic (detail ++ toList
     ". Work remains pending. Resolve the cause, then send SIGHUP to this watcher, or edit its configuration, to resume."))
-    (λ _ → ask waitForRepair (λ _ → done subscribing))
+    (λ _ → ask waitForRepair (λ _ → done (subscribing false)))
 
-  afterSubscription : Text ⊎ WorkSubscription → WatchState
-  afterSubscription (inj₁ detail) = controlling (awaitRepair detail)
-  afterSubscription (inj₂ subscription) = watching subscription (once true)
+  reconnect : Script WatchState
+  reconnect = ask waitForReconnect λ where
+    retryDue → done (subscribing true)
+    configurationChanged → done (subscribing false)
+    explicitRetry → done (subscribing false)
+
+  awaitDatabase : Text → Script WatchState
+  awaitDatabase detail = persistBlocked (toList "database_unavailable") detail >>= λ _ →
+    ask (reportDiagnostic (toList "PostgreSQL is unavailable; Mimir will retry the connection. " ++ detail))
+      (λ _ → reconnect)
+
+  afterSubscription : Bool → SubscriptionFailure ⊎ WorkSubscription → WatchState
+  afterSubscription _ (inj₁ (configurationFailure detail)) = controlling
+    (persistBlocked (toList "invalid_config") detail >>= λ _ → awaitRepair detail)
+  afterSubscription _ (inj₁ (databaseSetupFailure detail)) = controlling
+    (persistBlocked (toList "database_setup") detail >>= λ _ → awaitRepair detail)
+  afterSubscription false (inj₁ (databaseUnavailable detail)) = controlling (awaitDatabase detail)
+  afterSubscription true (inj₁ (databaseUnavailable _)) = controlling reconnect
+  afterSubscription _ (inj₂ subscription) = watching subscription (once true)
 
   afterWork : WorkSubscription → Text ⊎ WorkWake → Script WatchState
-  afterWork subscription (inj₁ detail) = ask (dropWorkSubscription subscription) (λ _ → awaitRepair detail)
-  afterWork subscription (inj₂ configurationChanged) = ask (dropWorkSubscription subscription) (λ _ → done subscribing)
+  afterWork subscription (inj₁ detail) = ask (dropWorkSubscription subscription) (λ _ → awaitDatabase detail)
+  afterWork subscription (inj₂ configurationChanged) = ask (dropWorkSubscription subscription) (λ _ → done (subscribing false))
   afterWork subscription (inj₂ workAvailable) = done (watching subscription (once true))
-  afterWork subscription (inj₂ explicitRetry) = done (watching subscription (once true))
+  afterWork subscription (inj₂ explicitRetry) = ask (dropWorkSubscription subscription) (λ _ → done (subscribing false))
 
   afterWatch : WorkSubscription → Host.Outcome → WatchState
   afterWatch subscription (Host.outcome Host.success false false) = watching subscription (once true)
@@ -252,14 +272,14 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     external : (effect : Effect) → (Reply effect → WatchState) → WatchStep
 
   nextWatch : WatchState → WatchStep
-  nextWatch subscribing = external subscribeWork afterSubscription
+  nextWatch (subscribing outageReported) = external subscribeWork (afterSubscription outageReported)
   nextWatch (watching subscription (done result)) = internal (afterWatch subscription result)
   nextWatch (watching subscription (ask effect continuation)) = external effect (λ reply → watching subscription (continuation reply))
   nextWatch (controlling (done state)) = internal state
   nextWatch (controlling (ask effect continuation)) = external effect (λ reply → controlling (continuation reply))
 
   watchCore : WatchState
-  watchCore = subscribing
+  watchCore = subscribing false
 
   batchResultHasContinuation : ∀ subscription result → Σ WatchState (λ continuation →
     nextWatch (watching subscription (done result)) ≡ internal continuation)
@@ -286,12 +306,30 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     subscriptionDropped : ∀ subscription → Receipt (dropWorkSubscription subscription) tt
     workEvent : ∀ subscription event → Receipt (waitForWork subscription) event
     repairEvent : ∀ event → Receipt waitForRepair event
+    reconnectEvent : ∀ event → Receipt waitForReconnect event
 
   data WatchTransition : WatchState → Maybe P.Event → WatchState → Set where
     internal : ∀ {before after} → nextWatch before ≡ WatchStep.internal after →
       WatchTransition before nothing after
     external : ∀ {before effect next reply} → nextWatch before ≡ WatchStep.external effect next →
       Receipt effect reply → WatchTransition before (just (effect , reply)) (next reply)
+
+  -- The retry wake does not require a file edit or signal. Every newly
+  -- established subscription starts a batch, which checks pending work.
+  outageRetryResubscribes :
+    WatchTransition (controlling reconnect) (just (waitForReconnect , retryDue))
+      (controlling (done (subscribing true)))
+  outageRetryResubscribes = external refl (reconnectEvent retryDue)
+
+  repeatedOutageReusesDiagnostic : ∀ detail →
+    WatchTransition (subscribing true) (just (subscribeWork , inj₁ (databaseUnavailable detail)))
+      (controlling reconnect)
+  repeatedOutageReusesDiagnostic detail = external refl (subscribed (inj₁ (databaseUnavailable detail)))
+
+  subscriptionStartsBatch : ∀ outageReported subscription →
+    WatchTransition (subscribing outageReported) (just (subscribeWork , inj₂ subscription))
+      (watching subscription (once true))
+  subscriptionStartsBatch outageReported subscription = external refl (subscribed (inj₂ subscription))
 
   -- Delivery failure and cleanup never suspend the review controller. The
   -- public watcher combines both transition systems rather than awaiting mail

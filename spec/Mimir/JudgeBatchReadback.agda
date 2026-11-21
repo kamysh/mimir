@@ -91,8 +91,8 @@ report {pins} before failed observations deferred = record before
 -- reads (Mimir.DeferredReviews); it never parks unrelated pending work.
 pendingDeferrals : ∀ {pins} → Batch.Batch pins → List O.Deferred
 pendingDeferrals Batch.empty = []
-pendingDeferrals (Batch.entry {pin = pin} (O.found observed valid (O.pending identity same unconfirmed)) rest) =
-  O.deferred (O.Pin.identity pin) (O.Pin.sourceRevision pin) ∷ pendingDeferrals rest
+pendingDeferrals (Batch.entry {pin = selectedPin} (O.found observed valid (O.pending identity same unconfirmed)) rest) =
+  O.deferred (O.Pin.identity selectedPin) (O.Pin.sourceRevision selectedPin) ∷ pendingDeferrals rest
 pendingDeferrals (Batch.entry receipt rest) = pendingDeferrals rest
 
 finish : (pins : List O.Pin) → R.Report → Bool → List O.Deferred →
