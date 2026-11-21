@@ -256,6 +256,7 @@ mod tests {
         .is_err());
     }
 
+    #[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
     #[tokio::test]
     async fn belief_preparation_and_publication_failures_leave_no_partial_belief() {
         struct Provider {
@@ -449,6 +450,7 @@ mod tests {
         service.delete_project(&project).await.unwrap();
     }
 
+    #[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
     #[tokio::test]
     async fn project_deletion_rolls_back_before_a_fresh_retry() {
         let cfg = isolation::fixture().database_config();
@@ -481,6 +483,7 @@ mod tests {
         assert!(store.get_belief(belief.id).await.unwrap().is_none());
     }
 
+    #[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
     #[tokio::test]
     async fn candidate_allocation_rejects_live_and_retired_occupied_ids() {
         let cfg = isolation::fixture().database_config();

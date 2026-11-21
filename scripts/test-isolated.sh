@@ -161,9 +161,11 @@ if [[ $selected == all || $selected == workspace || $selected == fixtures || $se
     run initialize-test-schema "$root/target/debug/mimir" stats
 fi
 if [[ $selected == publication ]]; then
-    run belief-publication cargo test -p mimir-core --lib belief_preparation_and_publication_failures_leave_no_partial_belief --locked --offline -- --test-threads=1
+    run store-conformance cargo test -p mimir-core --lib store::conformance::tests --locked --offline -- --ignored --test-threads=1
     run admission cargo test -p mimir-mcp --bin mimir-mcp admission_tests --locked --offline
-    run review-correction cargo test -p mimir-mcp --bin mimir-mcp candidate_review_retry_and_retrieval_through_mcp_tools --locked --offline -- --test-threads=1
+    run review-correction cargo test -p mimir-mcp --bin mimir-mcp candidate_review_retry_and_retrieval_through_mcp_tools --locked --offline -- --ignored --test-threads=1
+    run request-corrections cargo test -p mimir-mcp --bin mimir-mcp corrections_test:: --locked --offline -- --ignored --test-threads=1
+    run retrieval-report cargo test -p mimir-mcp --bin mimir-mcp retrieval_report_test:: --locked --offline -- --ignored --test-threads=1
 fi
 if [[ $selected == all || $selected == fixtures || $selected == runtime || $selected == installed ]]; then
     run runtime-recovery bash "$repo/tests/runtime-recovery.sh"

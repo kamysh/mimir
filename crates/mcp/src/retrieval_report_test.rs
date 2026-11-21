@@ -12,6 +12,7 @@ use anyhow::{ensure, Result};
 use mimir_core::{config::Config, graph::MemoryType, MimirService};
 use serde_json::json;
 
+#[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
 #[tokio::test]
 async fn query_relevant_reports_semantic_search_and_selects_all_by_default() -> Result<()> {
     let service = MimirService::connect(&Config {

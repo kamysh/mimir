@@ -10,6 +10,7 @@ use mimir_core::{config::Config, MimirService};
 use serde_json::json;
 use uuid::Uuid;
 
+#[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
 #[tokio::test]
 async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> {
     struct Provider;
