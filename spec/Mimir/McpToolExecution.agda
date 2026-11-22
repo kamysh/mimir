@@ -21,6 +21,7 @@ import Mimir.PublicRequest as Request
 import Mimir.ApplicationProtocol as Application
 import Mimir.ApplicationStore as Store
 import Mimir.GraphMutationProtocol as Mutation
+import Mimir.GraphReadProtocol as GraphRead
 import Mimir.BeliefEmbedding as BeliefEmbedding
 import Mimir.DocumentQuery as DocumentQuery
 import Mimir.Reembedding as Reembedding
@@ -99,6 +100,9 @@ module Run (environment : Application.Environment) (format : Encoding.Formatting
     (Validation.fault (Validation.key "context" ∷ []) Validation.emptyText
       "Document search requires nonblank context. Supply the text or question to search for, then resubmit."))
   finish (A.learningQueryResult (Query.invalidTarget fault)) = inj₁ (invalidArguments fault)
+  finish (A.readResult GraphRead.missingBelief) = inj₁ (invalidArguments
+    (Validation.fault (Validation.key "id" ∷ []) Validation.missingReference
+      "Belief not found. Look up the desired belief and use its stored UUID."))
   finish original@(A.learned q (A.Learn.invalidRequest failure)) with learningValidation failure
   ... | just fault = inj₁ (invalidArguments fault)
   ... | nothing = inj₁ (operationFailed original)

@@ -323,13 +323,13 @@ async fn typed_assessments_replace_retract_and_preserve_legacy_probability() {
     assert_eq!(corrected["scores"]["usefulness"], -0.25);
     assert_eq!(corrected["scores"]["incidents"], 1);
     let page = svc
-        .lesson_assessment_history(&project, id, "fixed-scope-v1", "benefit-v1", 0, 1)
+        .lesson_assessment_history(&project, id, "fixed-scope-v1", "benefit-v1", 0, Some(1))
         .await
         .unwrap();
     assert_eq!(page["entries"][0]["active"], false);
     assert_eq!(page["next_offset"], 1);
     let page = svc
-        .lesson_assessment_history(&project, id, "fixed-scope-v1", "benefit-v1", 1, 1)
+        .lesson_assessment_history(&project, id, "fixed-scope-v1", "benefit-v1", 1, Some(1))
         .await
         .unwrap();
     assert_eq!(page["entries"][0]["active"], true);
@@ -714,7 +714,7 @@ async fn standalone_foreground_belief_can_still_double_count_one_incident() {
         "review added the same report again"
     );
     assert!(
-        svc.explain_belief(belief.id, 0, 10).await.unwrap()["candidate_provenance"].is_null(),
+        svc.explain_belief(belief.id, 0, Some(10)).await.unwrap()["candidate_provenance"].is_null(),
         "standalone belief unexpectedly gained incident provenance"
     );
     svc.delete_project(&project).await.unwrap();
@@ -860,7 +860,7 @@ async fn atomic_candidates_retry_retraction_and_observed_pattern_use() {
         svc.review_experience(&r, 1).await.unwrap().review_revision,
         1
     );
-    let candidate = svc.explain_belief(belief_id, 0, 10).await.unwrap();
+    let candidate = svc.explain_belief(belief_id, 0, Some(10)).await.unwrap();
     assert_eq!(candidate["candidate_provenance"]["active"], true);
     let before_use = svc
         .query_learning_context("keyboard session lifecycle", &project, Some(10))
@@ -910,7 +910,7 @@ async fn atomic_candidates_retry_retraction_and_observed_pattern_use() {
     let after = svc.get_belief(belief_id).await.unwrap().unwrap();
     assert!((after.alpha - 1.0).abs() < 1e-9);
     assert_eq!(
-        svc.explain_belief(belief_id, 0, 10).await.unwrap()["candidate_provenance"]["active"],
+        svc.explain_belief(belief_id, 0, Some(10)).await.unwrap()["candidate_provenance"]["active"],
         false
     );
     let after = svc
@@ -972,7 +972,7 @@ async fn source_correction_deactivates_candidate_support_without_deleting_identi
     );
     assert!((svc.get_belief(id).await.unwrap().unwrap().alpha - 1.0).abs() < 1e-9);
     assert_eq!(
-        svc.explain_belief(id, 0, 10).await.unwrap()["candidate_provenance"]["active"],
+        svc.explain_belief(id, 0, Some(10)).await.unwrap()["candidate_provenance"]["active"],
         false
     );
     assert!(

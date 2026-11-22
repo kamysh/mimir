@@ -43,7 +43,7 @@ pub fn tools() -> Vec<Value> {
         json!({"name":"learning_capabilities","description":"Read the installed typed learning contract and assessment model version.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}}),
         json!({"name":"get_lesson_assessment","description":"Get separate numeric correctness and usefulness for an explicit lesson, applicability scope and benefit rubric. Uses current review versions only; never grants authority. Values are uncalibrated and distinct from generic graph probability.","inputSchema":{"type":"object","properties":{"project":{"type":"string"},"belief_id":uuid,"scope":{"type":"string"},"rubric":{"type":"string"}},"required":["project","belief_id","scope","rubric"]}}),
         json!({"name":"lesson_assessment_history","description":"Page through immutable assessment contributions with active/stale status and exact experience/review revisions. Evidence indices address that experience version.","inputSchema":{"type":"object","properties":{"project":{"type":"string"},"belief_id":uuid,"scope":{"type":"string"},"rubric":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1}},"required":["project","belief_id","scope","rubric"]}}),
-        json!({"name":"explain_belief","description":"Inspect the belief's incoming reasoning edges and a requested page of active evidence-backed reviews. Follow experience_id with get_experience or experience_history for observations and past revisions. This explains provenance, not causal identification.","inputSchema":{"type":"object","properties":{"id":uuid,"offset":{"type":"integer","minimum":0,"default":0},"limit":{"type":"integer","minimum":1,"default":10}},"required":["id"]}}),
+        json!({"name":"explain_belief","description":"Inspect the belief's incoming reasoning edges and a requested page of active evidence-backed reviews. Follow experience_id with get_experience or experience_history for observations and past revisions. This explains provenance, not causal identification.","inputSchema":{"type":"object","properties":{"id":uuid,"offset":{"type":"integer","minimum":0,"default":0},"limit":{"type":"integer","minimum":1,"description":"Omit to return all matching reviews."}},"required":["id"]}}),
         json!({"name":"record_experience","description":"Record one observed action and outcome for incremental LLM review. To create, send expected_revision=0 and omit experience.id. PostgreSQL assigns the returned experience UUID. To correct, use that UUID and the current positive revision. Use the returned UUID for lookups and reviews. Do not also insert a standalone conclusion from this same incident; review-owned candidates avoid that duplicate prior. ToolResult/UserFeedback are caller-reported provenance, not server verification. A correction invalidates the old review and retracts its effects atomically.","inputSchema":{"type":"object","properties":{
         "expected_revision":{"type":"integer","minimum":0},
         "experience":{"type":"object","additionalProperties":false,"properties":{
@@ -85,14 +85,15 @@ fn integer(args: &Value, key: &str) -> Result<i64> {
         .as_i64()
         .ok_or_else(|| anyhow!("'{key}' must be an integer"))
 }
-fn limit(args: &Value, default: usize) -> Result<usize> {
+fn limit(args: &Value) -> Result<Option<usize>> {
     args.get("limit")
         .map(|x| {
             x.as_u64()
                 .and_then(|n| usize::try_from(n).ok())
-                .ok_or_else(|| anyhow!("limit must be a nonnegative integer"))
+                .filter(|count| *count > 0)
+                .ok_or_else(|| anyhow!("Supply a positive limit or omit it to return all matches."))
         })
-        .unwrap_or(Ok(default))
+        .transpose()
 }
 pub async fn call(svc: &MimirService, name: &str, args: &Value) -> Result<Value> {
     Ok(match name {
@@ -122,7 +123,7 @@ pub async fn call(svc: &MimirService, name: &str, args: &Value) -> Result<Value>
                     })
                     .transpose()?
                     .unwrap_or(0),
-                limit(args, 20)?,
+                limit(args)?,
             )
             .await?
         }
@@ -137,7 +138,7 @@ pub async fn call(svc: &MimirService, name: &str, args: &Value) -> Result<Value>
                     })
                     .transpose()?
                     .unwrap_or(0),
-                limit(args, 10)?,
+                limit(args)?,
             )
             .await?
         }
@@ -204,10 +205,7 @@ pub async fn call(svc: &MimirService, name: &str, args: &Value) -> Result<Value>
             svc.query_learning_context(
                 text(args, "context")?,
                 text(args, "project")?,
-                args.get("limit").map(|count| {
-                    count.as_u64().and_then(|n| usize::try_from(n).ok())
-                        .ok_or_else(|| anyhow!("limit must be a positive integer"))
-                }).transpose()?,
+                limit(args)?,
             )
             .await?,
         )?,

@@ -1,5 +1,37 @@
+# Correcting a review
+
+A review interprets one saved revision of an experience. The request names
+that source revision and supplies the last review revision the caller has
+seen. The first review uses expected review revision zero. These are
+different numbers. A new observation requires the judge to reassess the
+source, while a competing review requires the caller to reconcile its changes
+with the current judgment.
+
+For example, if a second reviewer has already replaced review 1 with
+review 2, a different submission based on review 1 is refused. Read
+`get_learning_review`, reconcile the changes, and submit against revision 2.
+If the experience itself has changed, use `get_experience` and re-evaluate
+the evidence before submitting. Both refusals name the stale field.
+
+An identical request for the current source, with the current review
+revision or its immediate predecessor, returns the saved result. It adds
+no contributions and keeps the candidate bindings. Changing a review
+keeps the prior version in history and replaces its active contributions
+and links. Extracted identities and quotations remain tied to the original
+observations. The corrected review, updated assessments, and affected
+belief values become visible together on commit.
+
+[ReviewPlanning](ReviewPlanning.agda) checks the source, freshness, and
+replay conditions. [ReviewPreparationPublication](ReviewPreparationPublication.agda)
+connects the new review to the approved contributions and links.
+[LearningOperations](LearningOperations.agda) supplies the transaction and
+requires a commit for a fresh result. New beliefs also require
+[prepared grounding and embedding](ReviewBeliefPreparation.lagda.md).
+[The Rust store](../../crates/core/src/store/learning.rs) rechecks both
+revisions inside the locked transaction before accepting a changed review.
+
+```agda
 {-# OPTIONS --safe #-}
--- Review operation over the same concrete store as record_experience.
 module Mimir.ReviewRecord where
 
 open import Data.Bool using (Bool; true; false; _∧_)
@@ -89,3 +121,4 @@ replayPreservesStore before receipt = refl
 
 rejectionPreservesStore : ∀ before failure → proposed before (rejected failure) ≡ before
 rejectionPreservesStore before failure = refl
+```

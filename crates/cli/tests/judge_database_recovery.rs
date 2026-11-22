@@ -65,6 +65,21 @@ async fn watcher_recovers_at_startup_and_after_listener_loss() {
     let runtime = state.join("judge-runtime.json");
     let config = dir.join("config.toml");
     let model = dir.join("model.sh");
+    let mcp_wrapper = dir.join("mcp-wrapper.sh");
+    let block_batch = dir.join("block-batch");
+    fs::write(
+        &mcp_wrapper,
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+if [[ -e "$1" ]]; then
+    echo "fixture interrupts MCP startup" >&2
+    exit 1
+fi
+exec "$2"
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&mcp_wrapper, fs::Permissions::from_mode(0o700)).unwrap();
     fs::write(
         &model,
         r#"#!/usr/bin/env bash
@@ -106,16 +121,22 @@ jq -c 'if (.history | length) > 0 then {calls:[]}
     let mut settings: toml::Table =
         toml::from_str(&fs::read_to_string(fixture.root.join("config.toml")).unwrap()).unwrap();
     settings.insert("database".into(), toml::Value::try_from(database).unwrap());
-    settings["judge"]
-        .as_table_mut()
-        .unwrap()
-        .insert("project".into(), project.clone().into());
+    let judge = settings["judge"].as_table_mut().unwrap();
+    judge.insert("project".into(), project.clone().into());
+    judge.insert("mcp_command".into(), mcp_wrapper.to_str().unwrap().into());
+    judge.insert(
+        "mcp_args".into(),
+        toml::Value::Array(vec![
+            block_batch.to_str().unwrap().into(),
+            fixture.mcp.clone().into(),
+        ]),
+    );
     settings["llm"]["command"] = toml::Value::String(model.to_str().unwrap().into());
     fs::write(&config, toml::to_string(&settings).unwrap()).unwrap();
     fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
 
     let new_experience = || Experience {
-        id: Uuid::new_v4(),
+        id: (),
         project: project.clone(),
         context: "watcher reconnect fixture".into(),
         action: "record isolated observation".into(),
@@ -127,9 +148,8 @@ jq -c 'if (.history | length) > 0 then {calls:[]}
         learning_items: vec![],
         source_records: vec![],
     };
-    let first = new_experience();
     let first = service
-        .create_experience(&first.clone().with_identity(()))
+        .create_experience(&new_experience())
         .await
         .unwrap()
         .experience;
@@ -201,13 +221,36 @@ jq -c 'if (.history | length) > 0 then {calls:[]}
         .get(0);
     assert!(terminated);
     wait_for_state(&status, "block_reason", "database_unavailable").await;
-    let second = new_experience();
     let second = service
-        .create_experience(&second.clone().with_identity(()))
+        .create_experience(&new_experience())
         .await
         .unwrap()
         .experience;
     assert_reviewed(&service, second.id).await;
+    wait_for_state(&runtime, "phase", "waiting_for_work").await;
+
+    // A blocked batch must keep listening for the database going away.
+    // Removing the marker is deliberately separate from the watched config.
+    fs::write(&block_batch, "").unwrap();
+    let third = service
+        .create_experience(&new_experience())
+        .await
+        .unwrap()
+        .experience;
+    wait_for_state(&runtime, "phase", "awaiting_repair").await;
+    let subscription = control.query_one(
+        "SELECT pid FROM pg_stat_activity WHERE usename = current_user AND datname = current_database() AND query = 'LISTEN mimir_review_work'",
+        &[],
+    ).await.unwrap().get::<_, i32>(0);
+    fs::remove_file(&block_batch).unwrap();
+    let terminated: bool = control
+        .query_one("SELECT pg_terminate_backend($1)", &[&subscription])
+        .await
+        .unwrap()
+        .get(0);
+    assert!(terminated);
+    wait_for_state(&status, "block_reason", "database_unavailable").await;
+    assert_reviewed(&service, third.id).await;
     wait_for_state(&runtime, "phase", "waiting_for_work").await;
 
     let pid = watcher.id().unwrap() as i32;
@@ -219,7 +262,7 @@ jq -c 'if (.history | length) > 0 then {calls:[]}
         stderr
             .matches("PostgreSQL is unavailable; Mimir will retry")
             .count(),
-        2,
+        3,
         "expected one message for each outage"
     );
 }

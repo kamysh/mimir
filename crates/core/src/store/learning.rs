@@ -134,7 +134,12 @@ impl AgeStore {
             "assessment scope must be explicit"
         );
         let mut client = self.client.lock().await;
-        let tx = learning_transaction(&mut client).await?;
+        let tx = client
+            .build_transaction()
+            .read_only(true)
+            .isolation_level(tokio_postgres::IsolationLevel::RepeatableRead)
+            .start()
+            .await?;
         let beliefs = self
             .learning_beliefs_for_ids(&tx, &HashSet::from([belief_id]))
             .await?;
@@ -165,19 +170,19 @@ impl AgeStore {
         scope: &str,
         rubric: &str,
         offset: usize,
-        limit: usize,
+        limit: Option<usize>,
     ) -> Result<serde_json::Value> {
         ensure!(
-            limit > 0 && offset <= i64::MAX as usize,
+            limit != Some(0) && offset <= i64::MAX as usize,
             "invalid history page"
         );
         ensure!(!project.trim().is_empty(), "project must be explicit");
         let client = self.client.lock().await;
-        let rows = client.query("SELECT a.experience_id,a.review_revision,r.experience_revision,a.payload::text,r.created_at,(e.review_revision=r.revision AND e.revision=r.experience_revision) AS active FROM mimir_assessment_contributions a JOIN mimir_experiences e ON e.id=a.experience_id JOIN mimir_review_versions r ON r.experience_id=e.id AND r.revision=a.review_revision WHERE e.project=$1 AND a.belief_id=$2 AND a.scope=$3 AND a.rubric=$4 ORDER BY r.created_at,a.experience_id,a.review_revision LIMIT $5 OFFSET $6", &[&project,&belief_id,&scope,&rubric,&(i64::try_from(limit)?.checked_add(1).ok_or_else(|| anyhow::anyhow!("page size exceeds PostgreSQL integer range"))?),&(offset as i64)]).await?;
-        let entries = rows.iter().take(limit).map(|r| Ok(serde_json::json!({"experience_id":r.get::<_,Uuid>(0),"review_revision":r.get::<_,i64>(1),"experience_revision":r.get::<_,i64>(2),"assessment":serde_json::from_str::<serde_json::Value>(r.get::<_,&str>(3))?,"created_at":r.get::<_,chrono::DateTime<chrono::Utc>>(4),"active":r.get::<_,bool>(5)}))).collect::<Result<Vec<_>>>()?;
-        Ok(
-            serde_json::json!({"entries":entries,"next_offset":if rows.len()>limit {Some(offset.checked_add(limit).ok_or_else(|| anyhow::anyhow!("page offset exceeds platform range"))?)}else{None}}),
-        )
+        let lookahead = limit.and_then(|count| i64::try_from(count).ok()?.checked_add(1));
+        let rows = client.query("SELECT a.experience_id,a.review_revision,r.experience_revision,a.payload::text,r.created_at,(e.review_revision=r.revision AND e.revision=r.experience_revision) AS active FROM mimir_assessment_contributions a JOIN mimir_experiences e ON e.id=a.experience_id JOIN mimir_review_versions r ON r.experience_id=e.id AND r.revision=a.review_revision WHERE e.project=$1 AND a.belief_id=$2 AND a.scope=$3 AND a.rubric=$4 ORDER BY r.created_at,a.review_revision LIMIT $5 OFFSET $6", &[&project,&belief_id,&scope,&rubric,&lookahead,&(offset as i64)]).await?;
+        let entries = rows.iter().take(limit.unwrap_or(rows.len())).map(|r| Ok(serde_json::json!({"experience_id":r.get::<_,Uuid>(0),"review_revision":r.get::<_,i64>(1),"experience_revision":r.get::<_,i64>(2),"assessment":serde_json::from_str::<serde_json::Value>(r.get::<_,&str>(3))?,"created_at":r.get::<_,chrono::DateTime<chrono::Utc>>(4),"active":r.get::<_,bool>(5)}))).collect::<Result<Vec<_>>>()?;
+        let next_offset = (entries.len() < rows.len()).then(|| offset + entries.len());
+        Ok(serde_json::json!({"entries":entries,"next_offset":next_offset}))
     }
     pub async fn get_experience(&self, id: Uuid) -> Result<Option<ExperienceState>> {
         let client = self.client.lock().await;
@@ -610,10 +615,7 @@ impl AgeStore {
             .await?
             .ok_or_else(|| anyhow::anyhow!("experience not found"))?,
         )?;
-        ensure!(
-            review.experience_revision == current.revision,
-            "stale review: experience has changed"
-        );
+        check_review_source(review.experience_revision, current.revision)?;
         let old_request = Self::active_request(&tx, review.experience_id).await?;
         if let Some(old) = old_request.as_ref() {
             if old == review
@@ -630,11 +632,7 @@ impl AgeStore {
                 return Ok(result);
             }
         }
-        ensure!(
-            expected == current.review_revision,
-            "stale review revision: current is {}",
-            current.review_revision
-        );
+        check_review_revision(expected, current.review_revision)?;
         let request = serde_json::to_string(review)?;
         let mut allocated = review.clone();
         Self::resolve_item_ids(&tx, review.experience_id, &mut allocated.extracted_items).await?;
@@ -776,12 +774,17 @@ impl AgeStore {
         tx.query(&format!("SELECT * FROM ag_catalog.cypher('{g}', $$ MATCH (:Belief)-[r]->(:Belief) WHERE r.experience_id='{id}' DELETE r $$) AS (v ag_catalog.agtype)"), &[]).await?;
         for link in links {
             let label = link.relation.as_str();
+            let timestamp = if link.relation == EdgeType::Defeats {
+                format!(", recorded_at:'{}'", chrono::Utc::now().to_rfc3339())
+            } else {
+                String::new()
+            };
             let mut pairs = vec![(link.from_id, link.to_id)];
             if link.relation == EdgeType::Contradicts {
                 pairs.push((link.to_id, link.from_id));
             }
             for (from, to) in pairs {
-                tx.query(&format!("SELECT * FROM ag_catalog.cypher('{g}', $$ MATCH (a:Belief {{id:'{from}'}}),(b:Belief {{id:'{to}'}}) CREATE (a)-[r:{label} {{weight:{},experience_id:'{id}'}}]->(b) RETURN r $$) AS (r ag_catalog.agtype)",link.weight), &[]).await?;
+                tx.query(&format!("SELECT * FROM ag_catalog.cypher('{g}', $$ MATCH (a:Belief {{id:'{from}'}}),(b:Belief {{id:'{to}'}}) CREATE (a)-[r:{label} {{weight:{},experience_id:'{id}'{timestamp}}}]->(b) RETURN r $$) AS (r ag_catalog.agtype)",link.weight), &[]).await?;
             }
         }
         Ok(())
@@ -987,6 +990,14 @@ pub(super) fn overlay(reviews: &[Review]) -> (HashMap<Uuid, (f64, f64)>, HashSet
 impl AgeStore {
     pub async fn independent_provenance(&self, id: Uuid) -> Result<Option<IndependentProvenance>> {
         let client = self.client.lock().await;
+        self.independent_provenance_on(&client, id).await
+    }
+
+    async fn independent_provenance_on(
+        &self,
+        client: &Client,
+        id: Uuid,
+    ) -> Result<Option<IndependentProvenance>> {
         let g = &self.graph_name;
         let rows = client.query(&format!("SELECT basis::text,reference::text FROM ag_catalog.cypher('{g}', $$ MATCH (n:Belief {{id:'{id}'}}) RETURN n.origin_basis,n.origin_reference $$) AS (basis ag_catalog.agtype,reference ag_catalog.agtype)"), &[]).await?;
         let Some(row) = rows.first() else {
@@ -1011,6 +1022,14 @@ impl AgeStore {
 
     pub async fn candidate_provenance(&self, id: Uuid) -> Result<Option<CandidateProvenance>> {
         let client = self.client.lock().await;
+        self.candidate_provenance_on(&client, id).await
+    }
+
+    async fn candidate_provenance_on(
+        &self,
+        client: &Client,
+        id: Uuid,
+    ) -> Result<Option<CandidateProvenance>> {
         let row = client.query_opt("SELECT c.experience_id,c.candidate_key,c.kind,c.retired, (NOT c.retired AND EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(r.payload->'candidates','[]'::jsonb)) AS item WHERE item->>'key'=c.candidate_key)) AS active FROM mimir_review_candidates c JOIN mimir_experiences e ON e.id=c.experience_id LEFT JOIN mimir_review_versions r ON r.experience_id=e.id AND r.revision=e.review_revision AND r.experience_revision=e.revision WHERE c.node_id=$1", &[&id]).await?;
         Ok(row.map(|r| CandidateProvenance {
             experience_id: r.get(0),
@@ -1065,25 +1084,74 @@ impl AgeStore {
         &self,
         id: Uuid,
         offset: usize,
-        limit: usize,
+        limit: Option<usize>,
     ) -> Result<serde_json::Value> {
-        ensure!(limit > 0, "limit must be positive");
-        let mut client = self.client.lock().await;
-        let tx = learning_transaction(&mut client).await?;
+        let client = self.client.lock().await;
+        Self::reviews_for_belief_on(&client, id, offset, limit).await
+    }
+
+    async fn reviews_for_belief_on(
+        client: &Client,
+        id: Uuid,
+        offset: usize,
+        limit: Option<usize>,
+    ) -> Result<serde_json::Value> {
+        ensure!(limit != Some(0), "limit must be positive");
         let id_text = id.to_string();
         let sql = format!("{ACTIVE_REVIEWS} WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(r.payload->'feedback','[]'::jsonb)) f WHERE f->>'belief_id'=$1) OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(r.payload->'superseded_beliefs','[]'::jsonb)) s WHERE s=$1) OR EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(r.payload->'links','[]'::jsonb)) l WHERE l->>'from_id'=$1 OR l->>'to_id'=$1)");
-        let mut reviews: Vec<Review> = tx
-            .query(&sql, &[&id_text])
+        let reviews: Vec<Review> = client
+            .query(
+                &format!("{sql} ORDER BY r.created_at,r.revision"),
+                &[&id_text],
+            )
             .await?
             .iter()
             .map(|row| serde_json::from_str(row.get::<_, &str>(0)))
             .collect::<std::result::Result<_, _>>()?;
-        reviews.sort_by_key(|r| r.experience_id);
         let total = reviews.len();
-        let page: Vec<_> = reviews.into_iter().skip(offset).take(limit).collect();
+        let page: Vec<_> = reviews
+            .into_iter()
+            .skip(offset)
+            .take(limit.unwrap_or(total))
+            .collect();
         let next = offset.saturating_add(page.len());
         Ok(
             serde_json::json!({"reviews":page,"total":total,"next_offset":if next<total {Some(next)} else {None}}),
         )
+    }
+
+    pub(crate) async fn belief_explanation(
+        &self,
+        id: Uuid,
+        offset: usize,
+        limit: Option<usize>,
+    ) -> Result<serde_json::Value> {
+        let mut client = self.client.lock().await;
+        let snapshot = client
+            .build_transaction()
+            .read_only(true)
+            .isolation_level(tokio_postgres::IsolationLevel::RepeatableRead)
+            .start()
+            .await?;
+        let reader = snapshot.client();
+        let belief = self.get_belief_on(reader, id).await?.ok_or_else(|| {
+            Refusal::invalid(
+                Code::MissingReference,
+                vec![Segment::Key("id".into())],
+                "Belief not found. Look up the desired belief and use its stored UUID.",
+            )
+        })?;
+        let incoming = self.get_incoming_edges_on(reader, &[id]).await?;
+        let parents: Vec<_> = incoming.iter().map(|(from,to,relation,weight,mean)| serde_json::json!({
+            "from_id": from, "to_id": to, "relation": relation, "weight": weight.value(), "source_probability": mean
+        })).collect();
+        let reviews = Self::reviews_for_belief_on(reader, id, offset, limit).await?;
+        let candidate = self.candidate_provenance_on(reader, id).await?;
+        let independent = self.independent_provenance_on(reader, id).await?;
+        snapshot.commit().await?;
+        Ok(serde_json::json!({
+            "belief": belief, "incoming_edges": parents, "learning": reviews,
+            "candidate_provenance": candidate, "independent_provenance": independent
+        }))
     }
 }

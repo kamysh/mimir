@@ -576,6 +576,9 @@ learning infrastructure.
 
 ### Verification
 
+The [specification reading guide](SPEC-READING-GUIDE.md) links the application
+contracts, their checked guarantees, and the corresponding implementation tests.
+
 Run the maintained release checks with Docker available:
 
 ```sh

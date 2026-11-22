@@ -616,12 +616,22 @@ impl AgeStore {
 
     /// Delete a belief and all its edges by ID. Returns true if found and deleted.
     pub async fn delete_belief(&self, id: Uuid) -> Result<bool> {
-        let g = &self.graph_name;
-        let id_str = id.to_string();
         let mut client = self.client.lock().await;
         let tx = learning_transaction(&mut client).await?;
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
             .await?;
+        let deleted = self.delete_belief_in(&tx, id).await?;
+        tx.commit().await?;
+        Ok(deleted)
+    }
+
+    async fn delete_belief_in(
+        &self,
+        tx: &tokio_postgres::Transaction<'_>,
+        id: Uuid,
+    ) -> Result<bool> {
+        let g = &self.graph_name;
+        let id_str = id.to_string();
         let exists = tx.query(&format!("SELECT id::text FROM ag_catalog.cypher('{g}', $$ MATCH (n:Belief {{id:'{id_str}'}}) RETURN n.id $$) AS (id ag_catalog.agtype)"), &[]).await?;
         if exists.is_empty() {
             return Ok(false);
@@ -649,9 +659,54 @@ $$) AS (ok ag_catalog.agtype)"#
             &[&id],
         )
         .await?;
-        self.recompute_learning(&tx, None, affected).await?;
-        tx.commit().await?;
+        self.recompute_learning(tx, None, affected).await?;
         Ok(true)
+    }
+
+    pub(crate) async fn sweep_defeated(
+        &self,
+        project: Option<&str>,
+        threshold: Probability,
+        grace: chrono::Duration,
+    ) -> Result<usize> {
+        let mut client = self.client.lock().await;
+        let tx = learning_transaction(&mut client).await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        let edges = match project {
+            Some(project) => {
+                self.get_defeats_with_timestamps_by_project_on(tx.client(), project)
+                    .await?
+            }
+            None => self.get_defeats_with_timestamps_on(tx.client()).await?,
+        };
+        if edges.is_empty() {
+            return Ok(0);
+        }
+        let beliefs = match project {
+            Some(project) => {
+                self.list_beliefs_by_project_on(tx.client(), project)
+                    .await?
+            }
+            None => self.list_beliefs_on(tx.client()).await?,
+        };
+        let beliefs = beliefs
+            .into_iter()
+            .map(|belief| (belief.id, belief))
+            .collect();
+        let candidates = crate::inference::InferenceEngine::new().find_expired_defeated(
+            &edges,
+            &beliefs,
+            chrono::Utc::now(),
+            threshold.value(),
+            grace,
+        );
+        let mut deleted = 0;
+        for id in candidates {
+            deleted += usize::from(self.delete_belief_in(&tx, id).await?);
+        }
+        tx.commit().await?;
+        Ok(deleted)
     }
 
     /// Delete all beliefs (and their edges) tagged with the given project.
@@ -1008,32 +1063,35 @@ $$) AS (n ag_catalog.agtype)"#
         Ok(s.parse()?)
     }
 
-    /// Returns every (defeater_id, defeated_id, defeater_created_at) triple for
-    /// DEFEATS relationships in the graph. Used by the attenuated-deletion sweep
-    /// to find defeated beliefs whose grace period has elapsed. DEFEATS edges carry no
-    /// timestamp of their own, so the defeater's `created_at` is returned as the
-    /// proxy for when the defeat happened — see `InferenceEngine::find_expired_defeated`.
+    /// Returns each defeat and when its link was recorded. Legacy links use the epoch.
     pub async fn get_defeats_with_timestamps(
         &self,
     ) -> Result<Vec<(Uuid, Uuid, chrono::DateTime<chrono::Utc>)>> {
+        let client = self.client.lock().await;
+        self.get_defeats_with_timestamps_on(&client).await
+    }
+
+    async fn get_defeats_with_timestamps_on(
+        &self,
+        client: &Client,
+    ) -> Result<Vec<(Uuid, Uuid, chrono::DateTime<chrono::Utc>)>> {
         let g = &self.graph_name;
         let sql = format!(
-            r#"SELECT defeater_id::text, defeated_id::text, defeater_created_at::text
+            r#"SELECT defeater_id::text, defeated_id::text, defeat_recorded_at::text
 FROM ag_catalog.cypher('{g}', $$
-  MATCH (a:Belief)-[:DEFEATS]->(b:Belief)
-  RETURN a.id, b.id, a.created_at
-$$) AS (defeater_id ag_catalog.agtype, defeated_id ag_catalog.agtype, defeater_created_at ag_catalog.agtype)"#
+  MATCH (a:Belief)-[r:DEFEATS]->(b:Belief)
+  RETURN a.id, b.id, coalesce(r.recorded_at, '1970-01-01T00:00:00Z')
+$$) AS (defeater_id ag_catalog.agtype, defeated_id ag_catalog.agtype, defeat_recorded_at ag_catalog.agtype)"#
         );
-        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         let mut triples = Vec::with_capacity(rows.len());
         for row in &rows {
             let defeater_id = Uuid::parse_str(row.get::<_, &str>("defeater_id"))?;
             let defeated_id = Uuid::parse_str(row.get::<_, &str>("defeated_id"))?;
-            let created_at_str: &str = row.get("defeater_created_at");
-            let defeater_created_at =
+            let created_at_str: &str = row.get("defeat_recorded_at");
+            let defeat_recorded_at =
                 DateTime::parse_from_rfc3339(created_at_str)?.with_timezone(&chrono::Utc);
-            triples.push((defeater_id, defeated_id, defeater_created_at));
+            triples.push((defeater_id, defeated_id, defeat_recorded_at));
         }
         Ok(triples)
     }
@@ -1045,21 +1103,30 @@ $$) AS (defeater_id ag_catalog.agtype, defeated_id ag_catalog.agtype, defeater_c
         &self,
         project: &str,
     ) -> Result<Vec<(Uuid, Uuid, chrono::DateTime<chrono::Utc>)>> {
+        let client = self.client.lock().await;
+        self.get_defeats_with_timestamps_by_project_on(&client, project)
+            .await
+    }
+
+    async fn get_defeats_with_timestamps_by_project_on(
+        &self,
+        client: &Client,
+        project: &str,
+    ) -> Result<Vec<(Uuid, Uuid, chrono::DateTime<chrono::Utc>)>> {
         let g = &self.graph_name;
         let agtype_json = format!(r#"{{"project": "{}"}}"#, json_esc(project));
         let stmt = format!("age_defeats_ts_proj_{}", Uuid::new_v4().simple());
         let prepare = format!(
-            "PREPARE {stmt}(agtype) AS SELECT defeater_id::text, defeated_id::text, defeater_created_at::text \
+            "PREPARE {stmt}(agtype) AS SELECT defeater_id::text, defeated_id::text, defeat_recorded_at::text \
              FROM ag_catalog.cypher('{g}', $$ \
-             MATCH (a:Belief)-[:DEFEATS]->(b:Belief) \
+             MATCH (a:Belief)-[r:DEFEATS]->(b:Belief) \
              WHERE (a.project = $project OR a.project IS NULL) \
                AND (b.project = $project OR b.project IS NULL) \
-             RETURN a.id, b.id, a.created_at \
-             $$, $1) AS (defeater_id agtype, defeated_id agtype, defeater_created_at agtype)"
+             RETURN a.id, b.id, coalesce(r.recorded_at, '1970-01-01T00:00:00Z') \
+             $$, $1) AS (defeater_id agtype, defeated_id agtype, defeat_recorded_at agtype)"
         );
 
-        let client = self.client.lock().await;
-        let rows = age_query_rows(&client, &stmt, &prepare, &agtype_json).await?;
+        let rows = age_query_rows(client, &stmt, &prepare, &agtype_json).await?;
         let mut triples = Vec::with_capacity(rows.len());
         for row in &rows {
             let defeater_id_raw = row
@@ -1069,13 +1136,13 @@ $$) AS (defeater_id ag_catalog.agtype, defeated_id ag_catalog.agtype, defeater_c
                 .get("defeated_id")
                 .ok_or_else(|| anyhow::anyhow!("missing column defeated_id"))?;
             let created_at_raw = row
-                .get("defeater_created_at")
-                .ok_or_else(|| anyhow::anyhow!("missing column defeater_created_at"))?;
+                .get("defeat_recorded_at")
+                .ok_or_else(|| anyhow::anyhow!("missing column defeat_recorded_at"))?;
             let defeater_id = Uuid::parse_str(defeater_id_raw)?;
             let defeated_id = Uuid::parse_str(defeated_id_raw)?;
-            let defeater_created_at =
+            let defeat_recorded_at =
                 DateTime::parse_from_rfc3339(created_at_raw)?.with_timezone(&chrono::Utc);
-            triples.push((defeater_id, defeated_id, defeater_created_at));
+            triples.push((defeater_id, defeated_id, defeat_recorded_at));
         }
         Ok(triples)
     }
@@ -1264,12 +1331,17 @@ $$) {PATTERN_RETURN_COLUMNS}"#
         let to_id = edge.to_id.to_string();
         let label = edge.edge_type.as_str();
         let weight = edge.weight.value();
+        let timestamp = if edge.edge_type == EdgeType::Defeats {
+            format!(", recorded_at: '{}'", chrono::Utc::now().to_rfc3339())
+        } else {
+            String::new()
+        };
 
         // Dynamic label in Cypher requires string interpolation.
         let sql = format!(
             r#"SELECT * FROM ag_catalog.cypher('{g}', $$
   MATCH (a:Belief {{id: '{from_id}'}}), (b:Belief {{id: '{to_id}'}})
-  CREATE (a)-[r:{label} {{weight: {weight}}}]->(b)
+  CREATE (a)-[r:{label} {{weight: {weight}{timestamp}}}]->(b)
   RETURN r.weight
 $$) AS (weight ag_catalog.agtype)"#
         );

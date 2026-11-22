@@ -641,35 +641,19 @@ impl MimirService {
                  Do not choose it for the user or pass a per-call override."
             )
         })?;
-        let edges = match project {
-            Some(p) => self.store.get_defeats_with_timestamps_by_project(p).await?,
-            None => self.store.get_defeats_with_timestamps().await?,
-        };
-        if edges.is_empty() {
-            return Ok(0);
-        }
-        let beliefs = match project {
-            Some(p) => self.store.list_beliefs_by_project(p).await?,
-            None => self.store.list_beliefs().await?,
-        };
-        let belief_map: std::collections::HashMap<Uuid, Belief> =
-            beliefs.into_iter().map(|b| (b.id, b)).collect();
-        let now = chrono::Utc::now();
-        let grace_period = chrono::Duration::minutes((grace_hours * 60.0).round() as i64);
-        let candidates = self.inference.find_expired_defeated(
-            &edges,
-            &belief_map,
-            now,
-            prob_threshold,
-            grace_period,
+        let threshold = Probability::new(prob_threshold)?;
+        anyhow::ensure!(
+            grace_hours.is_finite() && grace_hours >= 0.0,
+            "Retirement grace must be a finite nonnegative number of hours."
         );
-        let mut deleted = 0usize;
-        for id in candidates {
-            if self.store.delete_belief(id).await? {
-                deleted += 1;
-            }
-        }
-        Ok(deleted)
+        let grace = chrono::Duration::try_minutes((grace_hours * 60.0).round() as i64).ok_or_else(
+            || {
+                anyhow::anyhow!(
+                    "The configured retirement period is outside the supported duration range."
+                )
+            },
+        )?;
+        self.store.sweep_defeated(project, threshold, grace).await
     }
 
     /// Hybrid retrieval ranked by weighted Reciprocal Rank Fusion.

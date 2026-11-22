@@ -1728,7 +1728,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/JudgeHost.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -1741,7 +1741,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/JudgeHost.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -1754,7 +1754,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/JudgeHost.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -1767,7 +1767,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/JudgeHost.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -1780,7 +1780,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/JudgeHost.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -1793,7 +1793,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/JudgeHost.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -1806,7 +1806,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/JudgeHost.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -1819,7 +1819,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/JudgeHost.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -1832,7 +1832,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/JudgeHost.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -1845,7 +1845,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/JudgeHost.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -1858,7 +1858,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/JudgeHost.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -1871,7 +1871,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/JudgeHost.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -1884,7 +1884,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/JudgeHost.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -1897,7 +1897,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/JudgeHost.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -1910,7 +1910,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/JudgeHost.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -1923,7 +1923,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/JudgeHost.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -1934,7 +1934,7 @@
       "classification": "production-behavior",
       "behavioral_specification": [
         "spec/Mimir/JudgeHost.agda",
-        "spec/Mimir/JudgeHostProtocol.agda",
+        "spec/Mimir/JudgeHostProtocol.lagda.md",
         "spec/Mimir/JudgeStatusProtocol.agda"
       ],
       "specification_status": "partially-specified"
@@ -3778,7 +3778,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -3794,7 +3794,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -3810,7 +3810,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -3826,7 +3826,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -3842,7 +3842,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -3858,7 +3858,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -3874,7 +3874,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -3890,7 +3890,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -3906,7 +3906,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -3922,7 +3922,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -3938,7 +3938,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -3954,7 +3954,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -3970,7 +3970,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -3986,7 +3986,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -4002,7 +4002,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -4018,7 +4018,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -4034,7 +4034,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -4050,7 +4050,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -4066,7 +4066,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -4082,7 +4082,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -4098,7 +4098,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -4114,7 +4114,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -4130,7 +4130,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -4146,7 +4146,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -4162,7 +4162,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -4178,7 +4178,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -4194,7 +4194,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -4210,7 +4210,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -4226,7 +4226,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -4242,7 +4242,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -4258,7 +4258,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -4274,7 +4274,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -4290,7 +4290,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -4306,7 +4306,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -4322,7 +4322,7 @@
             "spec/Mimir/CLIServiceBinding.agda",
             "spec/Mimir/HookProtocol.agda",
             "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.lagda.md",
             "spec/Mimir/JudgeStatusProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -4336,7 +4336,7 @@
         "spec/Mimir/CLIServiceBinding.agda",
         "spec/Mimir/HookProtocol.agda",
         "spec/Mimir/ConfigurationProtocol.agda",
-        "spec/Mimir/JudgeHostProtocol.agda",
+        "spec/Mimir/JudgeHostProtocol.lagda.md",
         "spec/Mimir/JudgeStatusProtocol.agda"
       ],
       "specification_status": "partially-specified"
@@ -6289,7 +6289,7 @@
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/GraphNumerics.agda",
             "spec/Mimir/PosteriorComputation.agda",
             "spec/Mimir/GraphPaths.agda"
@@ -6303,7 +6303,7 @@
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/GraphNumerics.agda",
             "spec/Mimir/PosteriorComputation.agda",
             "spec/Mimir/GraphPaths.agda"
@@ -6317,7 +6317,7 @@
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/GraphNumerics.agda",
             "spec/Mimir/PosteriorComputation.agda",
             "spec/Mimir/GraphPaths.agda"
@@ -6331,7 +6331,7 @@
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/GraphNumerics.agda",
             "spec/Mimir/PosteriorComputation.agda",
             "spec/Mimir/GraphPaths.agda"
@@ -6345,7 +6345,7 @@
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/GraphNumerics.agda",
             "spec/Mimir/PosteriorComputation.agda",
             "spec/Mimir/GraphPaths.agda"
@@ -6359,7 +6359,7 @@
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/GraphNumerics.agda",
             "spec/Mimir/PosteriorComputation.agda",
             "spec/Mimir/GraphPaths.agda"
@@ -6373,7 +6373,7 @@
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/GraphNumerics.agda",
             "spec/Mimir/PosteriorComputation.agda",
             "spec/Mimir/GraphPaths.agda"
@@ -6387,7 +6387,7 @@
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/GraphNumerics.agda",
             "spec/Mimir/PosteriorComputation.agda",
             "spec/Mimir/GraphPaths.agda"
@@ -6401,7 +6401,7 @@
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/GraphNumerics.agda",
             "spec/Mimir/PosteriorComputation.agda",
             "spec/Mimir/GraphPaths.agda"
@@ -6415,7 +6415,7 @@
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/GraphNumerics.agda",
             "spec/Mimir/PosteriorComputation.agda",
             "spec/Mimir/GraphPaths.agda"
@@ -6429,7 +6429,7 @@
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/GraphNumerics.agda",
             "spec/Mimir/PosteriorComputation.agda",
             "spec/Mimir/GraphPaths.agda"
@@ -6443,7 +6443,7 @@
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/GraphNumerics.agda",
             "spec/Mimir/PosteriorComputation.agda",
             "spec/Mimir/GraphPaths.agda"
@@ -6457,7 +6457,7 @@
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/GraphNumerics.agda",
             "spec/Mimir/PosteriorComputation.agda",
             "spec/Mimir/GraphPaths.agda"
@@ -6471,7 +6471,7 @@
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/GraphNumerics.agda",
             "spec/Mimir/PosteriorComputation.agda",
             "spec/Mimir/GraphPaths.agda"
@@ -6485,7 +6485,7 @@
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/GraphNumerics.agda",
             "spec/Mimir/PosteriorComputation.agda",
             "spec/Mimir/GraphPaths.agda"
@@ -6499,7 +6499,7 @@
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/GraphNumerics.agda",
             "spec/Mimir/PosteriorComputation.agda",
             "spec/Mimir/GraphPaths.agda"
@@ -6513,7 +6513,7 @@
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/GraphNumerics.agda",
             "spec/Mimir/PosteriorComputation.agda",
             "spec/Mimir/GraphPaths.agda"
@@ -6896,7 +6896,7 @@
       "proof_boundary_category": "application_semantics",
       "classification": "production-behavior",
       "behavioral_specification": [
-        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceProtocol.lagda.md",
         "spec/Mimir/GraphNumerics.agda",
         "spec/Mimir/PosteriorComputation.agda",
         "spec/Mimir/GraphPaths.agda"
@@ -7742,7 +7742,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -7765,7 +7765,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -7788,7 +7788,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -7811,7 +7811,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -7834,7 +7834,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -7857,7 +7857,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -7880,7 +7880,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -7903,7 +7903,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -7926,7 +7926,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -7949,7 +7949,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -7972,7 +7972,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -7995,7 +7995,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8018,7 +8018,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8041,7 +8041,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8064,7 +8064,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8087,7 +8087,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8110,7 +8110,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8133,7 +8133,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8156,7 +8156,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8179,7 +8179,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8202,7 +8202,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8225,7 +8225,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8248,7 +8248,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8271,7 +8271,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8294,7 +8294,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8317,7 +8317,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8340,7 +8340,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8363,7 +8363,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8386,7 +8386,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8409,7 +8409,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8432,7 +8432,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8455,7 +8455,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8478,7 +8478,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8501,7 +8501,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8524,7 +8524,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8547,7 +8547,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8570,7 +8570,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8593,7 +8593,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8616,7 +8616,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8643,7 +8643,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8670,7 +8670,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8693,7 +8693,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8716,7 +8716,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8739,7 +8739,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8762,7 +8762,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8785,7 +8785,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8808,7 +8808,7 @@
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
             "spec/Mimir/ProjectDeletion.lagda.md",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/RetrievalProtocol.lagda.md",
             "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.lagda.md",
@@ -8829,7 +8829,7 @@
         "spec/Mimir/GraphReadProtocol.agda",
         "spec/Mimir/GraphDeletion.agda",
         "spec/Mimir/ProjectDeletion.lagda.md",
-        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceProtocol.lagda.md",
         "spec/Mimir/RetrievalProtocol.lagda.md",
         "spec/Mimir/DocumentLoading.lagda.md",
         "spec/Mimir/DocumentQuery.lagda.md",
@@ -10321,7 +10321,7 @@
           "line": 11,
           "behavioral_area": [
             "spec/Mimir/GraphPaths.agda",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/LearningTransaction.agda",
             "spec/Mimir/CandidateRegistry.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
@@ -10338,7 +10338,7 @@
           "line": 51,
           "behavioral_area": [
             "spec/Mimir/GraphPaths.agda",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/LearningTransaction.agda",
             "spec/Mimir/CandidateRegistry.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
@@ -10355,7 +10355,7 @@
           "line": 89,
           "behavioral_area": [
             "spec/Mimir/GraphPaths.agda",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/LearningTransaction.agda",
             "spec/Mimir/CandidateRegistry.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
@@ -10372,7 +10372,7 @@
           "line": 99,
           "behavioral_area": [
             "spec/Mimir/GraphPaths.agda",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/LearningTransaction.agda",
             "spec/Mimir/CandidateRegistry.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
@@ -10389,7 +10389,7 @@
           "line": 124,
           "behavioral_area": [
             "spec/Mimir/GraphPaths.agda",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/LearningTransaction.agda",
             "spec/Mimir/CandidateRegistry.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
@@ -10406,7 +10406,7 @@
           "line": 144,
           "behavioral_area": [
             "spec/Mimir/GraphPaths.agda",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/LearningTransaction.agda",
             "spec/Mimir/CandidateRegistry.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
@@ -10423,7 +10423,7 @@
           "line": 176,
           "behavioral_area": [
             "spec/Mimir/GraphPaths.agda",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/LearningTransaction.agda",
             "spec/Mimir/CandidateRegistry.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
@@ -10440,7 +10440,7 @@
           "line": 191,
           "behavioral_area": [
             "spec/Mimir/GraphPaths.agda",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/LearningTransaction.agda",
             "spec/Mimir/CandidateRegistry.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
@@ -10457,7 +10457,7 @@
           "line": 223,
           "behavioral_area": [
             "spec/Mimir/GraphPaths.agda",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/LearningTransaction.agda",
             "spec/Mimir/CandidateRegistry.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
@@ -10474,7 +10474,7 @@
           "line": 246,
           "behavioral_area": [
             "spec/Mimir/GraphPaths.agda",
-            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/InferenceProtocol.lagda.md",
             "spec/Mimir/LearningTransaction.agda",
             "spec/Mimir/CandidateRegistry.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
@@ -10490,7 +10490,7 @@
       "proof_boundary_category": "database_effects",
       "behavioral_specification": [
         "spec/Mimir/GraphPaths.agda",
-        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceProtocol.lagda.md",
         "spec/Mimir/LearningTransaction.agda",
         "spec/Mimir/CandidateRegistry.agda",
         "spec/Mimir/DocumentLoading.lagda.md",

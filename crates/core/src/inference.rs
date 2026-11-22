@@ -372,15 +372,10 @@ impl InferenceEngine {
     /// below `prob_threshold` and (b) a `grace_period` has elapsed since it was
     /// last defeated, with no intervening reversal.
     ///
-    /// DEFEATS edges carry no timestamp of their own, so the defeat time is
-    /// approximated as the MOST RECENT defeater's `created_at` for that target
-    /// — record_defeat is expected to be called in the same breath as writing
-    /// the correcting belief (see the "call record_defeat immediately" rule),
-    /// so a defeater's creation time is a close proxy for when the defeat
-    /// actually landed. If a belief is defeated more than once, the latest
-    /// defeat resets its grace-period clock.
+    /// Each link carries its recording time. The latest recorded defeat sets
+    /// the grace-period clock.
     ///
-    /// `edges` is every (defeater_id, defeated_id, defeater_created_at) triple
+    /// `edges` is every (defeater_id, defeated_id, defeat_recorded_at) triple
     /// for DEFEATS relationships in the graph. `beliefs` supplies current
     /// probability for each defeated id (a belief absent from `beliefs`, e.g.
     /// already deleted, is silently skipped). Pure function — the caller

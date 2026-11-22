@@ -291,9 +291,20 @@ async fn missing_references_and_stale_revisions_are_correctable() -> Result<()> 
     )
     .await;
     let stale_error = stale.expect_err("stale review revision must be refused");
+    let refusal = stale_error
+        .downcast_ref::<mimir_core::validation::Refusal>()
+        .expect("stale review should have a structured correction");
+    assert_eq!(
+        refusal.fault.code,
+        mimir_core::validation::Code::StaleRevision
+    );
+    assert_eq!(
+        serde_json::to_value(&refusal.fault.path)?,
+        json!(["expected_review_revision"])
+    );
     let stale_message = stale_error.to_string();
     ensure!(
-        stale_message.contains("stale"),
+        stale_message.to_lowercase().contains("stale"),
         "stale revision refusal must say so: {stale_message}"
     );
     ensure!(

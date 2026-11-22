@@ -80,20 +80,20 @@ decay now factor masses beliefs with probability factor
 ... | false = nothing
 ... | true = decayRows now factor masses beliefs
 
--- Latest defeat is the source belief creation time, not an edge timestamp.
+-- The store supplies each link timestamp, using the epoch for legacy links.
 -- HashMap iteration order is intentionally not invented: callers provide the
 -- enumeration order, and duplicate target identities are removed before use.
 record Defeat : Set where
   constructor defeat
-  field source target : UUID; sourceCreated : ℤ
+  field source target : UUID; recordedAt : ℤ
 
 latest : UUID → List Defeat → Maybe ℤ
 latest id [] = nothing
 latest id (e ∷ es) with id ≟UUID Defeat.target e
 ... | no _ = latest id es
 ... | yes _ with latest id es
-...   | nothing = just (Defeat.sourceCreated e)
-...   | just time = just (Defeat.sourceCreated e Int.⊔ time)
+...   | nothing = just (Defeat.recordedAt e)
+...   | just time = just (Defeat.recordedAt e Int.⊔ time)
 
 expired : ℤ → ℤ → Float → List Graph.BeliefValues → List Defeat → UUID → Bool
 expired now grace threshold beliefs edges id with Ranking.lookup id beliefs | latest id edges

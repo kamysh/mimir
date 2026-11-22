@@ -37,7 +37,7 @@ data Request : Set where
 data Statement : Set where
   currentOf reviewOf : UUID → Statement
   pendingRows : Maybe Text → Maybe ℕ → List UUID → Statement
-  scoreTarget scoreRows : Selection.Query → Statement
+  scoreSnapshot : Selection.Query → Statement
   historicalScores : Selection.Query → ℕ → Maybe ℕ → Statement
 
 data Effect : Set where
@@ -79,18 +79,6 @@ read handle statement next = ask (select handle statement) receive
   receive (inj₁ failure) = close handle (failed failure)
   receive (inj₂ observed) = next observed
 
-scoreAfterTarget : ℕ → Selection.Query → Store.World → Script Result
-scoreAfterTarget tx q first with Targets.validate (Selection.Query.project q)
-  (map Recompute.target (Recompute.beliefs (Publication.World.nodes (Store.World.publication first))))
-  (Selection.Query.belief q ∷ [])
-... | Validation.rejected failure refutation = close (just tx) (invalidTarget failure)
-... | Validation.accepted valid = read (just tx) (scoreRows q) (λ second →
-  close (just tx) (scoreResult (Assessment.assessed q (Assessment.scores q (AssessmentView.view second)))))
-
-scoreAfterBegin : Selection.Query → Text ⊎ ℕ → Script Result
-scoreAfterBegin q (inj₁ failure) = done (failed failure)
-scoreAfterBegin q (inj₂ tx) = read (just tx) (scoreTarget q) (scoreAfterTarget tx q)
-
 start : Request → Script Result
 start (experience id) = read nothing (currentOf id) (λ observed →
   done (experienceResult (Experiences.get id (Store.World.current observed))))
@@ -107,7 +95,14 @@ start (pending project limit excluded) with validSelection limit
 start (score q) with nonblank (Selection.Query.project q) ∧
   nonblank (Selection.Query.scope q) ∧ nonblank (Selection.Query.rubric q)
 ... | false = done (scoreResult Assessment.missingScope)
-... | true = ask beginRead (scoreAfterBegin q)
+... | true = read nothing (scoreSnapshot q) λ observed →
+  finish (Assessment.getAssessment q
+    (map Recompute.target (Recompute.beliefs (Publication.World.nodes (Store.World.publication observed))))
+    (AssessmentView.view observed))
+  where
+  finish : Assessment.ScoreResult → Script Result
+  finish (Assessment.invalidTarget fault) = done (invalidTarget fault)
+  finish result = done (scoreResult result)
 start (assessmentHistory q offset limit) with validSelection limit ∧ does (offset ≤? Bounds.i64Maximum)
 ... | false = done (assessmentHistoryResult Assessment.invalidPage)
 ... | true with nonblank (Selection.Query.project q)

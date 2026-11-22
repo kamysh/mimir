@@ -165,7 +165,7 @@
       "completion_modules": [
         "spec/Mimir/GraphMutationProtocol.agda",
         "spec/Mimir/GraphWrites.agda",
-        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceProtocol.lagda.md",
         "spec/Mimir/PosteriorComputation.agda",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
@@ -194,7 +194,7 @@
       "completion_modules": [
         "spec/Mimir/GraphMutationProtocol.agda",
         "spec/Mimir/GraphWrites.agda",
-        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceProtocol.lagda.md",
         "spec/Mimir/PosteriorComputation.agda",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
@@ -223,7 +223,7 @@
       "completion_modules": [
         "spec/Mimir/GraphMutationProtocol.agda",
         "spec/Mimir/GraphWrites.agda",
-        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceProtocol.lagda.md",
         "spec/Mimir/PosteriorComputation.agda",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
@@ -252,7 +252,7 @@
       "completion_modules": [
         "spec/Mimir/GraphMutationProtocol.agda",
         "spec/Mimir/GraphWrites.agda",
-        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceProtocol.lagda.md",
         "spec/Mimir/PosteriorComputation.agda",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
@@ -357,7 +357,7 @@
       "status": "partially-specified",
       "rust_correspondence": "open; separate from behavioral specification",
       "completion_modules": [
-        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceProtocol.lagda.md",
         "spec/Mimir/GraphNumerics.agda",
         "spec/Mimir/PosteriorComputation.agda",
         "spec/Mimir/GraphPaths.agda",
@@ -386,7 +386,7 @@
       "status": "partially-specified",
       "rust_correspondence": "open; separate from behavioral specification",
       "completion_modules": [
-        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceProtocol.lagda.md",
         "spec/Mimir/GraphNumerics.agda",
         "spec/Mimir/PosteriorComputation.agda",
         "spec/Mimir/GraphPaths.agda",
@@ -415,7 +415,7 @@
       "status": "partially-specified",
       "rust_correspondence": "open; separate from behavioral specification",
       "completion_modules": [
-        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceProtocol.lagda.md",
         "spec/Mimir/GraphNumerics.agda",
         "spec/Mimir/PosteriorComputation.agda",
         "spec/Mimir/GraphPaths.agda",
@@ -523,7 +523,7 @@
       "status": "partially-specified",
       "rust_correspondence": "open; separate from behavioral specification",
       "completion_modules": [
-        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceProtocol.lagda.md",
         "spec/Mimir/GraphNumerics.agda",
         "spec/Mimir/PosteriorComputation.agda",
         "spec/Mimir/GraphPaths.agda",
@@ -552,7 +552,7 @@
       "status": "partially-specified",
       "rust_correspondence": "open; separate from behavioral specification",
       "completion_modules": [
-        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceProtocol.lagda.md",
         "spec/Mimir/GraphNumerics.agda",
         "spec/Mimir/PosteriorComputation.agda",
         "spec/Mimir/GraphPaths.agda",
@@ -727,7 +727,7 @@
         "spec/Mimir/ApplicationFloat.agda",
         "spec/Mimir/AssessmentEvaluation.agda",
         "spec/Mimir/AssessmentScores.agda",
-        "spec/Mimir/AssessmentRead.agda",
+        "spec/Mimir/AssessmentRead.lagda.md",
         "spec/Mimir/LearningAssessmentQueries.agda",
         "spec/Mimir/LearningQueryProtocol.agda"
       ],
@@ -764,7 +764,7 @@
         "spec/Mimir/AssessmentWrites.agda",
         "spec/Mimir/AssessmentHistory.agda",
         "spec/Mimir/LearningSchema.agda",
-        "spec/Mimir/AssessmentRead.agda",
+        "spec/Mimir/AssessmentRead.lagda.md",
         "spec/Mimir/LearningAssessmentQueries.agda",
         "spec/Mimir/LearningQueryProtocol.agda"
       ],
@@ -796,7 +796,7 @@
         "spec/Mimir/ReviewLedger.agda",
         "spec/Mimir/CandidateRegistry.agda",
         "spec/Mimir/AssessmentSelection.agda",
-        "spec/Mimir/BeliefExplanation.agda",
+        "spec/Mimir/BeliefExplanation.lagda.md",
         "spec/Mimir/CandidateProvenance.agda",
         "spec/Mimir/IndependentProvenance.agda"
       ],
@@ -897,7 +897,7 @@
         "spec/Mimir/AssessmentHistory.agda",
         "spec/Mimir/ReviewEdges.agda",
         "spec/Mimir/ReviewRecomputeTraversal.agda",
-        "spec/Mimir/ReviewRecord.agda",
+        "spec/Mimir/ReviewRecord.lagda.md",
         "spec/Mimir/ReviewNumericalPublication.agda",
         "spec/Mimir/LearningRecompute.agda",
         "spec/Mimir/PosteriorComputation.agda",
@@ -1145,7 +1145,7 @@
         "Inference"
       ],
       "completion_modules": [
-        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceProtocol.lagda.md",
         "spec/Mimir/GraphNumerics.agda",
         "spec/Mimir/CLI.agda",
         "spec/Mimir/ApplicationProtocol.agda"
@@ -1163,7 +1163,7 @@
         "Inference"
       ],
       "completion_modules": [
-        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceProtocol.lagda.md",
         "spec/Mimir/GraphNumerics.agda",
         "spec/Mimir/CLI.agda",
         "spec/Mimir/ApplicationProtocol.agda"
@@ -1180,7 +1180,7 @@
         "Graph"
       ],
       "completion_modules": [
-        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceProtocol.lagda.md",
         "spec/Mimir/GraphNumerics.agda",
         "spec/Mimir/GraphDeletion.agda",
         "spec/Mimir/CLI.agda",
@@ -1218,7 +1218,7 @@
         "Beta"
       ],
       "completion_modules": [
-        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceProtocol.lagda.md",
         "spec/Mimir/GraphNumerics.agda",
         "spec/Mimir/PosteriorComputation.agda",
         "spec/Mimir/CLI.agda",
@@ -1436,7 +1436,7 @@
         "BatchReport"
       ],
       "completion_modules": [
-        "spec/Mimir/JudgeHostProtocol.agda",
+        "spec/Mimir/JudgeHostProtocol.lagda.md",
         "spec/Mimir/JudgeConfigurationComposition.agda",
         "spec/Mimir/CLI.agda",
         "spec/Mimir/ApplicationProtocol.agda"
@@ -1459,7 +1459,7 @@
         "BatchReport"
       ],
       "completion_modules": [
-        "spec/Mimir/JudgeHostProtocol.agda",
+        "spec/Mimir/JudgeHostProtocol.lagda.md",
         "spec/Mimir/JudgeWorkflowComposition.agda",
         "spec/Mimir/JudgeBackendComposition.agda",
         "spec/Mimir/JudgeFinalizationComposition.agda",
@@ -1484,7 +1484,7 @@
         "BatchReport"
       ],
       "completion_modules": [
-        "spec/Mimir/JudgeHostProtocol.agda",
+        "spec/Mimir/JudgeHostProtocol.lagda.md",
         "spec/Mimir/CLI.agda",
         "spec/Mimir/ApplicationProtocol.agda"
       ],
@@ -1657,7 +1657,7 @@
         "spec/Mimir/JudgePersistence.agda"
       ],
       "completion_modules": [
-        "spec/Mimir/JudgeHostProtocol.agda",
+        "spec/Mimir/JudgeHostProtocol.lagda.md",
         "spec/Mimir/JudgeWorkflowComposition.agda",
         "spec/Mimir/JudgeBackendComposition.agda",
         "spec/Mimir/JudgeClientStartup.agda",

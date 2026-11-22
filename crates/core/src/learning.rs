@@ -436,6 +436,30 @@ pub struct LearningContext {
     pub assessments_truncated: bool,
 }
 
+pub(crate) fn check_review_source(submitted: i64, current: i64) -> Result<()> {
+    use crate::validation::{Code, Refusal, Segment};
+    if submitted != current {
+        return Err(Refusal::invalid(
+            Code::StaleRevision,
+            vec![Segment::Key("review".into()), Segment::Key("experience_revision".into())],
+            "Stale review: the experience has changed. Read get_experience and reassess the review against the current evidence before resubmitting.",
+        ).into());
+    }
+    Ok(())
+}
+
+pub(crate) fn check_review_revision(expected: i64, current: i64) -> Result<()> {
+    use crate::validation::{Code, Refusal, Segment};
+    if expected != current {
+        return Err(Refusal::invalid(
+            Code::StaleRevision,
+            vec![Segment::Key("expected_review_revision".into())],
+            format!("Stale review revision: current is {current}. Call get_learning_review, reconcile your intended changes with the current review, and resubmit."),
+        ).into());
+    }
+    Ok(())
+}
+
 impl crate::MimirService {
     pub async fn lesson_assessment(
         &self,
@@ -455,7 +479,7 @@ impl crate::MimirService {
         scope: &str,
         rubric: &str,
         offset: usize,
-        limit: usize,
+        limit: Option<usize>,
     ) -> Result<serde_json::Value> {
         self.store
             .lesson_assessment_history(project, belief_id, scope, rubric, offset, limit)
@@ -500,10 +524,7 @@ impl crate::MimirService {
             .ok_or_else(|| {
                 anyhow::anyhow!("Experience not found; check its id before resubmitting.")
             })?;
-        ensure!(
-            review.experience_revision == current.revision,
-            "stale review: experience has changed"
-        );
+        check_review_source(review.experience_revision, current.revision)?;
         let existing = self
             .store
             .existing_belief_candidates(review.experience_id)
@@ -522,11 +543,7 @@ impl crate::MimirService {
                 }
                 // An already committed review cannot contain a new belief.
                 // Leave replay and final revision validation to the transaction.
-                ensure!(
-                    expected_review_revision == current.review_revision,
-                    "stale review revision: current is {}",
-                    current.review_revision
-                );
+                check_review_revision(expected_review_revision, current.review_revision)?;
                 let passage_id = supporting_passage_id.ok_or_else(|| crate::validation::Refusal::invalid(
                     crate::validation::Code::MissingEvidence,
                     vec![crate::validation::Segment::Key("review".into()), crate::validation::Segment::Key("candidates".into()), crate::validation::Segment::Index(index), crate::validation::Segment::Key("supporting_passage_id".into())],
@@ -676,22 +693,9 @@ impl crate::MimirService {
         &self,
         id: Uuid,
         offset: usize,
-        limit: usize,
+        limit: Option<usize>,
     ) -> Result<serde_json::Value> {
-        let belief = self
-            .get_belief(id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("belief not found"))?;
-        let incoming = self.store.get_incoming_edges(&[id]).await?;
-        let parents: Vec<_> = incoming.iter().map(|(from,to,relation,weight,mean)|serde_json::json!({
-            "from_id":from,"to_id":to,"relation":relation,"weight":weight.value(),"source_probability":mean
-        })).collect();
-        let reviews = self.store.reviews_for_belief(id, offset, limit).await?;
-        let candidate_provenance = self.store.candidate_provenance(id).await?;
-        let independent_provenance = self.store.independent_provenance(id).await?;
-        Ok(
-            serde_json::json!({"belief":belief,"incoming_edges":parents,"learning":reviews,"candidate_provenance":candidate_provenance,"independent_provenance":independent_provenance}),
-        )
+        self.store.belief_explanation(id, offset, limit).await
     }
 }
 

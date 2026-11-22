@@ -47,7 +47,7 @@ checked log attempt for the configured directory, file limit and retained-file
 count. A success has the exact append result. A failed attempt cannot authorize
 reviewing.
 
-The [actual judge host protocol](../spec/Mimir/JudgeHostProtocol.agda) consumes
+The [actual judge host protocol](../spec/Mimir/JudgeHostProtocol.lagda.md) consumes
 that checked attempt after loading configuration and before resolving the batch
 state path, taking its judge lock or executing the backend. Logging failure
 ends that attempt with the existing unavailable exit category. The general

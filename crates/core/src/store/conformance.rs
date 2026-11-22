@@ -267,6 +267,90 @@ mod tests {
 
     #[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
     #[tokio::test]
+    async fn retirement_grace_and_batch_rollback() -> Result<()> {
+        let config = isolation::fixture().database_config();
+        let store = AgeStore::new(crate::db::connect(&config).await?, config.dbname)?;
+        let project = format!("retirement-fixture-{}", Uuid::new_v4());
+        let source = store
+            .insert_belief(&Belief::new_in_project(
+                "defeater".into(),
+                0.9,
+                0.8,
+                project.clone(),
+            )?)
+            .await?;
+        let mut targets = Vec::new();
+        for label in ["first defeated belief", "second defeated belief"] {
+            let target = store
+                .insert_belief(&Belief::new_in_project(
+                    label.into(),
+                    0.1,
+                    0.8,
+                    project.clone(),
+                )?)
+                .await?;
+            store
+                .insert_edge(&Edge::new(source.id, target.id, EdgeType::Defeats, 1.0)?)
+                .await?;
+            targets.push(target.id);
+        }
+        let threshold = Probability::new(0.3)?;
+        let recent = store
+            .sweep_defeated(Some(&project), threshold, chrono::Duration::hours(1))
+            .await?;
+        ensure!(recent == 0, "new defeats must receive the configured grace");
+        if let Ok(mut client) = store.client.try_lock() {
+            let fixture = client.transaction().await?;
+            fixture.batch_execute(
+                "CREATE SEQUENCE mimir_test_delete_order;
+                 CREATE FUNCTION mimir_test_second_retirement() RETURNS trigger LANGUAGE plpgsql AS $$
+                 BEGIN
+                   IF nextval('mimir_test_delete_order') = 2 THEN
+                     RAISE EXCEPTION 'fixture rejects second retirement';
+                   END IF;
+                   RETURN NULL;
+                 END $$;
+                 CREATE TRIGGER mimir_test_second_retirement BEFORE DELETE ON belief_embeddings
+                 FOR EACH STATEMENT EXECUTE FUNCTION mimir_test_second_retirement();"
+            ).await?;
+            fixture.commit().await?;
+        } else {
+            anyhow::bail!("retirement fixture client unexpectedly in use");
+        }
+        let result = store
+            .sweep_defeated(Some(&project), threshold, chrono::Duration::zero())
+            .await;
+        let error = store
+            .client
+            .lock()
+            .await
+            .batch_execute(
+                "DROP TRIGGER mimir_test_second_retirement ON belief_embeddings;
+             DROP FUNCTION mimir_test_second_retirement();
+             DROP SEQUENCE mimir_test_delete_order;",
+            )
+            .await;
+        error?;
+        ensure!(result.unwrap_err().chain().any(|cause| cause
+            .to_string()
+            .contains("fixture rejects second retirement")));
+        for target in targets {
+            ensure!(
+                store.get_belief(target).await?.is_some(),
+                "retirement rollback must restore every target"
+            );
+        }
+        ensure!(
+            store
+                .sweep_defeated(Some(&project), threshold, chrono::Duration::zero())
+                .await?
+                == 2
+        );
+        Ok(())
+    }
+
+    #[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
+    #[tokio::test]
     async fn experience_history_observes_both_version_lists_together() -> Result<()> {
         use serde_json::json;
 
@@ -842,22 +926,28 @@ mod tests {
         service.embeddings = Some(Box::new(Provider { fail: true }));
         let mut stale = review.clone();
         stale.experience_revision += 1;
-        assert_eq!(
-            service
-                .review_supported_experience(&stale, 0)
-                .await
-                .unwrap_err()
-                .to_string(),
-            "stale review: experience has changed"
-        );
-        assert_eq!(
-            service
-                .review_supported_experience(&review, 1)
-                .await
-                .unwrap_err()
-                .to_string(),
-            "stale review revision: current is 0"
-        );
+        let stale_source = service
+            .review_supported_experience(&stale, 0)
+            .await
+            .unwrap_err();
+        let stale_review = service
+            .review_supported_experience(&review, 1)
+            .await
+            .unwrap_err();
+        for (error, path) in [
+            (
+                stale_source,
+                serde_json::json!(["review", "experience_revision"]),
+            ),
+            (
+                stale_review,
+                serde_json::json!(["expected_review_revision"]),
+            ),
+        ] {
+            let refusal = error.downcast_ref::<crate::validation::Refusal>().unwrap();
+            assert_eq!(refusal.fault.code, crate::validation::Code::StaleRevision);
+            assert_eq!(serde_json::to_value(&refusal.fault.path).unwrap(), path);
+        }
         assert!(format!(
             "{:#}",
             service

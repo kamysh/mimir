@@ -59,17 +59,18 @@ immediately. An empty queue waits for PostgreSQL notifications.
 If PostgreSQL refuses the connection at startup or a work subscription drops,
 the watcher retries every five seconds until it reconnects. For example, if
 Mimir starts before PostgreSQL after a reboot, the delay avoids a tight loop
-and lets work resume automatically. After subscribing, it immediately checks
-for work queued during the outage. This timer runs only while disconnected.
+and lets work resume automatically. The watcher also detects a disconnect
+while it is waiting for repair after a blocked batch. After subscribing,
+it immediately checks for work queued during the outage. This timer runs
+only while disconnected.
 Mimir records one diagnostic per outage, even when many retries fail.
 
 For failures that require a repair, correct the reported problem and edit the
 configuration or send `kill -HUP WATCHER_PID` to start a fresh attempt. When
-the model provider itself declares a usage limit (classified `provider_usage_limit` and
-carries the provider's own message, including its reset time), the repair wait
-arms a single wake at the declared reset and resumes the documented retry
-without a human event. If the message carries no parseable reset time the wake
-falls back to one hour, bounding outage attempts to one per hour.
+the model provider declares a usage limit with a usable reset time, the
+watcher schedules one retry at that time. The report records the provider's
+message as `provider_usage_limit`. If the message carries no usable reset
+time, the watcher waits for a configuration change or SIGHUP.
 Configuration changes are observed through file events.
 
 Common cases:

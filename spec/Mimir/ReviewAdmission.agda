@@ -78,7 +78,8 @@ checkPin : ∀ env requested → Checked (Pinned env requested)
 checkPin env requested = combine
   (check (fault [] wrongIdentity "review belongs to another experience")
     (Review.experienceID requested ≟UUID Experience.identity (Environment.experience env)))
-  (check (fault [] staleRevision "experience has changed")
+  (check (fault (key "review" ∷ key "experience_revision" ∷ []) staleRevision
+    "Read get_experience and reassess the review against the current evidence before resubmitting.")
     (Review.experienceRevision requested Integer.≟ (+ Environment.sourceRevision env)))
 
 module For (env : Environment) (requested : Review) where
