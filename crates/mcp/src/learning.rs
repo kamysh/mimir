@@ -194,9 +194,10 @@ pub async fn call(svc: &MimirService, name: &str, args: &Value) -> Result<Value>
             svc.query_learning_context(
                 text(args, "context")?,
                 text(args, "project")?,
-                // Omitted limit selects all matching beliefs and patterns;
-                // admission rejects an explicit zero.
-                limit(args, 0)?,
+                args.get("limit").map(|count| {
+                    count.as_u64().and_then(|n| usize::try_from(n).ok())
+                        .ok_or_else(|| anyhow!("limit must be a positive integer"))
+                }).transpose()?,
             )
             .await?,
         )?,

@@ -6921,7 +6921,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -6941,7 +6941,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -6959,7 +6959,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -6977,7 +6977,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -6995,7 +6995,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7013,7 +7013,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7034,7 +7034,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7052,7 +7052,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7070,7 +7070,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7090,7 +7090,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7110,7 +7110,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7128,7 +7128,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7150,7 +7150,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7168,7 +7168,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7186,7 +7186,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7204,7 +7204,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7225,7 +7225,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7245,7 +7245,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7265,7 +7265,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7286,7 +7286,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7304,7 +7304,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7324,7 +7324,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7342,7 +7342,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7360,7 +7360,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7378,7 +7378,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7396,7 +7396,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7414,7 +7414,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7432,7 +7432,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7450,7 +7450,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7468,7 +7468,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7486,7 +7486,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7504,7 +7504,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7522,7 +7522,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7540,7 +7540,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7558,7 +7558,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7576,7 +7576,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7594,7 +7594,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7612,7 +7612,7 @@
             "spec/Mimir/LearningQueryProtocol.agda",
             "spec/Mimir/LearningHistoryWire.agda",
             "spec/Mimir/LearningAssessmentQueries.agda",
-            "spec/Mimir/LearningContextProtocol.agda",
+            "spec/Mimir/LearningContextProtocol.lagda.md",
             "spec/Mimir/LearningPublication.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -7628,7 +7628,7 @@
         "spec/Mimir/LearningQueryProtocol.agda",
         "spec/Mimir/LearningHistoryWire.agda",
         "spec/Mimir/LearningAssessmentQueries.agda",
-        "spec/Mimir/LearningContextProtocol.agda",
+        "spec/Mimir/LearningContextProtocol.lagda.md",
         "spec/Mimir/LearningPublication.agda",
         "spec/Mimir/LearningInput.agda",
         "spec/Mimir/LearningNormalization.agda",

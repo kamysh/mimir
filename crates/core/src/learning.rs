@@ -573,16 +573,32 @@ impl crate::MimirService {
     /// Retrieve relevant procedures with observed results alongside beliefs.
     /// Relevance comes first; outcome estimates break ties between equally
     /// relevant procedures. A retrieval never counts as a successful use.
-    /// `limit = 0` selects all matching patterns and beliefs (no cap).
+    /// An omitted count selects all matching patterns and beliefs.
     pub async fn query_learning_context(
         &self,
         context: &str,
         project: &str,
-        limit: usize,
+        limit: Option<usize>,
     ) -> Result<LearningContext> {
-        ensure!(!project.trim().is_empty(), "project must be explicit");
+        use crate::validation::{Code, Refusal, Segment};
+        if project.trim().is_empty() {
+            return Err(Refusal::invalid(
+                Code::EmptyText,
+                vec![Segment::Key("project".into())],
+                "Choose a nonblank project for the experiences to search and resubmit.",
+            )
+            .into());
+        }
+        if limit == Some(0) {
+            return Err(Refusal::invalid(
+                Code::InvalidNumber,
+                vec![Segment::Key("limit".into())],
+                "Supply a positive count or omit the field to return all matches.",
+            )
+            .into());
+        }
         let report = self
-            .query_relevant(context, limit, Some(project), None)
+            .query_relevant(context, limit.unwrap_or_default(), Some(project), None)
             .await?;
         let beliefs = report.beliefs;
         let terms: std::collections::HashSet<_> = context
@@ -605,22 +621,19 @@ impl crate::MimirService {
             }
         }
         ranked.sort_by(|(a, x), (b, y)| {
-            b.cmp(a)
-                .then_with(|| {
-                    y.observed_success_probability
-                        .total_cmp(&x.observed_success_probability)
-                })
-                .then_with(|| x.pattern.id.cmp(&y.pattern.id))
+            b.cmp(a).then_with(|| {
+                y.observed_success_probability
+                    .total_cmp(&x.observed_success_probability)
+            })
         });
         let (assessments, assessments_truncated) = self
             .store
             .assessments_for_beliefs(project, &beliefs.iter().map(|b| b.id).collect::<Vec<_>>())
             .await?;
-        let patterns: Vec<PatternResult> = if limit > 0 {
-            ranked.into_iter().take(limit).map(|(_, p)| p).collect()
-        } else {
-            ranked.into_iter().map(|(_, p)| p).collect()
-        };
+        if let Some(limit) = limit {
+            ranked.truncate(limit);
+        }
+        let patterns = ranked.into_iter().map(|(_, result)| result).collect();
         Ok(LearningContext {
             beliefs,
             semantic_search: report.semantic_search,

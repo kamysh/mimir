@@ -1005,12 +1005,12 @@
         "spec/Mimir/Graph.agda",
         "spec/Mimir/AssessmentSelection.agda",
         "spec/Mimir/LearningContracts.agda",
-        "spec/Mimir/LearningContextProtocol.agda"
+        "spec/Mimir/LearningContextProtocol.lagda.md"
       ],
       "status": "partially-specified",
       "rust_correspondence": "open; separate from behavioral specification",
       "completion_modules": [
-        "spec/Mimir/LearningContextProtocol.agda",
+        "spec/Mimir/LearningContextProtocol.lagda.md",
         "spec/Mimir/LearningContext.agda",
         "spec/Mimir/LearningAssessmentQueries.agda",
         "spec/Mimir/RetrievalProtocol.lagda.md",

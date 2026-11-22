@@ -104,7 +104,7 @@ impl AgeStore {
         ids: &[Uuid],
     ) -> Result<(Vec<serde_json::Value>, bool)> {
         let client = self.client.lock().await;
-        let rows = client.query("SELECT a.belief_id,a.scope,a.rubric,sum(a.positive),sum(a.negative),sum(a.benefit),sum(a.benefit_weight),count(*),count(*) FILTER (WHERE a.positive+a.negative=0),count(*) FILTER (WHERE a.benefit_weight=0) FROM mimir_assessment_contributions a JOIN mimir_experiences e ON e.id=a.experience_id JOIN mimir_review_versions r ON r.experience_id=e.id AND r.revision=a.review_revision WHERE e.project=$1 AND a.belief_id=ANY($2) AND e.review_revision=r.revision AND e.revision=r.experience_revision GROUP BY a.belief_id,a.scope,a.rubric ORDER BY a.belief_id,a.scope,a.rubric", &[&project,&ids]).await?;
+        let rows = client.query("SELECT a.belief_id,a.scope,a.rubric,sum(a.positive),sum(a.negative),sum(a.benefit),sum(a.benefit_weight),count(*),count(*) FILTER (WHERE a.positive+a.negative=0),count(*) FILTER (WHERE a.benefit_weight=0) FROM mimir_assessment_contributions a JOIN mimir_experiences e ON e.id=a.experience_id JOIN mimir_review_versions r ON r.experience_id=e.id AND r.revision=a.review_revision WHERE e.project=$1 AND a.belief_id=ANY($2) AND e.review_revision=r.revision AND e.revision=r.experience_revision GROUP BY a.belief_id,a.scope,a.rubric ORDER BY array_position($2::uuid[],a.belief_id),a.scope,a.rubric", &[&project,&ids]).await?;
         let values=rows.iter().map(|r| {
             let scores=crate::assessment::Scores::from_totals(r.get(3),r.get(4),r.get(5),r.get(6),r.get(7),r.get(8),r.get(9))?;
             Ok(serde_json::json!({"belief_id":r.get::<_,Uuid>(0),"scope":r.get::<_,&str>(1),"rubric":r.get::<_,&str>(2),"scores":scores}))

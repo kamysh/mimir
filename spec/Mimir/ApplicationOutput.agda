@@ -95,6 +95,20 @@ module Project (environment : Application.Environment) (format : Encoding.Format
     kind Provenance.beliefKind = toList "belief"
     kind Provenance.patternKind = toList "pattern"
 
+  patternObservation : ContextProtocol.PatternObservation → V.Value
+  patternObservation observation = object
+    (("pattern" , patternValue (Observed.metadata observation)) ∷
+     ("successes" , V.unsigned (Observed.successes observation)) ∷
+     ("failures" , V.unsigned (Observed.failures observation)) ∷
+     ("unknown" , V.unsigned (Observed.unknown observation)) ∷
+     ("observed_success_probability" , real (Observed.estimate observation)) ∷
+     origin (Observed.provenance observation))
+    where
+    module Observed = ContextProtocol.PatternObservation
+    origin : Maybe Provenance.Provenance → List (String × V.Value)
+    origin nothing = []
+    origin (just p) = ("candidate_provenance" , provenance p) ∷ []
+
   independent : Origin.Read → V.Value
   independent Origin.noProvenance = V.null
   independent Origin.malformed = V.null -- classified as failure before success projection
@@ -229,7 +243,8 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   ... | nothing = failure original
   ... | just assessments = success (object (("beliefs" , V.array (map belief (ContextProtocol.Output.beliefs result))) ∷
     ("semantic_search" , semanticSearch (ContextProtocol.Output.semanticSearch result)) ∷
-    ("patterns" , V.array (ContextProtocol.Output.patterns result)) ∷ ("assessments" , V.array assessments) ∷
+    ("patterns" , V.array (map patternObservation (ContextProtocol.Output.patterns result))) ∷
+    ("assessments" , V.array assessments) ∷
     ("assessments_truncated" , V.boolean (Context.Assessments.truncated (ContextProtocol.Output.assessments result))) ∷ []))
   project (A.capabilitiesResult c) = success (Capabilities.encode c)
   project original@(A.failed _) = failure original

@@ -44,6 +44,138 @@ fn fixture_config() -> Config {
 
 #[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
 #[tokio::test]
+async fn learning_context_ranks_procedures_and_groups_assessments_in_belief_order() -> Result<()> {
+    let service = MimirService::connect(&fixture_config()).await?;
+    let project = format!("context{}", uuid::Uuid::new_v4().simple());
+    let first = service
+        .add_belief_in_project(
+            &format!("{project} alpha"),
+            0.6,
+            0.5,
+            &project,
+            MemoryType::Fact,
+        )
+        .await?;
+    let second = service
+        .add_belief_in_project(
+            &format!("{project} beta"),
+            0.6,
+            0.5,
+            &project,
+            MemoryType::Fact,
+        )
+        .await?;
+    let local = service
+        .add_pattern_in_project(
+            &format!("{project} alpha beta"),
+            "check local evidence",
+            0.5,
+            Some(&project),
+        )
+        .await?;
+    let global = service
+        .add_pattern_in_project(&project.to_uppercase(), "check global evidence", 0.5, None)
+        .await?;
+    service
+        .add_pattern_in_project(
+            &format!("{project} alpha beta"),
+            "different project",
+            0.5,
+            Some("foreign-context"),
+        )
+        .await?;
+    service
+        .add_pattern_in_project(
+            &format!("{project}suffix"),
+            "nonmatching term",
+            0.5,
+            Some(&project),
+        )
+        .await?;
+
+    let recorded = handle_tool_call(
+        &service,
+        "record_experience",
+        &json!({"experience": {
+            "context": project, "project": project, "action": "verify both lessons",
+            "source": "tool_result", "outcome": "success", "evidence": ["both checks passed"],
+            "belief_ids": [first.id, second.id], "pattern_id": global.id
+        }, "expected_revision": 0}),
+    )
+    .await?;
+    let assessments = [first.id, second.id].map(|id| {
+        json!({
+            "target": {"belief_id": id}, "scope": "selection", "rubric": "test",
+            "correctness": {"value": 1.0, "weight": 1.0},
+            "usefulness": {"value": 1.0, "weight": 1.0},
+            "evidence_indices": [0], "rationale": "verified both checks"
+        })
+    });
+    handle_tool_call(
+        &service,
+        "review_experience",
+        &json!({"review": {
+            "experience_id": recorded["experience"]["id"], "experience_revision": 1,
+            "reviewer": "fixture", "rationale": "store the observed outcome",
+            "assessments": assessments
+        }, "expected_review_revision": 0}),
+    )
+    .await?;
+
+    for (word, expected) in [
+        ("alpha", [first.id, second.id]),
+        ("beta", [second.id, first.id]),
+    ] {
+        let context = format!("{project} {word}");
+        let reply = handle_tool_call(
+            &service,
+            "query_learning_context",
+            &json!({"context": context, "project": project}),
+        )
+        .await?;
+        ensure!(reply["semantic_search"]["cause"] == "not_configured");
+        ensure!(reply["beliefs"].as_array().map(Vec::len) == Some(2));
+        ensure!(reply["assessments"].as_array().map(Vec::len) == Some(2));
+        for (index, id) in expected.into_iter().enumerate() {
+            ensure!(reply["beliefs"][index]["id"] == json!(id));
+            ensure!(reply["assessments"][index]["belief_id"] == json!(id));
+        }
+        ensure!(reply["assessments_truncated"] == false);
+        ensure!(reply["patterns"].as_array().map(Vec::len) == Some(2));
+        ensure!(reply["patterns"][0]["pattern"]["id"] == json!(local.id));
+        ensure!(reply["patterns"][1]["pattern"]["id"] == json!(global.id));
+        ensure!(reply["patterns"][1]["successes"] == 1);
+        let limited = handle_tool_call(
+            &service,
+            "query_learning_context",
+            &json!({"context": context, "project": project, "limit": 1}),
+        )
+        .await?;
+        for key in ["beliefs", "patterns", "assessments"] {
+            ensure!(
+                limited[key] == json!([reply[key][0]]),
+                "unexpected limited {key}"
+            );
+        }
+    }
+
+    let refusal = handle_tool_call(
+        &service,
+        "query_learning_context",
+        &json!({"context": project, "project": " \t"}),
+    )
+    .await
+    .expect_err("blank project requires correction");
+    let refusal = refusal
+        .downcast_ref::<mimir_core::validation::Refusal>()
+        .ok_or_else(|| anyhow::anyhow!("expected a structured correction"))?;
+    ensure!(refusal.fault.code == mimir_core::validation::Code::EmptyText);
+    ensure!(serde_json::to_value(&refusal.fault.path)? == json!(["project"]));
+    Ok(())
+}
+
+#[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
+#[tokio::test]
 async fn belief_search_applies_the_count_after_ranking_all_eligible_vectors() -> Result<()> {
     let config = fixture_config();
     let store = AgeStore::new(
