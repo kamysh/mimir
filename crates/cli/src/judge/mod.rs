@@ -426,7 +426,15 @@ async fn run_once(
                 .unwrap_or_else(|_| "{\"status\":\"unavailable\"}".into())
         );
     }
-    let deferred = report.block_reason.as_deref() == Some("review_deferred");
+    // Keep the diagnostic reason intact. Once readback has deferred a
+    // selected review, its refusal need not stop unrelated reviews.
+    let reason = report.block_reason.as_deref();
+    let deferred_only = reason == Some("review_deferred");
+    let local_refusal = reason == Some("tool_rejected")
+        && report
+            .deferred_reviews
+            .iter()
+            .any(|held| report.selected_ids.contains(&held.id));
     let auto_resume = if report.block_reason.as_deref() == Some("provider_usage_limit") {
         let now = chrono::Local::now();
         let minutes = provider_resume_delay(
@@ -438,9 +446,14 @@ async fn run_once(
         None
     };
     RunOutcome {
-        code: if watch_mode && deferred { 0 } else { code },
+        code: if watch_mode && (deferred_only || local_refusal) {
+            0
+        } else {
+            code
+        },
         degraded: matches!(report.status.as_str(), "blocked" | "partial"),
-        idle: report.status == "idle",
+        idle: report.status == "idle"
+            || (watch_mode && deferred_only && report.selected_ids.is_empty()),
         auto_resume,
     }
 }

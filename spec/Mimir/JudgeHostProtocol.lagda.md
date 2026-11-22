@@ -14,7 +14,10 @@ be marked reviewed, and the saved review revision must have advanced.
 A model's success message supplies no confirmation. A source that changed
 in the meantime is reported as corrected. A selected revision that remains
 pending can be deferred while other experience revisions continue. A new
-revision or a confirmed review invalidates the old deferral.
+revision or a confirmed review invalidates the old deferral. If final readback
+leaves a rejected review deferred, the watcher immediately checks for other
+eligible work. The report retains the failure reason. If only deferred work
+remains, the watcher waits for a work event.
 
 [JudgeBatchReadback](JudgeBatchReadback.agda) defines confirmation and
 deferral. [JudgeWorkflowComposition](JudgeWorkflowComposition.agda)
@@ -28,10 +31,11 @@ reconnect wait exists because a disconnected subscriber cannot receive a
 work notification. The watcher reports the outage once and checks the
 queue after it reconnects.
 
-A blocked attempt leaves unfinished work pending. After resolving a
-prerequisite, the operator can edit the configuration or send SIGHUP to
-start a fresh attempt. If the model provider supplies a usable local reset
-time, that reset can also wake the watcher. A truncated or missing reset
+A batch that cannot proceed because of a shared prerequisite leaves unfinished
+work pending. After resolving that prerequisite, the operator can edit the
+configuration or send SIGHUP to start a fresh attempt. If the model provider
+supplies a usable local reset time, that reset can also wake the watcher.
+A truncated or missing reset
 leaves it waiting for an operator event. Email delivery proceeds separately.
 
 [Watcher](../../crates/cli/src/judge/watcher.rs) and
@@ -311,16 +315,9 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   afterWork subscription (inj₂ explicitRetry) = ask (dropWorkSubscription subscription) (λ _ → done (subscribing false))
 
   afterWatch : WorkSubscription → Host.Outcome → WatchState
-  afterWatch subscription (Host.outcome Host.success false false) = watching subscription (once true)
-  afterWatch subscription (Host.outcome Host.success false true) =
+  afterWatch subscription (Host.outcome Host.success _ false) = watching subscription (once true)
+  afterWatch subscription (Host.outcome Host.success _ true) =
     controlling (ask (waitForWork subscription) (afterWork subscription))
-  -- A deferred batch is not a failed attempt (Mimir.JudgeHost.outcomeOf maps
-  -- watch ∧ isDeferred to success): its pins are excluded from subsequent
-  -- selections and reconciled against fresh reads, so the next batch can
-  -- select other pending work. Continuing immediately lets one unconfirmable
-  -- experience drain the rest of the queue instead of parking the watcher
-  -- until a repair signal.
-  afterWatch subscription (Host.outcome Host.success true false) = watching subscription (once true)
   afterWatch subscription problem = controlling
     (awaitRepair (just subscription) (toList "The current batch could not complete"))
 

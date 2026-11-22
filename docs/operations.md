@@ -55,7 +55,10 @@ With a custom configuration or state directory, pass `--config PATH` and/or
 
 The daily email includes a cause, batch impact, next action and this diagnostic
 command. A backlog is work still awaiting review. Successful batches continue
-immediately. An empty queue waits for PostgreSQL notifications.
+immediately. If a rejected review is deferred after readback, the watcher
+records the reason and immediately checks for other work. When the queue is
+empty or all remaining reviews are deferred, it waits for PostgreSQL
+notifications.
 If PostgreSQL refuses the connection at startup or a work subscription drops,
 the watcher retries every five seconds until it reconnects. For example, if
 Mimir starts before PostgreSQL after a reboot, the delay avoids a tight loop
