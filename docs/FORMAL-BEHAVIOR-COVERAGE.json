@@ -26,7 +26,7 @@
         "spec/Mimir/GraphRecords.agda",
         "spec/Mimir/GraphWrites.agda",
         "spec/Mimir/GraphMutationProtocol.agda",
-        "spec/Mimir/BeliefEmbedding.agda",
+        "spec/Mimir/BeliefEmbedding.lagda.md",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
         "spec/Mimir/ApplicationOutput.agda",
@@ -137,7 +137,7 @@
         "spec/Mimir/GraphRecords.agda",
         "spec/Mimir/GraphWrites.agda",
         "spec/Mimir/GraphMutationProtocol.agda",
-        "spec/Mimir/BeliefEmbedding.agda",
+        "spec/Mimir/BeliefEmbedding.lagda.md",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
         "spec/Mimir/ApplicationOutput.agda",
@@ -1199,7 +1199,7 @@
         "Evidence"
       ],
       "completion_modules": [
-        "spec/Mimir/BeliefEmbedding.agda",
+        "spec/Mimir/BeliefEmbedding.lagda.md",
         "spec/Mimir/CLI.agda",
         "spec/Mimir/ApplicationProtocol.agda",
         "spec/Mimir/Reembedding.agda",

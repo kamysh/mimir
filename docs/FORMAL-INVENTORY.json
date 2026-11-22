@@ -7734,7 +7734,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -7757,7 +7757,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -7780,7 +7780,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -7803,7 +7803,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -7826,7 +7826,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -7849,7 +7849,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -7872,7 +7872,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -7895,7 +7895,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -7918,7 +7918,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -7941,7 +7941,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -7964,7 +7964,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -7987,7 +7987,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8010,7 +8010,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8033,7 +8033,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8056,7 +8056,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8079,7 +8079,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8102,7 +8102,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8125,7 +8125,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8148,7 +8148,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8171,7 +8171,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8194,7 +8194,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8217,7 +8217,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8240,7 +8240,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8263,7 +8263,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8286,7 +8286,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8309,7 +8309,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8332,7 +8332,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8355,7 +8355,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8378,7 +8378,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8401,7 +8401,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8424,7 +8424,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8447,7 +8447,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8470,7 +8470,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8493,7 +8493,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8516,7 +8516,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8539,7 +8539,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8562,7 +8562,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8585,7 +8585,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8608,7 +8608,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8635,7 +8635,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8662,7 +8662,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8685,7 +8685,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8708,7 +8708,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8731,7 +8731,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8754,7 +8754,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8777,7 +8777,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8800,7 +8800,7 @@
             "spec/Mimir/DocumentLoading.agda",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         }
@@ -8821,7 +8821,7 @@
         "spec/Mimir/DocumentLoading.agda",
         "spec/Mimir/DocumentQuery.agda",
         "spec/Mimir/EvidenceRead.agda",
-        "spec/Mimir/BeliefEmbedding.agda"
+        "spec/Mimir/BeliefEmbedding.lagda.md"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked",
       "implementation_receipt": "docs/RUST-CONFORMANCE.md"

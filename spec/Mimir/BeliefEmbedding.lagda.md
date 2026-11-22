@@ -1,3 +1,20 @@
+# How Mimir publishes a supported belief
+
+A direct `insert_belief` request gives Mimir a claim and the UUID of an
+existing indexed passage that supports it. The caller selects the passage
+after reading it. Similarity can help find a passage, but the caller must
+decide whether the text supports the claim. The MCP tool also requires
+independent provenance describing the user instruction or document behind
+the claim.
+
+For example, an agent can use `query_document` to find the passage that
+states a project's release policy, then submit that passage's UUID with the
+belief. If no passage supports the claim, the agent asks the user how to
+proceed before resubmitting.
+
+[MCP request handler](../../crates/mcp/src/main.rs#L665) · [Application protocol](ApplicationProtocol.agda)
+
+```agda
 {-# OPTIONS --safe #-}
 -- A belief is published only after an embedding and a supporting indexed
 -- document passage have been prepared. PostgreSQL creates the stored identity
@@ -20,6 +37,23 @@ import Mimir.IndependentProvenance as Origin
 import Mimir.DocumentStore as Documents
 import Mimir.Effects as Effects
 
+```
+
+## Prepare the materials before saving
+
+The draft holds the requested belief fields and the selected passage UUID.
+Preparation supplies a nonempty embedding and an indexed passage, or a
+reason and suggested action for the caller. Neither the draft nor the
+prepared materials contain a new belief UUID.
+
+Rust looks up the passage and checks its project before requesting an
+embedding. An unavailable or incompatible passage produces correction
+guidance. A missing or failing embedding provider calls for a user decision
+or repair before the request can proceed.
+
+[Preparation in Rust](../../crates/core/src/lib.rs#L284)
+
+```agda
 record Draft : Set where
   constructor draft
   field
@@ -50,6 +84,26 @@ data Failure : Set where
   needsInput : Text → Text → Failure
   publicationFailed : Text → Failure
 
+```
+
+## Publish in one transaction
+
+The operation checks embedding availability and the allowed range for
+probability and confidence. It proceeds to publication only after
+preparation returns both materials. A publication reply either returns
+the saved belief or reports a failure.
+
+In Rust, PostgreSQL generates the belief UUID inside the transaction that
+writes the belief, its vector, and its source link. The store checks the
+passage again before commit because it can change while the embedding is
+being prepared. The source link carries zero evidence weight in Rust, so
+attaching the passage preserves the supplied probability. The application
+spec requires the link and the saved probability, but does not constrain
+the link's weight.
+
+[Publication transaction](../../crates/core/src/store.rs#L534) · [Publication requirements in Agda](ApplicationProtocol.agda#L145)
+
+```agda
 data Effect : Set where
   prepare : Draft → Effect
   publish : Draft → Prepared → Effect
@@ -85,6 +139,20 @@ start enabled input with admit enabled input
     (inj₁ error) → done (inj₁ (publicationFailed error))
     (inj₂ belief) → done (inj₂ belief)
 
+```
+
+## What the proof says about asking for input
+
+For every draft and every execution that returns `needsInput`, the
+proof shows that the operation either stopped at admission or stopped
+after preparation asked for input. In both cases, it issued no publication
+request. If preparation succeeded but publication failed, the application
+protocol specifies rollback separately. Once the prerequisite is fixed,
+the caller can restart the request from the beginning.
+
+[Publication failure and rollback](ApplicationProtocol.agda#L525)
+
+```agda
 -- A request for a user decision has not issued the publication operation.
 data NoPublication : List Event → Set where
   noEffects : NoPublication []
@@ -100,3 +168,4 @@ needsInputDoesNotPublish enabled input reason guidance events execution | nothin
 ... | replied _ _ (askUser why next) (returned _) = onlyPreparation input why next
 ... | replied _ _ (ready material) (replied _ _ (inj₁ error) ())
 ... | replied _ _ (ready material) (replied _ _ (inj₂ belief) ())
+```
