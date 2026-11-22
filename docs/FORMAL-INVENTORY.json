@@ -7745,7 +7745,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -7768,7 +7768,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -7791,7 +7791,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -7814,7 +7814,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -7837,7 +7837,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -7860,7 +7860,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -7883,7 +7883,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -7906,7 +7906,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -7929,7 +7929,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -7952,7 +7952,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -7975,7 +7975,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -7998,7 +7998,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8021,7 +8021,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8044,7 +8044,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8067,7 +8067,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8090,7 +8090,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8113,7 +8113,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8136,7 +8136,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8159,7 +8159,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8182,7 +8182,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8205,7 +8205,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8228,7 +8228,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8251,7 +8251,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8274,7 +8274,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8297,7 +8297,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8320,7 +8320,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8343,7 +8343,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8366,7 +8366,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8389,7 +8389,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8412,7 +8412,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8435,7 +8435,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8458,7 +8458,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8481,7 +8481,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8504,7 +8504,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8527,7 +8527,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8550,7 +8550,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8573,7 +8573,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8596,7 +8596,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8619,7 +8619,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8646,7 +8646,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8673,7 +8673,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8696,7 +8696,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8719,7 +8719,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8742,7 +8742,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8765,7 +8765,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8788,7 +8788,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8811,7 +8811,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
             "spec/Mimir/DocumentLoading.lagda.md",
-            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/DocumentQuery.lagda.md",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
@@ -8832,7 +8832,7 @@
         "spec/Mimir/InferenceProtocol.agda",
         "spec/Mimir/RetrievalProtocol.agda",
         "spec/Mimir/DocumentLoading.lagda.md",
-        "spec/Mimir/DocumentQuery.agda",
+        "spec/Mimir/DocumentQuery.lagda.md",
         "spec/Mimir/EvidenceRead.agda",
         "spec/Mimir/BeliefEmbedding.lagda.md"
       ],

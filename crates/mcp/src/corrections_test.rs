@@ -21,6 +21,69 @@ fn review(experience_id: Uuid, expected_review_revision: i64, feedback: Value) -
 }
 
 #[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
+#[test]
+fn document_search_unavailability_and_invalid_context_are_actionable_mcp_replies() -> Result<()> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let fixture = isolation::fixture();
+    let mut child = Command::new(&fixture.mcp)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    {
+        let mut input = child.stdin.take().unwrap();
+        for (id, context) in [("search", "find backups"), ("blank", " \n ")] {
+            writeln!(
+                input,
+                "{}",
+                json!({"jsonrpc":"2.0","id":id,"method":"tools/call",
+                "params":{"name":"query_document","arguments":{"context":context}}})
+            )?;
+        }
+        writeln!(
+            input,
+            "{}",
+            json!({"jsonrpc":"2.0","id":"catalogue","method":"tools/list"})
+        )?;
+    }
+    let output = child.wait_with_output()?;
+    ensure!(
+        output.status.success(),
+        "MCP server failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let replies = std::str::from_utf8(&output.stdout)?
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    ensure!(
+        replies.len() == 3,
+        "expected three replies, received {replies:?}"
+    );
+    let tool_reply = |index: usize| {
+        serde_json::from_str::<Value>(
+            replies[index]["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+    };
+    let unavailable = tool_reply(0)?;
+    assert_eq!(unavailable["status"], "needs_input");
+    assert!(unavailable["reason"]
+        .as_str()
+        .unwrap()
+        .contains("no embedding provider is configured"));
+    assert!(unavailable["reason"].as_str().unwrap().contains("retry"));
+    let correction = tool_reply(1)?;
+    assert_eq!(correction["status"], "needs_correction");
+    assert_eq!(correction["path"], json!(["context"]));
+    assert!(replies[2]["result"]["tools"].is_array());
+    Ok(())
+}
+
+#[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
 #[tokio::test]
 async fn missing_references_and_stale_revisions_are_correctable() -> Result<()> {
     let service = MimirService::connect(&Config {
@@ -305,7 +368,7 @@ async fn review_history_stays_readable_after_candidate_deletion() -> Result<()> 
         .load_document(&document.to_string_lossy(), Some(&project))
         .await?;
     let passage = service
-        .query_document("supporting passage", Some(&project), 1)
+        .query_document("supporting passage", Some(&project), Some(1))
         .await?;
     ensure!(!passage.is_empty(), "fixture passage must be indexed");
     let passage_id = Uuid::parse_str(&passage[0].id)?;

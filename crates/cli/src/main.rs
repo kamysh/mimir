@@ -378,7 +378,7 @@ async fn main() -> Result<()> {
             context,
             project,
             limit,
-        }) => cmd_query_doc(&context, project.as_deref(), limit.unwrap_or(0)).await?,
+        }) => cmd_query_doc(&context, project.as_deref(), limit).await?,
         Command::Doc(DocCmd::Clear { path }) => cmd_clear_doc(&path).await?,
         Command::Reembed => cmd_reembed().await?,
         Command::Intervene { id, value } => cmd_intervene(&id, value).await?,
@@ -837,7 +837,7 @@ async fn cmd_load(path: &str, project: Option<&str>) -> Result<()> {
 // mimir query-doc
 // ---------------------------------------------------------------------------
 
-async fn cmd_query_doc(context: &str, project: Option<&str>, limit: usize) -> Result<()> {
+async fn cmd_query_doc(context: &str, project: Option<&str>, limit: Option<usize>) -> Result<()> {
     let svc = connect().await?;
     let results = svc.query_document(context, project, limit).await?;
 

@@ -508,7 +508,7 @@ fn tools_list() -> Value {
         },
         {
             "name": "query_document",
-            "description": "Semantic search over indexed document chunks. Embeds the query context and returns the most similar chunks ordered by cosine similarity. Requires [embeddings] in config.toml.",
+            "description": "Search indexed document passages by cosine similarity. An empty list means the search ran and found no eligible passages. If semantic search is unavailable, the reply explains why and how to retry.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1046,9 +1046,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'context'"))?;
             let project = args["project"].as_str();
-            // The legacy store uses zero only internally to mean no SQL LIMIT;
-            // request admission rejects an explicit wire value of zero.
-            let limit = args["limit"].as_u64().unwrap_or(0) as usize;
+            let limit = args["limit"].as_u64().map(usize::try_from).transpose()?;
             let results = svc.query_document(context, project, limit).await?;
             Ok(serde_json::to_value(&results)?)
         }

@@ -9,7 +9,7 @@ use tokio::sync::Mutex;
 use tokio_postgres::{Client, Row};
 use uuid::Uuid;
 
-use crate::documents::DocumentChunk;
+use crate::documents::{DocumentChunk, QueryResult};
 use crate::graph::{Belief, Edge, EdgeType, MemoryType, Pattern, Probability};
 
 // The approved READ COMMITTED contract requires the application to select
@@ -1809,43 +1809,78 @@ $$) AS (ok ag_catalog.agtype)"#
         Ok(())
     }
 
-    /// Cosine nearest-neighbour search over chunk_embeddings.
-    /// If filter_ids is Some, only those chunk IDs are considered.
-    /// limit=0 means no limit.
-    pub async fn query_chunks_by_vector(
+    pub(crate) async fn query_document_hits(
         &self,
-        query_vec: &[f32],
-        limit: usize,
-        filter_ids: Option<&[Uuid]>,
-    ) -> Result<Vec<Uuid>> {
-        let vec = Vector::from(query_vec.to_vec());
-        let limit_clause = if limit > 0 {
-            format!("LIMIT {limit}")
-        } else {
-            String::new()
-        };
-
-        let client = self.client.lock().await;
-        let rows = match filter_ids {
+        query: &[f32],
+        project: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Vec<QueryResult>> {
+        let mut client = self.client.lock().await;
+        let tx = client
+            .build_transaction()
+            .read_only(true)
+            .isolation_level(tokio_postgres::IsolationLevel::RepeatableRead)
+            .start()
+            .await?;
+        let ids = match project {
+            Some(project) => {
+                self.get_chunk_ids_by_project_on(tx.client(), project)
+                    .await?
+            }
             None => {
-                let sql = format!(
-                    "SELECT chunk_id::text FROM public.chunk_embeddings \
-                     ORDER BY embedding <=> $1 {limit_clause}"
-                );
-                client.query(&sql, &[&vec]).await?
-            }
-            Some(ids) => {
-                let sql = format!(
-                    "SELECT chunk_id::text FROM public.chunk_embeddings \
-                     WHERE chunk_id = ANY($2) \
-                     ORDER BY embedding <=> $1 {limit_clause}"
-                );
-                client.query(&sql, &[&vec, &ids]).await?
+                let graph = &self.graph_name;
+                tx.query(
+                    &format!("SELECT id::text FROM ag_catalog.cypher('{graph}', $$ MATCH (c:DocumentChunk) RETURN c.id $$) AS (id ag_catalog.agtype)"),
+                    &[],
+                )
+                .await?
+                .iter()
+                .map(|row| Uuid::parse_str(row.get(0)))
+                .collect::<std::result::Result<Vec<_>, _>>()?
             }
         };
-        rows.iter()
-            .map(|r| Ok(Uuid::parse_str(r.get::<_, &str>("chunk_id"))?))
-            .collect()
+        let query = Vector::from(query.to_vec());
+        let limit_clause = limit
+            .map(|count| format!("LIMIT {count}"))
+            .unwrap_or_default();
+        let sql = format!(
+            "SELECT chunk_id FROM public.chunk_embeddings \
+             WHERE chunk_id = ANY($2) AND vector_norm(embedding) > 0.0 \
+             ORDER BY embedding <=> $1 {limit_clause}"
+        );
+        let rows = tx.query(&sql, &[&query, &ids]).await?;
+        let mut hits = Vec::with_capacity(rows.len());
+        for row in rows {
+            let id: Uuid = row.get("chunk_id");
+            let chunk = self
+                .get_chunk_by_id_on(tx.client(), id)
+                .await?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Indexed passage {id} could not be read in the search snapshot."
+                    )
+                })?;
+            let parent_content = match chunk.parent_id {
+                Some(parent_id) => self
+                    .get_chunk_by_id_on(tx.client(), parent_id)
+                    .await?
+                    .filter(|parent| {
+                        parent.project == chunk.project
+                            && parent.document_path == chunk.document_path
+                    })
+                    .map(|parent| parent.content),
+                None => None,
+            };
+            hits.push(QueryResult {
+                id: chunk.id.to_string(),
+                document_path: chunk.document_path,
+                section_path: chunk.section_path,
+                content: chunk.content,
+                parent_content,
+            });
+        }
+        tx.commit().await?;
+        Ok(hits)
     }
 
     // -----------------------------------------------------------------------

@@ -302,6 +302,145 @@ mod tests {
 
     #[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
     #[tokio::test]
+    async fn document_search_ranks_visible_indexed_passages_before_limiting() {
+        struct Provider(Vec<Vec<f32>>);
+        impl crate::embed::EmbeddingProvider for Provider {
+            fn embed<'a>(&'a self, _texts: &'a [String]) -> crate::embed::EmbedFuture<'a> {
+                Box::pin(async move { Ok(self.0.clone()) })
+            }
+        }
+        let fixture = isolation::fixture();
+        let mut service = crate::MimirService::connect(&crate::config::Config {
+            database: fixture.database_config(),
+            embeddings: None,
+            llm: None,
+            judge: None,
+            email: None,
+            retirement: None,
+        })
+        .await
+        .unwrap();
+        service.embeddings = Some(Box::new(Provider(vec![vec![1.0, 0.0]])));
+        let project = format!("document-search-{}", Uuid::new_v4());
+        let path = format!("/fixture/{project}.md");
+        let store = &service.store;
+        let mut root = DocumentChunk::new(
+            path.clone(),
+            vec![],
+            "parent passage".into(),
+            None,
+            Some(project.clone()),
+        );
+        let child = DocumentChunk::new(
+            path.clone(),
+            vec!["Child".into()],
+            "closest scoped passage".into(),
+            Some(root.id),
+            Some(project.clone()),
+        );
+        let zero = DocumentChunk::new(
+            path.clone(),
+            vec![],
+            "unrankable passage".into(),
+            None,
+            Some(project.clone()),
+        );
+        let published = store
+            .replace_document(
+                &path,
+                &[root.clone(), child, zero],
+                &[vec![0.0, 1.0], vec![1.0, 0.0], vec![0.0, 0.0]],
+            )
+            .await
+            .unwrap();
+        root.project = None;
+        root.document_path = format!("{path}-global");
+        let global = store
+            .replace_document(
+                &root.document_path,
+                std::slice::from_ref(&root),
+                &[vec![1.0, 0.0]],
+            )
+            .await
+            .unwrap();
+        let foreign = DocumentChunk::new(
+            format!("{path}-foreign"),
+            vec![],
+            "foreign".into(),
+            None,
+            Some("foreign".into()),
+        );
+        let foreign = store
+            .replace_document(
+                &foreign.document_path,
+                std::slice::from_ref(&foreign),
+                &[vec![-1.0, 0.0]],
+            )
+            .await
+            .unwrap();
+        let orphan = {
+            let client = store.client.lock().await;
+            client
+                .query_one("SELECT gen_random_uuid()", &[])
+                .await
+                .unwrap()
+                .get::<_, Uuid>(0)
+        };
+        store
+            .insert_chunk_embedding(orphan, &[1.0, 0.0])
+            .await
+            .unwrap();
+
+        let scoped = service
+            .query_document("retention", Some(&project), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            scoped.iter().map(|hit| hit.id.as_str()).collect::<Vec<_>>(),
+            [published[1].id.to_string(), published[0].id.to_string()]
+        );
+        assert_eq!(scoped[0].parent_content.as_deref(), Some("parent passage"));
+        let limited = service
+            .query_document("retention", Some(&project), Some(1))
+            .await
+            .unwrap();
+        assert_eq!(limited.len(), 1);
+        assert_eq!(limited[0].id, scoped[0].id);
+        let unscoped = service
+            .query_document("retention", None, None)
+            .await
+            .unwrap();
+        for hidden in [orphan, published[2].id] {
+            assert!(!unscoped.iter().any(|hit| hit.id == hidden.to_string()));
+        }
+        for visible in [global[0].id, foreign[0].id] {
+            assert!(unscoped.iter().any(|hit| hit.id == visible.to_string()));
+        }
+        assert!(service
+            .query_document("retention", Some("absent project"), None)
+            .await
+            .unwrap()
+            .is_empty());
+
+        for response in [
+            vec![],
+            vec![vec![0.0, 0.0]],
+            vec![vec![f32::NAN]],
+            vec![vec![1.0], vec![2.0]],
+        ] {
+            service.embeddings = Some(Box::new(Provider(response)));
+            let error = service
+                .query_document("retention", Some(&project), None)
+                .await
+                .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("must return one finite, nonzero vector"));
+        }
+    }
+
+    #[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
+    #[tokio::test]
     async fn document_reload_rolls_back_late_failure_and_never_adds_evidence() {
         struct FixtureEmbedder;
         impl crate::embed::EmbeddingProvider for FixtureEmbedder {

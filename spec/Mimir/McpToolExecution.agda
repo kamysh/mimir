@@ -22,6 +22,7 @@ import Mimir.ApplicationProtocol as Application
 import Mimir.ApplicationStore as Store
 import Mimir.GraphMutationProtocol as Mutation
 import Mimir.BeliefEmbedding as BeliefEmbedding
+import Mimir.DocumentQuery as DocumentQuery
 import Mimir.Reembedding as Reembedding
 import Mimir.InferenceProtocol as Inference
 open import Mimir.UUIDGroups using (UUID)
@@ -94,6 +95,9 @@ module Run (environment : Application.Environment) (format : Encoding.Formatting
   finish (A.mutated Mutation.invalidOrigin) = inj₁ (invalidArguments
     (Validation.fault (Validation.key "provenance" ∷ []) Validation.unsupportedCombination
       "Cite an independent user instruction or document. Use record_experience for claims derived from an incident."))
+  finish (A.documentQueryResult DocumentQuery.invalidContext) = inj₁ (invalidArguments
+    (Validation.fault (Validation.key "context" ∷ []) Validation.emptyText
+      "Document search requires nonblank context. Supply the text or question to search for, then resubmit."))
   finish (A.learningQueryResult (Query.invalidTarget fault)) = inj₁ (invalidArguments fault)
   finish original@(A.learned q (A.Learn.invalidRequest failure)) with learningValidation failure
   ... | just fault = inj₁ (invalidArguments fault)

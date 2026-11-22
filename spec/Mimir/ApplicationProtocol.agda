@@ -71,6 +71,7 @@ record Environment : Set₁ where
     embeddingsEnabled : Bool
     retirementGraceHours : Maybe Float
     f32 : Ranking.F32
+    documentDistance : DocumentQuery.Distance
     unicode : Ranking.Unicode
     databaseTextBefore : Text → Text → Bool
     now : ℤ
@@ -405,13 +406,17 @@ module Run (environment : Environment) where
   documentSearchSucceeded : DocumentQuery.Result → Set
   documentSearchSucceeded (DocumentQuery.found _) = ⊤
   documentSearchSucceeded _ = ⊥
+  documentSearchReadOnly : Store.World → (effect : DocumentQuery.Effect) →
+    DocumentQuery.Reply effect → Store.World → Set
+  documentSearchReadOnly before effect reply after =
+    (after ≡ before) × DocumentQuery.Observed documentDistance before effect reply
   module DocumentSearchRecovery = Recovery Store.World DocumentQuery.Effect DocumentQuery.Result
     (λ _ → ⊤) DocumentQuery.Reply
-    (λ before effect reply after → after ≡ before)
+    documentSearchReadOnly
     (λ before after → after ≡ before)
     (λ _ _ → Store.World) (λ _ _ world → world)
     (λ _ world → world) documentSearchSucceeded (λ _ → ⊤)
-  module DocumentSearchProof = DocumentSearchRecovery.ReadOnly (λ _ _ _ _ same → same)
+  module DocumentSearchProof = DocumentSearchRecovery.ReadOnly (λ _ _ _ _ observed → proj₁ observed)
     (λ _ _ same → same) (λ _ _ → refl)
   DocumentSearch = Text × Maybe Text × Maybe ℕ
   documentSearchOperation : DocumentSearchRecovery.Recoverable DocumentSearch
@@ -1412,6 +1417,7 @@ module Run (environment : Environment) where
     evidenceRead : ∀ {state effect reply before} →
       RequestStep (evidenceEffect effect) state reply before before
     documentSearchRead : ∀ {state effect reply before} →
+      DocumentQuery.Observed documentDistance before effect reply →
       RequestStep (documentQueryEffect effect) state reply before before
     searchRead : ∀ {state effect reply before} →
       RequestStep (searchEffect effect) state reply before before

@@ -582,7 +582,7 @@
       "completion_modules": [
         "spec/Mimir/DocumentLoading.lagda.md",
         "spec/Mimir/DocumentPublication.agda",
-        "spec/Mimir/DocumentQuery.agda",
+        "spec/Mimir/DocumentQuery.lagda.md",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
         "spec/Mimir/ApplicationOutput.agda",
@@ -609,7 +609,7 @@
       "completion_modules": [
         "spec/Mimir/DocumentLoading.lagda.md",
         "spec/Mimir/DocumentPublication.agda",
-        "spec/Mimir/DocumentQuery.agda",
+        "spec/Mimir/DocumentQuery.lagda.md",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
         "spec/Mimir/ApplicationOutput.agda",
@@ -636,7 +636,7 @@
       "completion_modules": [
         "spec/Mimir/DocumentLoading.lagda.md",
         "spec/Mimir/DocumentPublication.agda",
-        "spec/Mimir/DocumentQuery.agda",
+        "spec/Mimir/DocumentQuery.lagda.md",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
         "spec/Mimir/ApplicationOutput.agda",
@@ -1323,7 +1323,7 @@
         "EmbeddingBatch"
       ],
       "completion_modules": [
-        "spec/Mimir/DocumentQuery.agda",
+        "spec/Mimir/DocumentQuery.lagda.md",
         "spec/Mimir/CLI.agda",
         "spec/Mimir/ApplicationProtocol.agda"
       ],

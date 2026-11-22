@@ -34,6 +34,7 @@ import Mimir.StructuredValue as Schema
 import Mimir.ApplicationProtocol as Application
 import Mimir.GraphMutationProtocol as Mutation
 import Mimir.BeliefEmbedding as BeliefEmbedding
+import Mimir.DocumentQuery as DocumentQuery
 import Mimir.ApplicationStore as Store
 import Mimir.PublicEncoding as Encoding
 import Mimir.StandardLibrary as Conversion
@@ -47,7 +48,7 @@ module Compose (environment : Application.Environment) (format : Encoding.Format
   (conversion : Conversion.Contract) where
   module H = Handler.Run environment format conversion
     using (Diagnostic; operationFailed; userDecisionRequired; invalidArguments; unknownTool; Result; Handled)
-  module A = Application.Run environment using (Result; Event; failed; mutated)
+  module A = Application.Run environment using (Result; Event; failed; mutated; documentQueryResult)
 
 ```
 
@@ -67,6 +68,7 @@ gives guidance to resolve the prerequisite and retry after cleanup.
   module WithDiagnostic (render : H.Diagnostic → Text) where
     diagnostic : H.Diagnostic → Text
     diagnostic (H.operationFailed (A.failed detail)) = detail
+    diagnostic (H.operationFailed (A.documentQueryResult (DocumentQuery.unavailable detail))) = detail
     diagnostic (H.operationFailed (A.mutated (Mutation.embeddingFailed (BeliefEmbedding.publicationFailed detail)))) =
       detail ++ toList ". No belief was saved. Resolve the reported database problem and retry."
     diagnostic cause = render cause
