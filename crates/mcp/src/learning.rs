@@ -1,5 +1,8 @@
 use anyhow::{anyhow, Context, Result};
-use mimir_core::MimirService;
+use mimir_core::{
+    validation::{Code, Refusal, Segment},
+    MimirService,
+};
 use serde_json::{json, Value};
 
 pub fn tools() -> Vec<Value> {
@@ -41,14 +44,18 @@ pub fn tools() -> Vec<Value> {
         json!({"name":"get_lesson_assessment","description":"Get separate numeric correctness and usefulness for an explicit lesson, applicability scope and benefit rubric. Uses current review versions only; never grants authority. Values are uncalibrated and distinct from generic graph probability.","inputSchema":{"type":"object","properties":{"project":{"type":"string"},"belief_id":uuid,"scope":{"type":"string"},"rubric":{"type":"string"}},"required":["project","belief_id","scope","rubric"]}}),
         json!({"name":"lesson_assessment_history","description":"Page through immutable assessment contributions with active/stale status and exact experience/review revisions. Evidence indices address that experience version.","inputSchema":{"type":"object","properties":{"project":{"type":"string"},"belief_id":uuid,"scope":{"type":"string"},"rubric":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1}},"required":["project","belief_id","scope","rubric"]}}),
         json!({"name":"explain_belief","description":"Inspect the belief's incoming reasoning edges and a requested page of active evidence-backed reviews. Follow experience_id with get_experience or experience_history for observations and past revisions. This explains provenance, not causal identification.","inputSchema":{"type":"object","properties":{"id":uuid,"offset":{"type":"integer","minimum":0,"default":0},"limit":{"type":"integer","minimum":1,"default":10}},"required":["id"]}}),
-        json!({"name":"record_experience","description":"Record one observed action and outcome for incremental LLM review. To create, use expected_revision=0 and a stable request_key UUID with no experience.id. PostgreSQL assigns the returned experience UUID. To correct, supply that id and the returned revision, omitting request_key. Legacy create calls may still put the request key in experience.id. Do not also insert a standalone conclusion from this same incident; review-owned candidates avoid that duplicate prior. Exact retries do not duplicate evidence. ToolResult/UserFeedback are caller-reported provenance, not server verification. A correction invalidates the old review and retracts its effects atomically.","inputSchema":{"type":"object","properties":{
-            "expected_revision":{"type":"integer","minimum":0},"request_key":uuid,
-            "experience":{"type":"object","additionalProperties":false,"properties":{
-                "id":uuid,"project":{"type":"string"},"context":{"type":"string"},"action":{"type":"string"},
-                "outcome":{"enum":["success","failure","unknown"]},"source":{"enum":["tool_result","user_feedback","agent_report"]},
-                "evidence":{"type":"array","items":{"type":"string"}},
-                "belief_ids":{"type":"array","items":uuid},"pattern_id":{"type":["string","null"]},"learning_items":{"type":"array","items":item},"source_records":{"type":"array","items":source}},
-                "required":["project","context","action","outcome","source","evidence"]}},"required":["experience","expected_revision"]}}),
+        json!({"name":"record_experience","description":"Record one observed action and outcome for incremental LLM review. To create, send expected_revision=0 and omit experience.id. PostgreSQL assigns the returned experience UUID. To correct, use that UUID and the current positive revision. Use the returned UUID for lookups and reviews. Do not also insert a standalone conclusion from this same incident; review-owned candidates avoid that duplicate prior. ToolResult/UserFeedback are caller-reported provenance, not server verification. A correction invalidates the old review and retracts its effects atomically.","inputSchema":{"type":"object","properties":{
+        "expected_revision":{"type":"integer","minimum":0},
+        "experience":{"type":"object","additionalProperties":false,"properties":{
+            "id":uuid,"project":{"type":"string"},"context":{"type":"string"},"action":{"type":"string"},
+            "outcome":{"enum":["success","failure","unknown"]},"source":{"enum":["tool_result","user_feedback","agent_report"]},
+            "evidence":{"type":"array","items":{"type":"string"}},
+            "belief_ids":{"type":"array","items":uuid},"pattern_id":{"type":["string","null"]},"learning_items":{"type":"array","items":item},"source_records":{"type":"array","items":source}},
+            "required":["project","context","action","outcome","source","evidence"]}},
+        "required":["experience","expected_revision"],"oneOf":[
+            {"properties":{"expected_revision":{"const":0},"experience":{"not":{"required":["id"]}}}},
+            {"properties":{"expected_revision":{"minimum":1},"experience":{"required":["id"]}}}
+        ]}}),
         json!({"name":"pending_experiences","description":"Get new or changed experiences awaiting review, oldest first. Omit limit for all matching experiences, or supply a positive count. Successful review removes that exact version; failed/stale submissions leave it pending. A judge may temporarily exclude deferred IDs; an empty filtered array does not prove the whole queue is empty. No claim or lease; concurrent reviewers use revision checks.","inputSchema":{"type":"object","properties":{"project":{"type":"string"},"limit":{"type":"integer","minimum":1},"exclude_ids":{"type":"array","items":uuid}}}}),
         json!({"name":"review_experience","description":"Apply one atomic, revision-checked review. Declare new belief/pattern candidates with stable keys; the response maps keys to server UUIDs. Candidate creation is not an observed successful use. Existing UUID-only reviews remain valid. Corrections retract owned evidence and links while retaining candidate identity and independent work.","inputSchema":{"type":"object","properties":{
             "expected_review_revision":{"type":"integer","minimum":0},
@@ -136,15 +143,25 @@ pub async fn call(svc: &MimirService, name: &str, args: &Value) -> Result<Value>
         }
         "record_experience" => {
             let expected = integer(args, "expected_revision")?;
-            let mut input = required(args, "experience")?.clone();
-            if let Some(key) = args.get("request_key") {
-                anyhow::ensure!(expected == 0, "Use request_key only when creating an experience with expected_revision=0.");
-                let object = input.as_object_mut().context("experience must be an object")?;
-                anyhow::ensure!(!object.contains_key("id"), "Omit experience.id on creation when supplying request_key. Use the returned experience.id for corrections.");
-                object.insert("id".into(), serde_json::to_value(uuid::Uuid::nil())?);
-                serde_json::to_value(svc.create_experience(&serde_json::from_value(input)?, serde_json::from_value(key.clone())?).await?)?
+            let raw = required(args, "experience")?;
+            let identity_fault = |message| Refusal::invalid(
+                Code::WrongIdentity,
+                vec![Segment::Key("experience".into()), Segment::Key("id".into())],
+                message,
+            );
+            if expected == 0 {
+                let mut input = raw.as_object().context("experience must be an object")?.clone();
+                if input.contains_key("id") {
+                    return Err(identity_fault("Remove experience.id to create an experience. PostgreSQL assigns the UUID in the response.").into());
+                }
+                input.insert("id".into(), Value::Null);
+                let draft = serde_json::from_value(Value::Object(input))?;
+                serde_json::to_value(svc.create_experience(&draft).await?)?
             } else {
-                serde_json::to_value(svc.record_experience(&serde_json::from_value(input)?, expected).await?)?
+                if raw.get("id").and_then(Value::as_str).and_then(|id| uuid::Uuid::parse_str(id).ok()).is_none() {
+                    return Err(identity_fault("Supply the stored experience UUID and its current revision to correct an experience.").into());
+                }
+                serde_json::to_value(svc.record_experience(&serde_json::from_value(raw.clone())?, expected).await?)?
             }
         }
         "review_experience" => serde_json::to_value(

@@ -38,20 +38,10 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
         capabilities["contract_version"] == 3,
         "PostgreSQL item allocation contract missing"
     );
-    let request_key = Uuid::new_v4();
     let source = json!({"project":"isolated-source-mcp","context":"source fixture","action":"extract all","outcome":"unknown","source":"agent_report","evidence":["event/1"],"source_records":[{"source_ref":"event/1","actor":"agent","provenance":"agent_report","text":"I suggest checking first."}]});
-    let request = json!({"experience":source,"expected_revision":0,"request_key":request_key});
+    let request = json!({"experience":source,"expected_revision":0});
     let saved = handle_tool_call(&service, "record_experience", &request).await?;
     let source_id: Uuid = serde_json::from_value(saved["experience"]["id"].clone())?;
-    ensure!(
-        source_id != request_key,
-        "the request key became the record ID"
-    );
-    let repeat = handle_tool_call(&service, "record_experience", &request).await?;
-    ensure!(
-        repeat == saved,
-        "the creation retry did not return the original receipt"
-    );
     ensure!(
         handle_tool_call(&service, "get_learning_review", &json!({"id":source_id})).await?
             ["review"]
@@ -134,7 +124,6 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
         )
         .await?
         .remove(0);
-    let id = Uuid::new_v4();
     let foreign_project = format!("{project}-foreign");
     let foreign_passage = mimir_core::documents::DocumentChunk::new(
         format!("/fixture/{foreign_project}.md"),
@@ -166,7 +155,7 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
         .await?;
     let result: Result<()> = async {
         let experience = json!({
-            "id":id,"project":project,"context":"stale keyboard indicator",
+            "project":project,"context":"stale keyboard indicator",
             "action":"restart layout process","outcome":"success","source":"tool_result",
             "evidence":["observed changed process and updated indicator"]
         });
@@ -261,8 +250,7 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
             )),
             "retrieval alone counted as observed use"
         );
-        let later_id = Uuid::new_v4();
-        let mut later = json!({"id":later_id,"project":project,
+        let mut later = json!({"project":project,
             "context":"stale keyboard layout indicator",
             "action":"check config, restart, and verify",
             "outcome":"success","source":"tool_result",

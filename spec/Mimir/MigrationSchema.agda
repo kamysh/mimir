@@ -181,11 +181,7 @@ body allocation =
     ("experience_id" ∷ "item_key" ∷ []) ∷
   addCheckConstraint "mimir_learning_item_owners" "mimir_learning_item_key_nonempty" localKeyValid ∷ []
 body workEvents = notifyExperienceChanges "mimir_review_work" ∷ []
-body experienceAllocation =
-  setColumnDefault "mimir_experiences" "id" postgresUUID ∷
-  addNullableColumn "mimir_experiences" (optional "creation_request_key" uuid) ∷
-  addUniqueConstraint "mimir_experiences" "mimir_experiences_creation_request_key"
-    ("creation_request_key" ∷ []) ∷ []
+body experienceAllocation = setColumnDefault "mimir_experiences" "id" postgresUUID ∷ []
 
 -- PostgreSQL supplies the decoded historical rows and execution order. The
 -- application's data rule is insert-missing-only, linked to its general laws.

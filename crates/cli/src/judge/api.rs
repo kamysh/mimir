@@ -1135,7 +1135,7 @@ mod tests {
         let mut selected = selected();
         selected.experience.project = project.clone();
         selected = service
-            .record_experience(&selected.experience, 0)
+            .create_experience(&selected.experience.clone().with_identity(()))
             .await
             .unwrap();
         let state_path = database_fixture

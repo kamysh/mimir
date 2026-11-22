@@ -98,20 +98,19 @@ cleanup_current() {
 trap cleanup_current EXIT
 
 seed() {
-    local config="$1" project="$2" id="$3"
+    local config="$1" project="$2"
     local args
-    args="$(jq -cn --arg id "$id" --arg project "$project" '{expected_revision:0,experience:{id:$id,project:$project,context:"adapter fixture",action:"inspect result",outcome:"success",source:"tool_result",evidence:["disposable test observation"]}}')"
-    call_tool "$config" record_experience "$args" | jq -e '.revision == 1' >/dev/null
+    args="$(jq -cn --arg project "$project" '{expected_revision:0,experience:{project:$project,context:"adapter fixture",action:"inspect result",outcome:"success",source:"tool_result",evidence:["disposable test observation"]}}')"
+    call_tool "$config" record_experience "$args" | jq -er 'select(.revision == 1) | .experience.id'
 }
 
 for kind in claude-code codex command; do
     project="step6-${kind}-$(uuidgen)"
-    id="$(uuidgen)"
     config="$base/${kind}.toml"
     current_config="$config"
     current_project="$project"
     make_config "$kind" "$project" "$config" "$base/bin/custom"
-    seed "$config" "$project" "$id"
+    id="$(seed "$config" "$project")"
     PATH="$base/bin:$PATH" "$bin" judge run --config "$config" --state-dir "$base/state-${kind}" > "$base/${kind}-report.json"
     jq -e '.status == "complete" and .confirmed == 1' "$base/${kind}-report.json" >/dev/null
     history="$(call_tool "$config" experience_history "$(jq -nc --arg id "$id" '{id:$id}')")"
@@ -122,12 +121,11 @@ done
 
 for mode in crash malformed oversized slow fork 'done'; do
     project="step6-${mode}-$(uuidgen)"
-    id="$(uuidgen)"
     config="$base/${mode}.toml"
     current_config="$config"
     current_project="$project"
     make_config command "$project" "$config" "$base/judge-process-fixture"
-    seed "$config" "$project" "$id"
+    seed "$config" "$project" >/dev/null
     export MIMIR_JUDGE_FIXTURE_MODE="$mode"
     export MIMIR_JUDGE_FIXTURE_PID_FILE="$base/descendant.pid"
     status=0
@@ -159,12 +157,11 @@ for mode in crash malformed oversized slow fork 'done'; do
 done
 
 project="step6-incompatible-$(uuidgen)"
-id="$(uuidgen)"
 config="$base/incompatible.toml"
 current_config="$config"
 current_project="$project"
 make_config claude-code "$project" "$config"
-seed "$config" "$project" "$id"
+seed "$config" "$project" >/dev/null
 rm -f "$base/incompatible-invoked-model"
 status=0
 MIMIR_JUDGE_FIXTURE_MODE=incompatible PATH="$base/bin:$PATH" "$bin" judge run --config "$config" --state-dir "$base/state-incompatible" > "$base/incompatible-report.json" || status=$?
@@ -175,12 +172,11 @@ call_tool "$config" delete_project "$(jq -nc --arg project "$project" '{project:
 current_project=
 
 project="step6-watch-$(uuidgen)"
-id="$(uuidgen)"
 config="$base/watch.toml"
 current_config="$config"
 current_project="$project"
 make_config command "$project" "$config" "$base/judge-process-fixture"
-seed "$config" "$project" "$id"
+seed "$config" "$project" >/dev/null
 MIMIR_JUDGE_FIXTURE_MODE=crash bash "$repo/tests/support/fixture.sh" cancel \
     --ready "$base/state-watch/judge-status.json" --stderr-ready 'Review attempt stopped' \
     --report "$base/watch-stdout" -- "$bin" judge watch --config "$config" \

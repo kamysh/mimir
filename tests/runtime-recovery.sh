@@ -40,7 +40,6 @@ printf 'Both binaries reached the owned embedding entrypoint without configurati
 # exits without a reply and the uncommitted operation leaves nothing behind.
 # The learning advisory lock (store/learning.rs) blocks record_experience
 # inside the call for as long as the lock holder runs.
-request_key=11111111-2222-4333-8444-555555555555
 psql "host=$MIMIR_HOST port=$MIMIR_PORT user=$MIMIR_USER dbname=$MIMIR_DBNAME" \
     -c 'SELECT pg_advisory_xact_lock(671942183), pg_sleep(30)' > /dev/null 2>&1 &
 lock_holder=$!
@@ -56,7 +55,7 @@ mkfifo "$root/disconnect-in"
 server=$!
 exec 9> "$root/disconnect-in"
 printf '%s\n' \
-    "{\"jsonrpc\":\"2.0\",\"id\":\"blocked\",\"method\":\"tools/call\",\"params\":{\"name\":\"record_experience\",\"arguments\":{\"request_key\":\"$request_key\",\"experience\":{\"project\":\"disconnect-fixture\",\"context\":\"blocked experience\",\"action\":\"observe\",\"outcome\":\"unknown\",\"source\":\"agent_report\",\"evidence\":[\"disconnect/1\"]},\"expected_revision\":0}}}" \
+    "{\"jsonrpc\":\"2.0\",\"id\":\"blocked\",\"method\":\"tools/call\",\"params\":{\"name\":\"record_experience\",\"arguments\":{\"experience\":{\"project\":\"disconnect-fixture\",\"context\":\"blocked experience\",\"action\":\"observe\",\"outcome\":\"unknown\",\"source\":\"agent_report\",\"evidence\":[\"disconnect/1\"]},\"expected_revision\":0}}}" \
     >&9
 # Let the server reach the advisory-lock wait, then disconnect by closing stdin.
 sleep 1
@@ -86,17 +85,32 @@ for ((attempt = 0; attempt < 50; attempt++)); do
     sleep 0.2
 done
 [[ ${held:-1} == 0 ]] || { echo 'Advisory lock fixture was not released' >&2; exit 1; }
-# Check the actual creation key so the abandoned attempt cannot hide behind
-# a distinct, database-assigned record identity.
+# Check the fixture project for any row left by the abandoned create.
 recorded=$(psql "host=$MIMIR_HOST port=$MIMIR_PORT user=$MIMIR_USER dbname=$MIMIR_DBNAME" \
-    -tAc "SELECT count(*) FROM mimir_experiences WHERE creation_request_key='$request_key'")
+    -tAc "SELECT count(*) FROM mimir_experiences WHERE project='disconnect-fixture'")
 [[ $recorded == 0 ]] || { echo 'Abandoned request was committed' >&2; exit 1; }
 printf '%s\n' \
-    "{\"jsonrpc\":\"2.0\",\"id\":\"verify-retry\",\"method\":\"tools/call\",\"params\":{\"name\":\"record_experience\",\"arguments\":{\"request_key\":\"$request_key\",\"experience\":{\"project\":\"disconnect-fixture\",\"context\":\"blocked experience\",\"action\":\"observe\",\"outcome\":\"unknown\",\"source\":\"agent_report\",\"evidence\":[\"disconnect/1\"]},\"expected_revision\":0}}}" \
+    "{\"jsonrpc\":\"2.0\",\"id\":\"verify-retry\",\"method\":\"tools/call\",\"params\":{\"name\":\"record_experience\",\"arguments\":{\"experience\":{\"project\":\"disconnect-fixture\",\"context\":\"blocked experience\",\"action\":\"observe\",\"outcome\":\"unknown\",\"source\":\"agent_report\",\"evidence\":[\"disconnect/1\"]},\"expected_revision\":0}}}" \
     > "$root/disconnect-verify.jsonl"
 "$MIMIR_TEST_MCP" < "$root/disconnect-verify.jsonl" > "$root/disconnect-verify-out" 2> "$root/disconnect-verify-err"
-jq -se --arg key "$request_key" \
+jq -se \
     '.[0].result.content[0].text | fromjson | .revision == 1 and
-     (.experience.id | type == "string" and length > 0 and . != $key)' \
+     (.experience.id | type == "string" and length > 0)' \
     "$root/disconnect-verify-out" > /dev/null
 printf 'The abandoned request left no partial write and the fresh retry succeeded.\n'
+
+receipt=$(jq -er '.result.content[0].text | fromjson' "$root/disconnect-verify-out")
+saved_id=$(jq -er '.experience.id' <<< "$receipt")
+jq -cn --arg id "$saved_id" '{jsonrpc:"2.0",id:"read",method:"tools/call",
+    params:{name:"get_experience",arguments:{id:$id}}}' > "$root/experience-read.jsonl"
+"$MIMIR_TEST_MCP" < "$root/experience-read.jsonl" > "$root/experience-read.stdout" 2> "$root/experience-read.stderr"
+jq -e --arg id "$saved_id" '.result.content[0].text | fromjson |
+    .revision == 1 and .experience.id == $id' "$root/experience-read.stdout" > /dev/null
+jq -cn --argjson receipt "$receipt" '{jsonrpc:"2.0",id:"correct",method:"tools/call",
+    params:{name:"record_experience",arguments:{expected_revision:$receipt.revision,
+    experience:($receipt.experience | .action = "observe again")}}}' > "$root/experience-correct.jsonl"
+"$MIMIR_TEST_MCP" < "$root/experience-correct.jsonl" > "$root/experience-correct.stdout" 2> "$root/experience-correct.stderr"
+jq -e --arg id "$saved_id" '.result.content[0].text | fromjson |
+    .revision == 2 and .experience.id == $id and .experience.action == "observe again"' \
+    "$root/experience-correct.stdout" > /dev/null
+printf 'The returned experience UUID worked for lookup and correction through MCP.\n'

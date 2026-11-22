@@ -12,8 +12,8 @@ use mimir_core::{config::Config, graph::MemoryType, MimirService};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-fn experience(id: Uuid, project: &str) -> Value {
-    json!({"id":id,"project":project,"context":"stale keyboard layout process","action":"observe","outcome":"unknown","source":"agent_report","evidence":["event/1"]})
+fn experience(project: &str) -> Value {
+    json!({"project":project,"context":"stale keyboard layout process","action":"observe","outcome":"unknown","source":"agent_report","evidence":["event/1"]})
 }
 
 fn review(experience_id: Uuid, expected_review_revision: i64, feedback: Value) -> Value {
@@ -33,11 +33,10 @@ async fn missing_references_and_stale_revisions_are_correctable() -> Result<()> 
     })
     .await?;
     let project = format!("corrections-{}", Uuid::new_v4());
-    let experience_id = Uuid::new_v4();
     let saved = handle_tool_call(
         &service,
         "record_experience",
-        &json!({"experience":experience(experience_id, &project),"expected_revision":0}),
+        &json!({"experience":experience(&project),"expected_revision":0}),
     )
     .await?;
     let experience_id: Uuid = serde_json::from_value(saved["experience"]["id"].clone())?;
@@ -131,8 +130,7 @@ async fn missing_references_and_stale_revisions_are_correctable() -> Result<()> 
 
     // 342: malformed local keys are refused before allocation, with the
     // repair named, and nothing is stored.
-    let malformed_id = Uuid::new_v4();
-    let malformed = json!({"id":malformed_id,"project":project,"context":"key validation","action":"observe","outcome":"unknown","source":"agent_report","evidence":["event/2"],
+    let malformed = json!({"project":project,"context":"key validation","action":"observe","outcome":"unknown","source":"agent_report","evidence":["event/2"],
         "source_records":[{"source_ref":"event/2","actor":"agent","provenance":"agent_report","text":"I suggest checking twice."}],
         "learning_items":[{"key":" padded-key ","kind":"suggestion","source_ref":"event/2","actor":"agent","statement":"I suggest checking twice.","conditions":"untried"}]});
     let refused = handle_tool_call(
@@ -149,16 +147,17 @@ async fn missing_references_and_stale_revisions_are_correctable() -> Result<()> 
         "malformed key refusal must name the repair: {key_error}"
     );
     ensure!(
-        handle_tool_call(&service, "get_experience", &json!({"id":malformed_id}))
+        service
+            .select_pending_experiences(Some(&project), None, &[])
             .await?
-            .is_null(),
+            .is_empty(),
         "a refused experience must not be stored"
     );
     Ok(())
 }
 
-fn sourced_experience(id: Uuid, project: &str) -> Value {
-    json!({"id":id,"project":project,"context":"sourced observation","action":"observe","outcome":"unknown","source":"agent_report","evidence":["event/9"],
+fn sourced_experience(project: &str) -> Value {
+    json!({"project":project,"context":"sourced observation","action":"observe","outcome":"unknown","source":"agent_report","evidence":["event/9"],
         "source_records":[{"source_ref":"event/9","actor":"agent","provenance":"agent_report","text":"The lock waits for a slow statement."}]})
 }
 
@@ -184,11 +183,10 @@ async fn source_actor_and_quotation_mistakes_are_explained() -> Result<()> {
     })
     .await?;
     let project = format!("sources-{}", Uuid::new_v4());
-    let experience_id = Uuid::new_v4();
     let saved = handle_tool_call(
         &service,
         "record_experience",
-        &json!({"experience":sourced_experience(experience_id, &project),"expected_revision":0}),
+        &json!({"experience":sourced_experience(&project),"expected_revision":0}),
     )
     .await?;
     let experience_id: Uuid = serde_json::from_value(saved["experience"]["id"].clone())?;
@@ -245,11 +243,10 @@ async fn undeclared_candidate_references_are_refused() -> Result<()> {
     })
     .await?;
     let project = format!("candidates-{}", Uuid::new_v4());
-    let experience_id = Uuid::new_v4();
     let saved = handle_tool_call(
         &service,
         "record_experience",
-        &json!({"experience":sourced_experience(experience_id, &project),"expected_revision":0}),
+        &json!({"experience":sourced_experience(&project),"expected_revision":0}),
     )
     .await?;
     let experience_id: Uuid = serde_json::from_value(saved["experience"]["id"].clone())?;
@@ -313,11 +310,10 @@ async fn review_history_stays_readable_after_candidate_deletion() -> Result<()> 
     ensure!(!passage.is_empty(), "fixture passage must be indexed");
     let passage_id = Uuid::parse_str(&passage[0].id)?;
 
-    let experience_id = Uuid::new_v4();
     let saved = handle_tool_call(
         &service,
         "record_experience",
-        &json!({"experience":sourced_experience(experience_id, &project),"expected_revision":0}),
+        &json!({"experience":sourced_experience(&project),"expected_revision":0}),
     )
     .await?;
     let experience_id: Uuid = serde_json::from_value(saved["experience"]["id"].clone())?;
@@ -376,8 +372,7 @@ async fn protected_originals_are_explained_on_correction() -> Result<()> {
     })
     .await?;
     let project = format!("protected-{}", Uuid::new_v4());
-    let experience_id = Uuid::new_v4();
-    let original = json!({"id":experience_id,"project":project,"context":"protected observation","action":"observe","outcome":"unknown","source":"agent_report","evidence":["event/7"],
+    let original = json!({"project":project,"context":"protected observation","action":"observe","outcome":"unknown","source":"agent_report","evidence":["event/7"],
         "source_records":[{"source_ref":"event/7","actor":"agent","provenance":"agent_report","text":"The original statement."}],
         "learning_items":[{"key":"original-item","kind":"suggestion","source_ref":"event/7","actor":"agent","statement":"The original statement.","conditions":"untried"}]});
     let saved = handle_tool_call(

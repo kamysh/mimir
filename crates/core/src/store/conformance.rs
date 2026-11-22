@@ -408,7 +408,7 @@ mod tests {
         }))
         .unwrap();
         let experience = service
-            .record_experience(&experience, 0)
+            .create_experience(&experience.clone().with_identity(()))
             .await
             .unwrap()
             .experience;

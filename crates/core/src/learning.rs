@@ -56,10 +56,8 @@ impl IndependentProvenance {
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Experience {
-    /// Stored UUID returned by PostgreSQL. On legacy create calls this field
-    /// carries only the request key.
-    pub id: Uuid,
+pub struct Experience<Identity = Uuid> {
+    pub id: Identity,
     pub project: String,
     pub context: String,
     pub action: String,
@@ -74,7 +72,25 @@ pub struct Experience {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub source_records: Vec<crate::learning_sources::SourceRecord>,
 }
-impl Experience {
+pub type NewExperience = Experience<()>;
+
+impl<Identity> Experience<Identity> {
+    pub fn with_identity<Assigned>(self, id: Assigned) -> Experience<Assigned> {
+        Experience {
+            id,
+            project: self.project,
+            context: self.context,
+            action: self.action,
+            outcome: self.outcome,
+            source: self.source,
+            evidence: self.evidence,
+            belief_ids: self.belief_ids,
+            pattern_id: self.pattern_id,
+            learning_items: self.learning_items,
+            source_records: self.source_records,
+        }
+    }
+
     pub fn validate(&self) -> Result<()> {
         crate::assessment::validate_items(&self.learning_items)?;
         crate::learning_sources::validate_sources(&self.source_records)?;
@@ -429,14 +445,8 @@ impl crate::MimirService {
             .record_experience(experience, expected_revision)
             .await
     }
-    pub async fn create_experience(
-        &self,
-        experience: &Experience,
-        request_key: Uuid,
-    ) -> Result<ExperienceState> {
-        self.store
-            .record_experience_with_key(experience, 0, Some(request_key))
-            .await
+    pub async fn create_experience(&self, experience: &NewExperience) -> Result<ExperienceState> {
+        self.store.create_experience(experience).await
     }
 
     pub async fn review_experience(
