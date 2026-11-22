@@ -471,7 +471,7 @@
       "rust_correspondence": "open; separate from behavioral specification",
       "completion_modules": [
         "spec/Mimir/EvidenceRead.agda",
-        "spec/Mimir/GroundingPublication.agda",
+        "spec/Mimir/GroundingPublication.lagda.md",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
         "spec/Mimir/ApplicationOutput.agda",
@@ -497,7 +497,7 @@
       "rust_correspondence": "open; separate from behavioral specification",
       "completion_modules": [
         "spec/Mimir/EvidenceRead.agda",
-        "spec/Mimir/GroundingPublication.agda",
+        "spec/Mimir/GroundingPublication.lagda.md",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
         "spec/Mimir/ApplicationOutput.agda",
@@ -1237,7 +1237,7 @@
         "Beta"
       ],
       "completion_modules": [
-        "spec/Mimir/GroundingPublication.agda",
+        "spec/Mimir/GroundingPublication.lagda.md",
         "spec/Mimir/CLI.agda",
         "spec/Mimir/ApplicationProtocol.agda"
       ],
@@ -1757,7 +1757,7 @@
       "modules": [
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
-        "spec/Mimir/GroundingPublication.agda"
+        "spec/Mimir/GroundingPublication.lagda.md"
       ],
       "note": "Existing core API; no new MCP tool."
     },

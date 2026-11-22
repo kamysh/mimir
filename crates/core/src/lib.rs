@@ -1077,14 +1077,15 @@ impl MimirService {
     // -----------------------------------------------------------------------
 
     /// Attach a document chunk to a belief as grounding evidence (GROUNDS edge).
-    /// Purely additive provenance — does not touch belief↔belief inference.
+    /// Positive weight recalculates the belief and its inference dependents.
+    /// Zero weight records the passage without changing their values.
     pub async fn add_evidence(&self, belief_id: Uuid, chunk_id: Uuid, weight: f64) -> Result<()> {
         self.store
             .insert_evidence(chunk_id, belief_id, Probability::new(weight)?)
             .await
     }
 
-    /// Remove a specific grounding edge.
+    /// Remove all grounding links between this belief and passage.
     pub async fn delete_evidence(&self, belief_id: Uuid, chunk_id: Uuid) -> Result<()> {
         self.store.delete_evidence(chunk_id, belief_id).await
     }

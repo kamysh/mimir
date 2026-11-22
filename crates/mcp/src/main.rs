@@ -449,7 +449,7 @@ fn tools_list() -> Value {
         },
         {
             "name": "add_evidence",
-            "description": "Ground a belief in a document passage: create a GROUNDS edge from a DocumentChunk to a Belief. Adds local positive evidence to the belief Beta state; GROUNDS never becomes a causal or belief-to-belief edge. Get chunk_id from query_document results.",
+            "description": "Record a document passage as evidence for a belief. Positive weight recalculates the belief and its inference dependents. Zero weight records the source without changing belief values. Get chunk_id from query_document results.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

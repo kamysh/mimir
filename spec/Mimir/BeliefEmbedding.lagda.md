@@ -171,7 +171,7 @@ the prepared materials preserves the proposed belief values. Adding
 weighted evidence is a separate operation that takes an explicit weight
 and recalculates the affected beliefs.
 
-[Review publication proof](ReviewBeliefPreparation.lagda.md#commit-the-review-and-its-materials-together) · [Explicit evidence weight](GroundingPublication.agda#L59)
+[Review publication proof](ReviewBeliefPreparation.lagda.md#commit-the-review-and-its-materials-together) · [Explicit evidence weight](GroundingPublication.lagda.md#determine-whether-the-evidence-changed)
 
 ## What the proof says about asking for input
 

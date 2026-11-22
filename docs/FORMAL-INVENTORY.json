@@ -8928,7 +8928,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8943,7 +8943,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8958,7 +8958,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8973,7 +8973,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8988,7 +8988,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9003,7 +9003,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9018,7 +9018,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9033,7 +9033,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9048,7 +9048,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9063,7 +9063,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9078,7 +9078,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9093,7 +9093,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9108,7 +9108,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9123,7 +9123,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9138,7 +9138,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9153,7 +9153,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9168,7 +9168,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9183,7 +9183,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9198,7 +9198,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9213,7 +9213,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9228,7 +9228,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9243,7 +9243,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9258,7 +9258,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9273,7 +9273,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9288,7 +9288,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9303,7 +9303,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9318,7 +9318,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9333,7 +9333,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9348,7 +9348,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9363,7 +9363,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9378,7 +9378,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9393,7 +9393,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9407,7 +9407,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9422,7 +9422,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9437,7 +9437,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9452,7 +9452,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9466,7 +9466,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9481,7 +9481,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9495,7 +9495,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9510,7 +9510,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9524,7 +9524,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9539,7 +9539,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9554,7 +9554,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9569,7 +9569,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9584,7 +9584,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9599,7 +9599,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9614,7 +9614,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9629,7 +9629,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9644,7 +9644,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9659,7 +9659,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9674,7 +9674,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9689,7 +9689,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9704,7 +9704,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9719,7 +9719,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9734,7 +9734,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9748,7 +9748,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9763,7 +9763,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9777,7 +9777,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9792,7 +9792,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9807,7 +9807,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9822,7 +9822,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9837,7 +9837,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9851,7 +9851,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9866,7 +9866,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9880,7 +9880,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9895,7 +9895,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9909,7 +9909,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9924,7 +9924,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9938,7 +9938,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9953,7 +9953,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9968,7 +9968,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9982,7 +9982,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9997,7 +9997,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10011,7 +10011,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10026,7 +10026,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10041,7 +10041,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10056,7 +10056,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10071,7 +10071,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10086,7 +10086,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10101,7 +10101,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10116,7 +10116,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10131,7 +10131,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10146,7 +10146,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10161,7 +10161,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10176,7 +10176,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10190,7 +10190,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10205,7 +10205,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10220,7 +10220,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10235,7 +10235,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10250,7 +10250,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10265,7 +10265,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10280,7 +10280,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         }
@@ -10293,7 +10293,7 @@
         "spec/Mimir/GraphRecords.agda",
         "spec/Mimir/GraphPaths.agda",
         "spec/Mimir/DocumentPublication.agda",
-        "spec/Mimir/GroundingPublication.agda"
+        "spec/Mimir/GroundingPublication.lagda.md"
       ],
       "specification_status": "partially-specified",
       "implementation_receipt": "docs/RUST-CONFORMANCE.md"

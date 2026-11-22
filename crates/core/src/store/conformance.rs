@@ -474,6 +474,108 @@ mod tests {
 
     #[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
     #[tokio::test]
+    async fn grounding_edits_only_recalculate_changed_evidence_and_rollback_on_error() {
+        let cfg = isolation::fixture().database_config();
+        crate::db::migrate(&cfg).await.unwrap();
+        let store =
+            AgeStore::new(crate::db::connect(&cfg).await.unwrap(), cfg.dbname.clone()).unwrap();
+        let project = format!("grounding-{}", Uuid::new_v4());
+        let target =
+            Belief::new_in_project("grounding target".into(), 0.5, 0.0, project.clone()).unwrap();
+        let dependent =
+            Belief::new_in_project("grounding dependent".into(), 0.5, 0.0, project.clone())
+                .unwrap();
+        let passage = DocumentChunk::new(
+            format!("/fixture/{project}.md"),
+            vec![],
+            "An observed receipt.".into(),
+            None,
+            Some(project),
+        );
+        store.insert_belief(&target).await.unwrap();
+        store.insert_belief(&dependent).await.unwrap();
+        store.insert_document_chunk(&passage).await.unwrap();
+        let links = || async { store.get_evidence_for_beliefs(&[target.id]).await.unwrap() };
+        let target_value = || async {
+            store
+                .get_belief(target.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .probability
+        };
+        let dependent_value = || async {
+            store
+                .get_belief(dependent.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .probability
+        };
+        let add = |weight| {
+            store.insert_evidence(passage.id, target.id, Probability::new(weight).unwrap())
+        };
+        let remove = || store.delete_evidence(passage.id, target.id);
+
+        // A posterior different from the fixed prior makes needless recalculation visible.
+        store.update_belief_beta(target.id, 9.0, 1.0).await.unwrap();
+        let before = target_value().await;
+        assert_ne!(before, target.probability);
+        add(0.0).await.unwrap();
+        assert_eq!(links().await, vec![(target.id, passage.id, 0.0)]);
+        assert_eq!(target_value().await, before);
+        remove().await.unwrap();
+        remove().await.unwrap();
+        assert!(links().await.is_empty());
+        assert_eq!(target_value().await, before);
+
+        store
+            .update_belief_beta(target.id, target.alpha0, target.beta0)
+            .await
+            .unwrap();
+        store
+            .insert_edge_and_propagate(
+                &Edge::new(target.id, dependent.id, EdgeType::Supports, 1.0).unwrap(),
+            )
+            .await
+            .unwrap();
+        let dependent_before = dependent_value().await;
+        add(0.5).await.unwrap();
+        add(0.5).await.unwrap();
+        let weighted = links().await;
+        assert_eq!(weighted, vec![(target.id, passage.id, 0.5); 2]);
+        let with_evidence = target_value().await;
+        let dependent_with_evidence = dependent_value().await;
+        assert!(with_evidence.value() > target.probability.value());
+        assert!(dependent_with_evidence.value() > dependent_before.value());
+
+        // Inject an invalid stored weight so recalculation rejects the edit.
+        let graph = &store.graph_name;
+        let target_id = target.id;
+        let dependent_id = dependent.id;
+        let bad_link =
+            format!("MATCH (a:Belief {{id:'{dependent_id}'}}), (b:Belief {{id:'{target_id}'}})");
+        let edit_bad_link = |edit: &str| {
+            let sql = format!("SELECT * FROM ag_catalog.cypher('{graph}', $$ {bad_link} {edit} RETURN 1 $$) AS (ok ag_catalog.agtype)");
+            let store = &store;
+            async move { store.client.lock().await.query(&sql, &[]).await.unwrap() }
+        };
+        edit_bad_link("CREATE (a)-[:SUPPORTS {weight:2.0}]->(b)").await;
+        for error in [add(0.5).await.unwrap_err(), remove().await.unwrap_err()] {
+            assert_eq!(error.to_string(), "probability 2 is outside [0, 1]");
+            assert_eq!(links().await, weighted);
+            assert_eq!(target_value().await, with_evidence);
+            assert_eq!(dependent_value().await, dependent_with_evidence);
+        }
+        edit_bad_link("MATCH (a)-[r:SUPPORTS]->(b) DELETE r").await;
+        remove().await.unwrap();
+        assert!(links().await.is_empty());
+        assert_eq!(target_value().await, target.probability);
+        assert_eq!(dependent_value().await, dependent_before);
+    }
+
+    #[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
+    #[tokio::test]
     async fn project_deletion_rolls_back_before_a_fresh_retry() {
         let cfg = isolation::fixture().database_config();
         crate::db::migrate(&cfg).await.unwrap();

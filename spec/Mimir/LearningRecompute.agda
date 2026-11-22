@@ -5,11 +5,11 @@ module Mimir.LearningRecompute where
 
 open import Data.Float.Base using (Float; _+_; _*_)
 open import Data.Bool using (Bool; true; false; _∧_; not)
-open import Data.List using (List; []; _∷_; _++_; map; length; concatMap)
+open import Data.List using (List; []; _∷_; _++_; map; length; concatMap; filterᵇ)
 open import Data.List.Relation.Unary.All using (All; []; _∷_)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; zero; suc)
-open import Data.Product using (_×_; _,_)
+open import Data.Product using (_×_; _,_; proj₁)
 open import Relation.Nullary using (yes; no; does)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong)
 open import Mimir.Text using (Text)
@@ -24,6 +24,15 @@ import Mimir.ReviewRecomputeTraversal as Traversal
 import Mimir.ApplicationFloat as Numeric
 import Mimir.PosteriorComputation as Posterior
 import Mimir.EvidenceValidity as Evidence
+
+-- A calculation may write only the beliefs it was asked to recalculate.
+scopedCalculation : Posterior.Calculation → Posterior.Calculation
+scopedCalculation calculation = record { calculate = λ mode seed external edges nodes →
+  let result = Posterior.Calculation.calculate calculation mode seed external edges nodes in
+  Posterior.result
+    (filterᵇ (λ row → member (proj₁ row) (map Posterior.Node.identity nodes))
+      (Posterior.Result.writes result))
+    (Posterior.Result.numericFailure result) }
 
 beliefs : List Graph.Node → List Graph.BeliefValues
 beliefs [] = []

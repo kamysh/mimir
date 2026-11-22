@@ -563,20 +563,10 @@ affectedBeliefs project before =
   survives : UUID → Bool
   survives id = Ranking.member id survivors
 
--- Numerical calculation is external. Its result cannot update a belief
--- outside the selected dependency closure, even if a solver returns its ID.
-scopedCalculation : Posterior.Calculation → Posterior.Calculation
-scopedCalculation calculation = record { calculate = λ mode seed external edges nodes →
-  let result = Posterior.Calculation.calculate calculation mode seed external edges nodes in
-  Posterior.result
-    (filterᵇ (λ row → Ranking.member (proj₁ row) (map Posterior.Node.identity nodes))
-      (Posterior.Result.writes result))
-    (Posterior.Result.numericFailure result) }
-
 recalculate : Posterior.Calculation → List UUID → Store.World → Recompute.Result
 recalculate calculation [] deleted = Recompute.recomputed (Store.nodes deleted) false
 recalculate calculation roots@(_ ∷ _) deleted =
-  Recompute.runGlobal (scopedCalculation calculation) roots (Store.nodes deleted)
+  Recompute.runGlobal (Recompute.scopedCalculation calculation) roots (Store.nodes deleted)
     (edgesOf deleted) (Recompute.activeReviewsScoped nothing (Learning.identities learn)
       (Publication.World.ledger (Learning.World.publication learn))) (Store.groundingMasses deleted)
   where learn = Store.World.learning deleted
@@ -599,7 +589,7 @@ recalculatedIDs : ∀ calculation roots deleted →
   map Graph.nodeID (Store.nodes deleted)
 recalculatedIDs calculation [] deleted = refl
 recalculatedIDs calculation roots@(_ ∷ _) deleted with recalculate calculation roots deleted in outcome
-... | Recompute.recomputed after warning = Recompute.runGlobalPreservesIdentities (scopedCalculation calculation)
+... | Recompute.recomputed after warning = Recompute.runGlobalPreservesIdentities (Recompute.scopedCalculation calculation)
   roots (Store.nodes deleted) (edgesOf deleted)
   (Recompute.activeReviewsScoped nothing (Learning.identities (Store.World.learning deleted))
     (Publication.World.ledger (Learning.World.publication (Store.World.learning deleted))))
