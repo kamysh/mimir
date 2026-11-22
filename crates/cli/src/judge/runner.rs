@@ -179,9 +179,9 @@ async fn scoped_tool(
             );
             if name == "explain_belief" || name == "query_intervention" {
                 let source = client.tool("get_belief", json!({"id":belief_id})).await?;
-                ensure!(
+                input_ensure!(
                     source["project"] == project,
-                    "cross-project graph explanation is not available to the judge"
+                    "Use a belief from the selected project for explanations or interventions. Global beliefs can be read with get_belief."
                 );
             }
             if name == "explain_belief" {
@@ -943,6 +943,7 @@ async fn run_inner<B: Backend>(
 
 #[cfg(test)]
 mod tests {
+    use anyhow::Context;
     #[allow(dead_code)] // Shared guard also serves integration-test crates.
     mod isolation {
         include!(concat!(
@@ -1528,6 +1529,70 @@ mod tests {
         }
     }
 
+    struct GraphScopeCorrection {
+        calls: usize,
+        global: Uuid,
+        owned: Uuid,
+    }
+
+    impl Backend for GraphScopeCorrection {
+        fn next<'a>(
+            &'a mut self,
+            selected: &'a ExperienceState,
+            last: Option<&'a Value>,
+            _tools: &'a [Value],
+        ) -> Pin<Box<dyn Future<Output = Result<Action>> + Send + 'a>> {
+            Box::pin(async move {
+                let action = match self.calls {
+                    0 => ("get_belief", json!({"id":self.global})),
+                    1 => {
+                        let belief = last.context("missing global belief")?;
+                        ensure!(belief["id"] == self.global.to_string());
+                        ensure!(belief["project"].is_null());
+                        (
+                            "explain_belief",
+                            json!({"id":self.global,"limit":1,"offset":0}),
+                        )
+                    }
+                    2 | 3 => {
+                        let feedback = last.context("missing scope correction")?;
+                        ensure!(feedback["error"] == "invalid_tool_arguments");
+                        ensure!(feedback["message"].as_str().is_some_and(
+                            |text| text.contains("Use a belief from the selected project")
+                        ));
+                        if self.calls == 2 {
+                            ("query_intervention", json!({"id":self.global,"value":0.6}))
+                        } else {
+                            (
+                                "explain_belief",
+                                json!({"id":self.owned,"limit":1,"offset":0}),
+                            )
+                        }
+                    }
+                    4 => {
+                        let explanation = last.context("missing project belief explanation")?;
+                        ensure!(explanation["incoming_edges"].is_array());
+                        (
+                            "review_experience",
+                            json!({
+                                "expected_review_revision":selected.review_revision,
+                                "review":{"experience_id":selected.experience.id,
+                                    "experience_revision":selected.revision,"reviewer":"fixture",
+                                    "rationale":"completed review after correcting graph scope"}
+                            }),
+                        )
+                    }
+                    _ => return Ok(Action::Done),
+                };
+                self.calls += 1;
+                Ok(Action::Tool {
+                    name: action.0.into(),
+                    arguments: action.1,
+                })
+            })
+        }
+    }
+
     #[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
     #[tokio::test]
     async fn isolated_mcp_review_cycle() {
@@ -1565,20 +1630,44 @@ mod tests {
             .await
             .unwrap()
             .experience;
+        let global = service
+            .add_belief(
+                "global scope fixture",
+                0.6,
+                0.5,
+                mimir_core::graph::MemoryType::Fact,
+            )
+            .await
+            .unwrap();
+        let owned = service
+            .add_belief_in_project(
+                "project scope fixture",
+                0.6,
+                0.5,
+                &project,
+                mimir_core::graph::MemoryType::Fact,
+            )
+            .await
+            .unwrap();
+        let mut scope = GraphScopeCorrection {
+            calls: 0,
+            global: global.id,
+            owned: owned.id,
+        };
+        let success = run(&settings, &state, &mut scope).await;
+        assert_eq!(success.status, "complete");
+        assert_eq!(success.confirmed, 1);
+        assert_eq!(scope.calls, 5);
+        assert!(service.delete_belief(global.id).await.unwrap());
+        let committed = service.get_experience(e.id).await.unwrap().unwrap();
+        assert_eq!(committed.reviewed_revision, 1);
+        let history = service.experience_history(e.id).await.unwrap();
+        assert_eq!(history["reviews"][0]["payload"]["reviewer"], "mimir-judge");
         let mut fake = Fake {
             mode: Mode::Review,
             calls: 0,
             service: service.clone(),
         };
-        let success = run(&settings, &state, &mut fake).await;
-        assert_eq!(success.status, "complete");
-        assert_eq!(success.confirmed, 1);
-        assert_eq!(fake.calls, 1);
-        let committed = service.get_experience(e.id).await.unwrap().unwrap();
-        assert_eq!(committed.reviewed_revision, 1);
-        let history = service.experience_history(e.id).await.unwrap();
-        assert_eq!(history["reviews"][0]["payload"]["reviewer"], "mimir-judge");
-        fake.calls = 0;
         let idle = run(&settings, &state, &mut fake).await;
         assert_eq!(idle.status, "idle");
         assert_eq!(fake.calls, 0);

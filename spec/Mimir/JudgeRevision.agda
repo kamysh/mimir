@@ -286,6 +286,15 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
       afterTool w name (inj₁ (Scoped.transport detail)) ≡ ask stopTool continuation)
   transportFailureStopsFirst w name detail = _ , refl
 
+  graphScopeRefusalContinues : ∀ w name kind args belief events result →
+    Scoped.textIs Scope.project (Scoped.get "project" belief) ≡ false →
+    Runs (fromScoped (Scope.exactGraph kind args belief) >>= afterTool w name) events result →
+    Continues result
+  graphScopeRefusalContinues w name kind args belief events result outside execution
+    rewrite Scope.graphScopeRefusal kind args belief outside =
+    correctionContinues w name (Scoped.rejected Scope.graphScopeMessage)
+      Scope.graphScopeMessage events result execution
+
   attempt : Work → Text → V.Value → Script State
   attempt w name arguments = fromScoped (Scope.run name arguments) >>= afterTool w name
 
