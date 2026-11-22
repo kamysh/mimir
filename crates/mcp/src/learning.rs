@@ -142,12 +142,21 @@ pub async fn call(svc: &MimirService, name: &str, args: &Value) -> Result<Value>
             .await?
         }
         "record_experience" => {
-            let expected = integer(args, "expected_revision")?;
+            let expected = integer(args, "expected_revision").map_err(|_| Refusal::invalid(
+                Code::InvalidNumber,
+                vec![Segment::Key("expected_revision".into())],
+                "Use 0 to create an experience or the current revision returned by get_experience to correct one.",
+            ))?;
             let raw = required(args, "experience")?;
             let identity_fault = |message| Refusal::invalid(
                 Code::WrongIdentity,
                 vec![Segment::Key("experience".into()), Segment::Key("id".into())],
                 message,
+            );
+            let malformed = |error: serde_json::Error| Refusal::invalid(
+                Code::MalformedInput,
+                vec![Segment::Key("experience".into())],
+                format!("Correct the experience object and resubmit. {error}"),
             );
             if expected == 0 {
                 let mut input = raw.as_object().context("experience must be an object")?.clone();
@@ -155,13 +164,14 @@ pub async fn call(svc: &MimirService, name: &str, args: &Value) -> Result<Value>
                     return Err(identity_fault("Remove experience.id to create an experience. PostgreSQL assigns the UUID in the response.").into());
                 }
                 input.insert("id".into(), Value::Null);
-                let draft = serde_json::from_value(Value::Object(input))?;
+                let draft = serde_json::from_value(Value::Object(input)).map_err(malformed)?;
                 serde_json::to_value(svc.create_experience(&draft).await?)?
             } else {
                 if raw.get("id").and_then(Value::as_str).and_then(|id| uuid::Uuid::parse_str(id).ok()).is_none() {
                     return Err(identity_fault("Supply the stored experience UUID and its current revision to correct an experience.").into());
                 }
-                serde_json::to_value(svc.record_experience(&serde_json::from_value(raw.clone())?, expected).await?)?
+                let submitted = serde_json::from_value(raw.clone()).map_err(malformed)?;
+                serde_json::to_value(svc.record_experience(&submitted, expected).await?)?
             }
         }
         "review_experience" => serde_json::to_value(

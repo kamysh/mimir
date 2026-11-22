@@ -830,7 +830,7 @@
         "spec/Mimir/ItemOwnerBatch.agda",
         "spec/Mimir/LearningTransaction.agda",
         "spec/Mimir/LearningTransactionReceipt.agda",
-        "spec/Mimir/ExperienceRecord.agda",
+        "spec/Mimir/ExperienceRecord.lagda.md",
         "spec/Mimir/LearningStore.agda",
         "spec/Mimir/LearningOperations.agda"
       ],

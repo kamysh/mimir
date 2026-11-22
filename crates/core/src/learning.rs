@@ -92,27 +92,52 @@ impl<Identity> Experience<Identity> {
     }
 
     pub fn validate(&self) -> Result<()> {
+        use crate::validation::{Code, Refusal, Segment};
+        let refuse = |field: &str, code, message| {
+            Refusal::invalid(
+                code,
+                vec![
+                    Segment::Key("experience".into()),
+                    Segment::Key(field.into()),
+                ],
+                message,
+            )
+        };
         crate::assessment::validate_items(&self.learning_items)?;
         crate::learning_sources::validate_sources(&self.source_records)?;
-        ensure!(
-            self.source_records.is_empty()
-                || (self.source_records.len() == self.evidence.len()
-                    && self
-                        .source_records
-                        .iter()
-                        .zip(&self.evidence)
-                        .all(|(s, e)| s.source_ref == *e)),
-            "source evidence indices must correspond to source references"
-        );
-        ensure!(!self.project.trim().is_empty(), "project must be explicit");
-        ensure!(
-            !self.context.trim().is_empty() && !self.action.trim().is_empty(),
-            "context and action are required"
-        );
-        ensure!(
-            self.outcome == Outcome::Unknown || self.evidence.iter().any(|e| !e.trim().is_empty()),
-            "a known outcome requires evidence"
-        );
+        if !self.source_records.is_empty()
+            && (self.source_records.len() != self.evidence.len()
+                || self
+                    .source_records
+                    .iter()
+                    .zip(&self.evidence)
+                    .any(|(s, e)| s.source_ref != *e))
+        {
+            return Err(refuse(
+                "evidence",
+                Code::MissingReference,
+                "List the source references in evidence in the same order as source_records.",
+            )
+            .into());
+        }
+        for (field, value) in [
+            ("project", &self.project),
+            ("context", &self.context),
+            ("action", &self.action),
+        ] {
+            if value.trim().is_empty() {
+                return Err(refuse(
+                    field,
+                    Code::EmptyText,
+                    "Supply nonblank text for this field.",
+                )
+                .into());
+            }
+        }
+        if self.outcome != Outcome::Unknown && !self.evidence.iter().any(|e| !e.trim().is_empty()) {
+            return Err(refuse("evidence", Code::MissingEvidence,
+                "Provide the evidence for the observed outcome, or use unknown if it was not observed.").into());
+        }
         Ok(())
     }
 }

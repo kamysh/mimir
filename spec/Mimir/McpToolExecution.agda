@@ -70,7 +70,7 @@ module Run (environment : Application.Environment) (format : Encoding.Formatting
   -- Only proved input refusals are correctable. Storage/provider failures
   -- retain their recovery path and cannot acquire this classification.
   learningValidation : Learning.Failure → Maybe Fault
-  learningValidation (Learning.recordFailure (Experience.invalid fault)) = just fault
+  learningValidation (Learning.recordFailure failure) = Experience.correctionFault failure
   learningValidation (Learning.reviewFailure (Review.invalid fault)) = just fault
   learningValidation (Learning.allocationFailure fault) = just fault
   learningValidation _ = nothing

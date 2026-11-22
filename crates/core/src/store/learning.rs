@@ -1,7 +1,7 @@
 use super::*;
 use crate::learning::*;
 use crate::validation::{Code, Refusal, Segment};
-use anyhow::{ensure, Context};
+use anyhow::ensure;
 use std::collections::HashSet;
 use tokio_postgres::Transaction;
 
@@ -23,6 +23,17 @@ fn local_item_ids(items: &[crate::assessment::LearningItem]) -> HashMap<String, 
         .iter()
         .filter_map(|item| Some((item.key.clone()?, item.id?)))
         .collect()
+}
+
+fn experience_fault(code: Code, field: &str, message: impl Into<String>) -> Refusal {
+    Refusal::invalid(
+        code,
+        vec![
+            Segment::Key("experience".into()),
+            Segment::Key(field.into()),
+        ],
+        message,
+    )
 }
 const CURRENT: &str = "SELECT e.revision,e.review_revision,e.reviewed_revision,v.payload::text AS payload FROM mimir_experiences e JOIN mimir_experience_versions v ON v.experience_id=e.id AND v.revision=e.revision";
 const ACTIVE_REVIEWS: &str = "SELECT r.payload::text FROM mimir_experiences e JOIN mimir_review_versions r ON r.experience_id=e.id AND r.revision=e.review_revision AND r.experience_revision=e.revision";
@@ -415,10 +426,13 @@ impl AgeStore {
         expected: i64,
     ) -> Result<ExperienceState> {
         experience.validate()?;
-        ensure!(
-            (1..i64::MAX).contains(&expected),
-            "A correction requires the current positive revision"
-        );
+        if !(1..i64::MAX).contains(&expected) {
+            return Err(Refusal::invalid(
+                Code::InvalidNumber,
+                vec![Segment::Key("expected_revision".into())],
+                "A correction requires the current positive revision with room to advance. Read it with get_experience.",
+            ).into());
+        }
         let mut client = self.client.lock().await;
         let tx = learning_transaction(&mut client).await?;
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
@@ -426,9 +440,13 @@ impl AgeStore {
         let row = tx
             .query_opt(&format!("{CURRENT} WHERE e.id=$1"), &[&experience.id])
             .await?
-            .context(
-                "Experience not found. Use the experience UUID returned by record_experience.",
-            )?;
+            .ok_or_else(|| {
+                experience_fault(
+                    Code::MissingReference,
+                    "id",
+                    "Experience not found. Use the experience UUID returned by record_experience.",
+                )
+            })?;
         self.save_experience(tx, experience.clone(), expected, Some(state(&row)?))
             .await
     }
@@ -444,25 +462,33 @@ impl AgeStore {
         let experience = &allocated;
         let payload = serde_json::to_string(experience)?;
         if let Some(ref p) = prior {
-            ensure!(
-                p.experience.project == experience.project,
-                "experience project is immutable"
-            );
+            if p.experience.project != experience.project {
+                return Err(experience_fault(
+                    Code::WrongIdentity,
+                    "project",
+                    "The experience project is immutable. Keep the project returned by get_experience.",
+                ).into());
+            }
             for source in &p.experience.source_records {
-                ensure!(
-                    experience.source_records.contains(source),
-                    "source corrections must retain original records; append a correction source"
-                );
+                if !experience.source_records.contains(source) {
+                    return Err(experience_fault(
+                        Code::MissingReference,
+                        "source_records",
+                        "Experience source corrections must retain original records. Append a correction source.",
+                    ).into());
+                }
             }
             if p.experience == *experience && (expected == p.revision || expected == p.revision - 1)
             {
                 return Ok(p.clone());
             }
-            ensure!(
-                expected == p.revision,
-                "stale experience revision: current is {}",
-                p.revision
-            );
+            if expected != p.revision {
+                return Err(Refusal::invalid(
+                    Code::StaleRevision,
+                    vec![Segment::Key("expected_revision".into())],
+                    format!("The current experience revision is {}. Call get_experience, reapply only the intended changes to the latest experience, and resubmit with its revision.", p.revision),
+                ).into());
+            }
         }
         let target_ids: HashSet<_> = experience.belief_ids.iter().copied().collect();
         let beliefs = self.learning_beliefs_for_ids(&tx, &target_ids).await?;
@@ -478,14 +504,21 @@ impl AgeStore {
         if let Some(id) = experience.pattern_id {
             let g = &self.graph_name;
             let rows = tx.query(&format!("SELECT project::text FROM ag_catalog.cypher('{g}', $$ MATCH (p:Pattern {{id:'{id}'}}) RETURN p.project $$) AS (project ag_catalog.agtype)"), &[]).await?;
-            ensure!(!rows.is_empty(), "pattern not found");
-            let project: Option<&str> = rows[0].get(0);
-            ensure!(
-                project.is_none()
-                    || project == Some("null")
-                    || project == Some(experience.project.as_str()),
-                "pattern belongs to another project"
-            );
+            let row = rows.first().ok_or_else(|| {
+                experience_fault(
+                Code::MissingReference,
+                "pattern_id",
+                "Pattern not found. Use the UUID of the pattern actually used, or omit pattern_id.",
+            )
+            })?;
+            let project: Option<&str> = row.get(0);
+            if project.is_some_and(|owner| owner != "null" && owner != experience.project) {
+                return Err(experience_fault(
+                    Code::UnsupportedCombination,
+                    "pattern_id",
+                    "The pattern belongs to another project. Use the UUID of a pattern in this project or a global pattern you actually used, or omit pattern_id.",
+                ).into());
+            }
         }
         let old_review = Self::active_review(&tx, experience.id).await?;
         let affected = review_targets(old_review.iter());

@@ -21,6 +21,126 @@ fn review(experience_id: Uuid, expected_review_revision: i64, feedback: Value) -
 }
 
 #[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
+#[tokio::test]
+async fn stale_experience_correction_preserves_history_and_accepts_rebased_change() -> Result<()> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let fixture = isolation::fixture();
+    let service = MimirService::connect(&Config {
+        database: fixture.database_config(),
+        embeddings: None,
+        llm: None,
+        judge: None,
+        email: None,
+        retirement: None,
+    })
+    .await?;
+    let project = format!("experience-correction-{}", Uuid::new_v4());
+    let saved = handle_tool_call(
+        &service,
+        "record_experience",
+        &json!({"experience": experience(&project), "expected_revision": 0}),
+    )
+    .await?;
+    ensure!(saved["revision"] == 1);
+    let id: Uuid = serde_json::from_value(saved["experience"]["id"].clone())?;
+    let mut first_correction = saved["experience"].clone();
+    first_correction["action"] = json!("inspect the running process");
+    let args = json!({"experience": first_correction, "expected_revision": 1});
+    let current = handle_tool_call(&service, "record_experience", &args).await?;
+    ensure!(current["experience"]["id"] == json!(id));
+    ensure!(current["revision"] == 2);
+    ensure!(handle_tool_call(&service, "record_experience", &args).await? == current);
+    let history = service.experience_history(id).await?;
+    ensure!(history["experiences"].as_array().map(Vec::len) == Some(2));
+
+    let mut changed = saved["experience"].clone();
+    changed["context"] = json!("corrected observation context");
+    let mut malformed = changed.clone();
+    malformed["outcome"] = json!("maybe");
+    let mut rebased = current["experience"].clone();
+    rebased["context"] = changed["context"].clone();
+    let mut child = Command::new(&fixture.mcp)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    {
+        let mut input = child.stdin.take().unwrap();
+        for (req, tool, args) in [
+            (
+                "stale",
+                "record_experience",
+                json!({"experience": changed, "expected_revision": 1}),
+            ),
+            (
+                "malformed",
+                "record_experience",
+                json!({"experience": malformed, "expected_revision": 2}),
+            ),
+            (
+                "out_of_range",
+                "record_experience",
+                json!({"experience": rebased, "expected_revision": i64::MAX as u64 + 1}),
+            ),
+            ("snapshot", "get_experience", json!({"id": id})),
+            ("history", "experience_history", json!({"id": id})),
+            (
+                "corrected",
+                "record_experience",
+                json!({"experience": rebased, "expected_revision": 2}),
+            ),
+        ] {
+            writeln!(
+                input,
+                "{}",
+                json!({"jsonrpc":"2.0", "id":req, "method":"tools/call",
+                "params":{"name":tool, "arguments":args}})
+            )?;
+        }
+    }
+    let output = child.wait_with_output()?;
+    ensure!(
+        output.status.success(),
+        "MCP process failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let replies = std::str::from_utf8(&output.stdout)?
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let reply = |id: &str| -> Result<Value> {
+        let text = replies
+            .iter()
+            .find(|reply| reply["id"] == id)
+            .and_then(|reply| reply["result"]["content"][0]["text"].as_str())
+            .ok_or_else(|| anyhow::anyhow!("missing {id} reply: {replies:?}"))?;
+        Ok(serde_json::from_str(text)?)
+    };
+    let refused = reply("stale")?;
+    ensure!(refused["status"] == "needs_correction");
+    ensure!(refused["path"] == json!(["expected_revision"]));
+    ensure!(refused["fault"]["code"] == "stale_revision");
+    ensure!(refused["reason"]
+        .as_str()
+        .is_some_and(|text| text.contains("get_experience")));
+    let malformed = reply("malformed")?;
+    ensure!(malformed["status"] == "needs_correction");
+    ensure!(malformed["path"] == json!(["experience"]));
+    ensure!(malformed["fault"]["code"] == "malformed_input");
+    let out_of_range = reply("out_of_range")?;
+    ensure!(out_of_range["status"] == "needs_correction");
+    ensure!(out_of_range["path"] == json!(["expected_revision"]));
+    ensure!(reply("snapshot")? == current);
+    ensure!(reply("history")? == history);
+    let corrected = reply("corrected")?;
+    ensure!(corrected["revision"] == 3);
+    ensure!(corrected["experience"] == rebased);
+    Ok(())
+}
+
+#[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
 #[test]
 fn document_search_unavailability_and_invalid_context_are_actionable_mcp_replies() -> Result<()> {
     use std::io::Write;
