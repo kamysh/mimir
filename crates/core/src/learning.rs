@@ -475,6 +475,10 @@ impl crate::MimirService {
             .ok_or_else(|| {
                 anyhow::anyhow!("Experience not found; check its id before resubmitting.")
             })?;
+        ensure!(
+            review.experience_revision == current.revision,
+            "stale review: experience has changed"
+        );
         let existing = self
             .store
             .existing_belief_candidates(review.experience_id)
@@ -491,6 +495,13 @@ impl crate::MimirService {
                 if existing.contains(key) {
                     continue;
                 }
+                // An already committed review cannot contain a new belief.
+                // Leave replay and final revision validation to the transaction.
+                ensure!(
+                    expected_review_revision == current.review_revision,
+                    "stale review revision: current is {}",
+                    current.review_revision
+                );
                 let passage_id = supporting_passage_id.ok_or_else(|| crate::validation::Refusal::invalid(
                     crate::validation::Code::MissingEvidence,
                     vec![crate::validation::Segment::Key("review".into()), crate::validation::Segment::Key("candidates".into()), crate::validation::Segment::Index(index), crate::validation::Segment::Key("supporting_passage_id".into())],

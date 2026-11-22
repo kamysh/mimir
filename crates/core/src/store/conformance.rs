@@ -172,12 +172,14 @@ impl AgeStore {
             "duplicate PostgreSQL chunk identity"
         );
         let g = &self.graph_name;
-        // Validate against retained chunk identities before deleting anything.
+        // Validate against existing chunk identities before deleting anything.
         for row in tx.query(&format!("SELECT id::text FROM ag_catalog.cypher('{g}', $$ MATCH (c:DocumentChunk) RETURN c.id $$) AS (id ag_catalog.agtype)"), &[]).await? {
             let id = Uuid::parse_str(row.get(0))?;
             ensure!(!proposed.contains(&id), "generated chunk identity is already occupied");
         }
-        self.delete_document_chunks_in(&tx, &old).await?;
+        let affected = self
+            .detach_document_chunks_on(tx.client(), &old, true)
+            .await?;
         self.delete_chunk_embeddings_on(tx.client(), &old).await?;
         let mut published = Vec::with_capacity(chunks.len());
         for (chunk, vector) in chunks.iter().zip(vectors) {
@@ -197,6 +199,7 @@ impl AgeStore {
                 .await?;
             published.push(chunk);
         }
+        self.recompute_learning(&tx, None, affected).await?;
         tx.commit().await?;
         Ok(published)
     }
@@ -209,8 +212,11 @@ impl AgeStore {
         let old = self
             .get_chunk_ids_for_document_on(tx.client(), path)
             .await?;
-        self.delete_document_chunks_in(&tx, &old).await?;
+        let affected = self
+            .detach_document_chunks_on(tx.client(), &old, true)
+            .await?;
         self.delete_chunk_embeddings_on(tx.client(), &old).await?;
+        self.recompute_learning(&tx, None, affected).await?;
         tx.commit().await?;
         Ok(old.len())
     }
@@ -234,9 +240,14 @@ fn validate_document_batch(
         ensure!(ids.insert(chunk.id), "duplicate generated chunk identity");
     }
     if let Some(first) = vectors.first() {
+        ensure!(!first.is_empty(), "document embeddings must be nonempty");
         ensure!(
             vectors.iter().all(|v| v.len() == first.len()),
             "inconsistent document embedding dimensions"
+        );
+        ensure!(
+            vectors.iter().flatten().all(|value| value.is_finite()),
+            "document embeddings must contain only finite numbers"
         );
     }
     Ok(())
@@ -264,6 +275,12 @@ mod tests {
         )
         .is_ok());
         assert!(validate_document_batch("document", std::slice::from_ref(&chunk), &[]).is_err());
+        for vector in [vec![], vec![f32::INFINITY], vec![f32::NAN]] {
+            assert!(
+                validate_document_batch("document", std::slice::from_ref(&chunk), &[vector])
+                    .is_err()
+            );
+        }
         assert!(
             validate_document_batch("other", std::slice::from_ref(&chunk), &[vec![1.0]]).is_err()
         );
@@ -281,6 +298,153 @@ mod tests {
             &[vec![1.0], vec![1.0, 2.0]]
         )
         .is_err());
+    }
+
+    #[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
+    #[tokio::test]
+    async fn document_reload_rolls_back_late_failure_and_never_adds_evidence() {
+        struct FixtureEmbedder;
+        impl crate::embed::EmbeddingProvider for FixtureEmbedder {
+            fn embed<'a>(&'a self, texts: &'a [String]) -> crate::embed::EmbedFuture<'a> {
+                Box::pin(async move { Ok(vec![vec![1.0, 0.0]; texts.len()]) })
+            }
+        }
+
+        let fixture = isolation::fixture();
+        let mut service = crate::MimirService::connect(&crate::config::Config {
+            database: fixture.database_config(),
+            embeddings: None,
+            llm: None,
+            judge: None,
+            email: None,
+            retirement: None,
+        })
+        .await
+        .unwrap();
+        let project = format!("document-reload-{}", Uuid::new_v4());
+        let path = fixture.root.join(format!("{project}.md"));
+        let path = path.to_str().unwrap();
+        std::fs::write(path, "# Retention\nKeep backups for 30 days.\n").unwrap();
+        let belief = service
+            .add_belief_in_project(
+                "Keep backups for 30 days.",
+                0.5,
+                0.0,
+                &project,
+                MemoryType::Fact,
+            )
+            .await
+            .unwrap();
+        service
+            .store
+            .insert_belief_embedding(belief.id, &[1.0, 0.0])
+            .await
+            .unwrap();
+        service.embeddings = Some(Box::new(FixtureEmbedder));
+        assert_eq!(
+            service.load_document(path, Some(&project)).await.unwrap(),
+            1
+        );
+
+        let store = &service.store;
+        let old = store.get_chunk_ids_for_document(path).await.unwrap()[0];
+        let sources = || async { store.get_evidence_for_beliefs(&[belief.id]).await.unwrap() };
+        let probability = || async {
+            store
+                .get_belief(belief.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .probability
+        };
+        let has_vector = |id: Uuid| async move {
+            let client = store.client.lock().await;
+            client
+                .query_one(
+                    "SELECT EXISTS (SELECT 1 FROM chunk_embeddings WHERE chunk_id=$1)",
+                    &[&id],
+                )
+                .await
+                .unwrap()
+                .get::<_, bool>(0)
+        };
+        assert!(
+            sources().await.is_empty(),
+            "identical vectors must not create evidence"
+        );
+        store
+            .insert_evidence(old, belief.id, Probability::new(1.0).unwrap())
+            .await
+            .unwrap();
+        let grounded = probability().await;
+        assert!(grounded.value() > belief.probability.value());
+
+        std::fs::write(path, "# Retention revised\nKeep backups for 60 days.\n").unwrap();
+        {
+            let client = store.client.lock().await;
+            client.batch_execute("CREATE FUNCTION mimir_test_reject_chunk_vector() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture chunk vector rejected'; END $$; CREATE TRIGGER mimir_test_reject_chunk_vector BEFORE INSERT ON chunk_embeddings FOR EACH STATEMENT EXECUTE FUNCTION mimir_test_reject_chunk_vector()").await.unwrap();
+        }
+        let failed = service
+            .load_document(path, Some(&project))
+            .await
+            .unwrap_err();
+        {
+            let client = store.client.lock().await;
+            client.batch_execute("DROP TRIGGER mimir_test_reject_chunk_vector ON chunk_embeddings; DROP FUNCTION mimir_test_reject_chunk_vector()").await.unwrap();
+        }
+        assert!(failed.chain().any(|cause| cause
+            .downcast_ref::<tokio_postgres::Error>()
+            .and_then(tokio_postgres::Error::as_db_error)
+            .is_some_and(|detail| detail.message() == "fixture chunk vector rejected")));
+        assert_eq!(
+            store.get_chunk_ids_for_document(path).await.unwrap(),
+            vec![old]
+        );
+        assert!(has_vector(old).await);
+        assert_eq!(sources().await, vec![(belief.id, old, 1.0)]);
+        assert_eq!(probability().await, grounded);
+
+        assert_eq!(
+            service.load_document(path, Some(&project)).await.unwrap(),
+            1
+        );
+        let replacement = store.get_chunk_ids_for_document(path).await.unwrap()[0];
+        assert_ne!(replacement, old);
+        assert!(has_vector(replacement).await);
+        assert!(!has_vector(old).await);
+        assert!(sources().await.is_empty());
+        assert_eq!(probability().await, belief.probability);
+
+        store
+            .insert_evidence(replacement, belief.id, Probability::new(1.0).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(service.clear_document(path).await.unwrap(), 1);
+        assert!(!has_vector(replacement).await);
+        assert_eq!(probability().await, belief.probability);
+
+        let drafts = crate::documents::parse_markdown(
+            "# Policy\nParent text.\n\n## Detail\nChild text.\n",
+            path,
+            Some(&project),
+        );
+        assert_eq!(drafts.len(), 2);
+        let published = store
+            .replace_document(path, &drafts, &[vec![1.0, 0.0], vec![0.0, 1.0]])
+            .await
+            .unwrap();
+        for (draft, stored) in drafts.iter().zip(&published) {
+            assert_ne!(stored.id, draft.id);
+            assert!(has_vector(stored.id).await);
+            assert!(!has_vector(draft.id).await);
+        }
+        let child = store
+            .get_chunk_by_id(published[1].id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(child.parent_id, Some(published[0].id));
+        assert_eq!(service.clear_document(path).await.unwrap(), 2);
     }
 
     #[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
@@ -421,10 +585,32 @@ mod tests {
         }))
         .unwrap();
         service.embeddings = Some(Box::new(Provider { fail: true }));
-        assert!(service
-            .review_supported_experience(&review, 0)
-            .await
-            .is_err());
+        let mut stale = review.clone();
+        stale.experience_revision += 1;
+        assert_eq!(
+            service
+                .review_supported_experience(&stale, 0)
+                .await
+                .unwrap_err()
+                .to_string(),
+            "stale review: experience has changed"
+        );
+        assert_eq!(
+            service
+                .review_supported_experience(&review, 1)
+                .await
+                .unwrap_err()
+                .to_string(),
+            "stale review revision: current is 0"
+        );
+        assert!(format!(
+            "{:#}",
+            service
+                .review_supported_experience(&review, 0)
+                .await
+                .unwrap_err()
+        )
+        .contains("fixture embedding failed"));
         assert!(service
             .store
             .existing_belief_candidates(experience.id)
@@ -484,6 +670,108 @@ mod tests {
 
     #[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
     #[tokio::test]
+    async fn grounding_edits_only_recalculate_changed_evidence_and_rollback_on_error() {
+        let cfg = isolation::fixture().database_config();
+        crate::db::migrate(&cfg).await.unwrap();
+        let store =
+            AgeStore::new(crate::db::connect(&cfg).await.unwrap(), cfg.dbname.clone()).unwrap();
+        let project = format!("grounding-{}", Uuid::new_v4());
+        let target =
+            Belief::new_in_project("grounding target".into(), 0.5, 0.0, project.clone()).unwrap();
+        let dependent =
+            Belief::new_in_project("grounding dependent".into(), 0.5, 0.0, project.clone())
+                .unwrap();
+        let passage = DocumentChunk::new(
+            format!("/fixture/{project}.md"),
+            vec![],
+            "An observed receipt.".into(),
+            None,
+            Some(project),
+        );
+        let target = store.insert_belief(&target).await.unwrap();
+        let dependent = store.insert_belief(&dependent).await.unwrap();
+        let passage = store.insert_document_chunk(&passage).await.unwrap();
+        let links = || async { store.get_evidence_for_beliefs(&[target.id]).await.unwrap() };
+        let target_value = || async {
+            store
+                .get_belief(target.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .probability
+        };
+        let dependent_value = || async {
+            store
+                .get_belief(dependent.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .probability
+        };
+        let add = |weight| {
+            store.insert_evidence(passage.id, target.id, Probability::new(weight).unwrap())
+        };
+        let remove = || store.delete_evidence(passage.id, target.id);
+
+        // A posterior different from the fixed prior makes needless recalculation visible.
+        store.update_belief_beta(target.id, 9.0, 1.0).await.unwrap();
+        let before = target_value().await;
+        assert_ne!(before, target.probability);
+        add(0.0).await.unwrap();
+        assert_eq!(links().await, vec![(target.id, passage.id, 0.0)]);
+        assert_eq!(target_value().await, before);
+        remove().await.unwrap();
+        remove().await.unwrap();
+        assert!(links().await.is_empty());
+        assert_eq!(target_value().await, before);
+
+        store
+            .update_belief_beta(target.id, target.alpha0, target.beta0)
+            .await
+            .unwrap();
+        store
+            .insert_edge_and_propagate(
+                &Edge::new(target.id, dependent.id, EdgeType::Supports, 1.0).unwrap(),
+            )
+            .await
+            .unwrap();
+        let dependent_before = dependent_value().await;
+        add(0.5).await.unwrap();
+        add(0.5).await.unwrap();
+        let weighted = links().await;
+        assert_eq!(weighted, vec![(target.id, passage.id, 0.5); 2]);
+        let with_evidence = target_value().await;
+        let dependent_with_evidence = dependent_value().await;
+        assert!(with_evidence.value() > target.probability.value());
+        assert!(dependent_with_evidence.value() > dependent_before.value());
+
+        // Inject an invalid stored weight so recalculation rejects the edit.
+        let graph = &store.graph_name;
+        let target_id = target.id;
+        let dependent_id = dependent.id;
+        let bad_link =
+            format!("MATCH (a:Belief {{id:'{dependent_id}'}}), (b:Belief {{id:'{target_id}'}})");
+        let edit_bad_link = |edit: &str| {
+            let sql = format!("SELECT * FROM ag_catalog.cypher('{graph}', $$ {bad_link} {edit} RETURN 1 $$) AS (ok ag_catalog.agtype)");
+            let store = &store;
+            async move { store.client.lock().await.query(&sql, &[]).await.unwrap() }
+        };
+        edit_bad_link("CREATE (a)-[:SUPPORTS {weight:2.0}]->(b)").await;
+        for error in [add(0.5).await.unwrap_err(), remove().await.unwrap_err()] {
+            assert_eq!(error.to_string(), "probability 2 is outside [0, 1]");
+            assert_eq!(links().await, weighted);
+            assert_eq!(target_value().await, with_evidence);
+            assert_eq!(dependent_value().await, dependent_with_evidence);
+        }
+        edit_bad_link("MATCH (a)-[r:SUPPORTS]->(b) DELETE r").await;
+        remove().await.unwrap();
+        assert!(links().await.is_empty());
+        assert_eq!(target_value().await, target.probability);
+        assert_eq!(dependent_value().await, dependent_before);
+    }
+
+    #[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
+    #[tokio::test]
     async fn project_deletion_rolls_back_before_a_fresh_retry() {
         let cfg = isolation::fixture().database_config();
         crate::db::migrate(&cfg).await.unwrap();
@@ -498,21 +786,157 @@ mod tests {
         )
         .unwrap();
         let belief = store.insert_belief(&belief).await.unwrap();
-        // A statement trigger rejects a later deletion inside the transaction.
-        // Every earlier graph mutation must roll back with it.
+        store
+            .insert_belief_embedding(belief.id, &[1.0, 0.0])
+            .await
+            .unwrap();
+        let survivor = Belief::new_in_project(
+            "surviving belief grounded in the deleted project".into(),
+            0.5,
+            0.0,
+            format!("{project}-survivor"),
+        )
+        .unwrap();
+        let survivor = store.insert_belief(&survivor).await.unwrap();
+        let linked = Belief::new_in_project(
+            "surviving belief supported by a deleted belief".into(),
+            0.5,
+            0.0,
+            format!("{project}-survivor"),
+        )
+        .unwrap();
+        let linked = store.insert_belief(&linked).await.unwrap();
+        let unrelated = Belief::new_in_project(
+            "unrelated surviving belief".into(),
+            0.8,
+            0.0,
+            format!("{project}-survivor"),
+        )
+        .unwrap();
+        let unrelated = store.insert_belief(&unrelated).await.unwrap();
+        let edge = Edge::new(belief.id, linked.id, EdgeType::Supports, 1.0).unwrap();
+        store.insert_edge_and_propagate(&edge).await.unwrap();
+        let with_support = store.get_belief(linked.id).await.unwrap().unwrap();
+        assert!(with_support.probability.value() > linked.probability.value());
+        let path = format!("/fixture/{project}.md");
+        let passage = DocumentChunk::new(
+            path.clone(),
+            vec![],
+            "This passage supports the surviving belief.".into(),
+            None,
+            Some(project.clone()),
+        );
+        let passage = store
+            .replace_document(&path, std::slice::from_ref(&passage), &[vec![1.0, 0.0]])
+            .await
+            .unwrap()
+            .remove(0);
+        store
+            .insert_evidence(passage.id, survivor.id, Probability::new(1.0).unwrap())
+            .await
+            .unwrap();
+        let with_evidence = store.get_belief(survivor.id).await.unwrap().unwrap();
+        assert!(with_evidence.probability.value() > survivor.probability.value());
+        let experience = crate::learning::NewExperience {
+            id: (),
+            project: project.clone(),
+            context: "deletion rollback".into(),
+            action: "verify evidence".into(),
+            outcome: crate::learning::Outcome::Unknown,
+            source: crate::learning::ObservationSource::AgentReport,
+            evidence: vec!["isolated fixture".into()],
+            belief_ids: vec![],
+            pattern_id: None,
+            learning_items: vec![],
+            source_records: vec![],
+        };
+        store.create_experience(&experience).await.unwrap();
+        let vectors_exist = || async {
+            let client = store.client.lock().await;
+            let row = client
+                .query_one(
+                    "SELECT EXISTS (SELECT 1 FROM belief_embeddings WHERE belief_id = $1), \
+                 EXISTS (SELECT 1 FROM chunk_embeddings WHERE chunk_id = $2)",
+                    &[&belief.id, &passage.id],
+                )
+                .await
+                .unwrap();
+            (row.get::<_, bool>(0), row.get::<_, bool>(1))
+        };
+        // Reject the commit after both deletion and recalculation ran.
         {
             let client = store.client.lock().await;
-            client.batch_execute("CREATE FUNCTION mimir_test_reject_delete() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture deletion rejected'; END $$; CREATE TRIGGER mimir_test_reject_delete BEFORE DELETE ON belief_embeddings FOR EACH STATEMENT EXECUTE FUNCTION mimir_test_reject_delete()").await.unwrap();
+            client.batch_execute("CREATE FUNCTION mimir_test_reject_delete() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture deletion rejected'; END $$; CREATE CONSTRAINT TRIGGER mimir_test_reject_delete AFTER DELETE ON mimir_experiences DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION mimir_test_reject_delete()").await.unwrap();
         }
-        let failed = store.delete_project(&project).await;
+        let failed = store.delete_project_complete(&project).await;
         {
             let client = store.client.lock().await;
-            client.batch_execute("DROP TRIGGER mimir_test_reject_delete ON belief_embeddings; DROP FUNCTION mimir_test_reject_delete()").await.unwrap();
+            client.batch_execute("DROP TRIGGER mimir_test_reject_delete ON mimir_experiences; DROP FUNCTION mimir_test_reject_delete()").await.unwrap();
         }
-        assert!(failed.is_err());
+        let error = failed.unwrap_err();
+        assert!(error.chain().any(|cause| cause
+            .downcast_ref::<tokio_postgres::Error>()
+            .and_then(tokio_postgres::Error::as_db_error)
+            .is_some_and(|detail| detail.message() == "fixture deletion rejected")));
         assert!(store.get_belief(belief.id).await.unwrap().is_some());
-        store.delete_project(&project).await.unwrap();
+        assert!(store.get_chunk_by_id(passage.id).await.unwrap().is_some());
+        assert_eq!(vectors_exist().await, (true, true));
+        assert_eq!(
+            store
+                .get_belief(survivor.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .probability,
+            with_evidence.probability
+        );
+        assert_eq!(
+            store
+                .get_belief(linked.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .probability,
+            with_support.probability
+        );
+        assert_eq!(
+            store.delete_project_complete(&project).await.unwrap(),
+            (1, 1)
+        );
         assert!(store.get_belief(belief.id).await.unwrap().is_none());
+        assert!(store.get_chunk_by_id(passage.id).await.unwrap().is_none());
+        assert_eq!(vectors_exist().await, (false, false));
+        assert_eq!(
+            store
+                .get_belief(survivor.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .probability,
+            survivor.probability
+        );
+        assert_eq!(
+            store
+                .get_belief(linked.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .probability,
+            linked.probability
+        );
+        assert_eq!(
+            store
+                .get_belief(unrelated.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .probability,
+            unrelated.probability
+        );
+        assert_eq!(
+            store.delete_project_complete(&project).await.unwrap(),
+            (0, 0)
+        );
     }
 
     #[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]

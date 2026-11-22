@@ -7,7 +7,7 @@ module Mimir.ApplicationProtocol where
 open import Data.Bool using (Bool; true; false)
 open import Data.Float.Base using (Float)
 open import Data.Integer using (ℤ)
-open import Data.List using (List; []; _∷_; map)
+open import Data.List using (List; []; _∷_; map; filterᵇ)
 open import Data.List.Membership.Propositional using (_∈_)
 open import Data.List.Relation.Unary.Any using (here)
 open import Data.Maybe using (Maybe; just; nothing)
@@ -17,7 +17,7 @@ open import Data.Product using (Σ; _×_; _,_; proj₁)
 import Data.String
 open import Data.Unit using (⊤; tt)
 open import Data.Empty using (⊥; ⊥-elim)
-open import Relation.Nullary using (yes; no; ¬_)
+open import Relation.Nullary using (does; yes; no; ¬_)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; sym; trans; cong; subst)
 open import Mimir.Text using (Text)
 open import Mimir.UUIDGroups using (UUID; _≟UUID_)
@@ -88,11 +88,11 @@ module Run (environment : Environment) where
   module RelationRecovery (command : Mutation.Statement) = Mutation.StatementRecovery command
   module DefeatRecovery (from to : UUID) (weight : Number) = Mutation.DefeatRecovery from to weight
   module DeleteRecovery (kind : Deletion.Kind) (id : UUID) = Delete.T.RecoveryPlan (Delete.delete kind id)
-  module Forget = Project.Operation database
-  module Standalone (project : Text) = Project.Standalone database project
+  module Forget = Project.Operation database calculation
+  module Standalone (project : Text) = Project.Standalone database calculation project
   module Grounding = Ground.Operation database calculation
   module GroundRecovery (request : Ground.Request) = Grounding.T.RecoveryPlan (Grounding.plan request)
-  module Document = Documents.Operations database dimension
+  module Document = Documents.Operations database dimension calculation
   module DocumentClearRecovery (path : Text) = Document.ClearRecovery path
   module DocumentReplaceRecovery (path : Text) (chunks : List DocumentStore.Chunk) (vectors : List Store.Vector) =
     Document.ReplaceRecovery path chunks vectors
@@ -153,9 +153,12 @@ module Run (environment : Environment) where
       beliefWasAbsent : Ranking.lookup (Graph.BeliefValues.identity belief) (Store.beliefs before) ≡ nothing
       beliefStored : Ranking.lookup (Graph.BeliefValues.identity belief) (Store.beliefs after) ≡ just belief
       vectorStored : (Graph.BeliefValues.identity belief , BeliefEmbedding.vector material) ∈ Store.World.beliefVectors after
-      sourceStored : Σ Store.Ground (λ source → source ∈ Store.World.grounds after ×
-        Store.Ground.belief source ≡ Graph.BeliefValues.identity belief ×
-        Store.Ground.chunk source ≡ DocumentStore.Chunk.identity (BeliefEmbedding.Prepared.supportingPassage material))
+      -- The new belief starts with exactly one source link and no evidence mass.
+      sourceStored :
+        filterᵇ (λ source → does (Graph.BeliefValues.identity belief ≟UUID Store.Ground.belief source))
+          (Store.World.grounds after) ≡
+        (Store.ground (BeliefEmbedding.Draft.supportingPassageID proposal)
+          (Graph.BeliefValues.identity belief) 0.0 ∷ [])
       contentMatches : Graph.BeliefValues.content belief ≡ BeliefEmbedding.Draft.content proposal
       projectMatches : Graph.BeliefValues.project belief ≡ BeliefEmbedding.Draft.project proposal
       memoryMatches : Graph.BeliefValues.memory belief ≡ BeliefEmbedding.Draft.memory proposal
@@ -1461,8 +1464,8 @@ module Run (environment : Environment) where
         (Forget.learning (Forget.T.begin database) , inj₂ tx) ∷
         (Forget.learning (Forget.T.acquire tx 671942183) , inj₂ tt) ∷
         (Forget.learning (Forget.T.read tx) , inj₂ before) ∷
-        (Forget.learning (Forget.T.write tx (Project.published project before)) , inj₂ tt) ∷ [] →
-      DB.Atomic before (Project.published project before) (Forget.T.receipt reply) after →
+        (Forget.learning (Forget.T.write tx (Forget.outcome project before)) , inj₂ tt) ∷ [] →
+      Forget.Commit project before (Forget.T.receipt reply) after →
       RequestStep
         (forgetEffect (Forget.learning (Forget.T.commit tx))) (standaloneForgetState project (Standalone.R.running events
           (Forget.E.ask (Forget.learning (Forget.T.commit tx)) continuation) prefix)) reply before after
@@ -1471,8 +1474,8 @@ module Run (environment : Environment) where
         (Forget.learning (Forget.T.begin database) , inj₂ tx) ∷
         (Forget.learning (Forget.T.acquire tx 671942183) , inj₂ tt) ∷
         (Forget.learning (Forget.T.read tx) , inj₂ before) ∷
-        (Forget.learning (Forget.T.write tx (Project.published project before)) , inj₂ tt) ∷ [] →
-      DB.Atomic before (Project.published project before) (Forget.T.receipt reply) after →
+        (Forget.learning (Forget.T.write tx (Forget.outcome project before)) , inj₂ tt) ∷ [] →
+      Forget.Commit project before (Forget.T.receipt reply) after →
       RequestStep
         (forgetEffect (Forget.learning (Forget.T.commit tx))) (requestState identityValue (standaloneForgetState project (Standalone.R.running events
           (Forget.E.ask (Forget.learning (Forget.T.commit tx)) continuation) prefix))) reply before after

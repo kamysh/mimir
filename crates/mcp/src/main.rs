@@ -449,7 +449,7 @@ fn tools_list() -> Value {
         },
         {
             "name": "add_evidence",
-            "description": "Ground a belief in a document passage: create a GROUNDS edge from a DocumentChunk to a Belief. Adds local positive evidence to the belief Beta state; GROUNDS never becomes a causal or belief-to-belief edge. Get chunk_id from query_document results.",
+            "description": "Record a document passage as evidence for a belief. Positive weight recalculates the belief and its inference dependents. Zero weight records the source without changing belief values. Get chunk_id from query_document results.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -539,6 +539,17 @@ fn tools_list() -> Value {
 // Tool dispatch
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
+struct UnknownTool(String);
+
+impl std::fmt::Display for UnknownTool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Tool '{}' is not available", self.0)
+    }
+}
+
+impl std::error::Error for UnknownTool {}
+
 fn admit_tool_arguments(name: &str, args: &Value) -> Result<()> {
     use mimir_core::validation::{Code, Refusal, Segment};
     let reject = |field: &str, explanation: String| {
@@ -549,8 +560,12 @@ fn admit_tool_arguments(name: &str, args: &Value) -> Result<()> {
         )
     };
     let advertised = tools_list();
-    let tool = advertised.as_array().expect("advertised tools form an array").iter().find(|tool| tool["name"] == name)
-        .ok_or_else(|| reject("name", format!("Tool '{name}' is not available. List the available tools and select the intended name.")))?;
+    let tool = advertised
+        .as_array()
+        .expect("advertised tools form an array")
+        .iter()
+        .find(|tool| tool["name"] == name)
+        .ok_or_else(|| UnknownTool(name.into()))?;
     let object = args.as_object().ok_or_else(|| {
         reject(
             "arguments",
@@ -1236,11 +1251,23 @@ async fn main() -> Result<()> {
                         json!({ "content": [{ "type": "text", "text": agent_json_text(&result)? }] }),
                     ),
                     Err(e) => {
-                        let reply = if let Some(refusal) =
+                        let reply = if let Some(tool) = e.downcast_ref::<UnknownTool>() {
+                            json!({
+                                "status": "needs_correction",
+                                "tool": tool.0,
+                                "reason": "This tool name is not available.",
+                                "next_action": "Call tools/list and retry with the intended name. Ask the user if the intent is unclear."
+                            })
+                        } else if let Some(refusal) =
                             e.downcast_ref::<mimir_core::validation::Refusal>()
                         {
-                            json!({"status":"needs_correction", "fault":refusal.fault,
-                                "reason":e.to_string(), "next_action":"Correct the reported field and resubmit the original request. Ask the user if the intended value is unclear."})
+                            json!({
+                                "status": "needs_correction",
+                                "path": refusal.fault.path,
+                                "fault": refusal.fault,
+                                "reason": refusal.fault.message,
+                                "next_action": "Correct the request using the reason and path, then retry. Consult the tool schema or ask the user if the intended value is unclear."
+                            })
                         } else {
                             json!({"status":"needs_input", "reason":format!("{e:#}"),
                                 "next_action":"Explain this problem to the user and resolve the reported prerequisite before restarting the original request. Do not report the request as completed.", "interaction":"ask_user"})

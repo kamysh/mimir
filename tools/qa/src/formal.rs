@@ -43,17 +43,52 @@ fn variants(root: &Path, path: &str, name: &str) -> Result<Vec<String>> {
         .with_context(|| format!("missing enum {name} in {path}"))?;
     captures(r"(?m)^    ([A-Z][A-Za-z]+)\b", &body[1])
 }
-fn files(dir: &Path, ext: &str, result: &mut Vec<PathBuf>) -> Result<()> {
+fn files(dir: &Path, accepts: &impl Fn(&Path) -> bool, result: &mut Vec<PathBuf>) -> Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
         if entry.file_type()?.is_dir() {
-            files(&path, ext, result)?;
-        } else if path.extension().is_some_and(|e| e == ext) {
+            files(&path, accepts, result)?;
+        } else if accepts(&path) {
             result.push(path);
         }
     }
     Ok(())
+}
+
+fn module_stem(path: &Path) -> Option<&str> {
+    let name = path.file_name()?.to_str()?;
+    name.strip_suffix(".lagda.md")
+        .or_else(|| name.strip_suffix(".agda"))
+}
+
+fn module_name(path: &Path) -> Result<String> {
+    let stem = module_stem(path).context("expected a formal module path")?;
+    Ok(path
+        .strip_prefix("spec")?
+        .with_file_name(stem)
+        .to_string_lossy()
+        .replace('/', "."))
+}
+
+fn markdown_agda(source: &str) -> Result<String> {
+    let mut code = String::new();
+    let mut in_code = false;
+    for line in source.lines() {
+        if in_code {
+            if line.trim() == "```" {
+                in_code = false;
+            } else {
+                code.push_str(line);
+                code.push('\n');
+            }
+        } else if line.trim_end().ends_with("```agda") {
+            // Agda scans for its own fences even inside other Markdown blocks.
+            in_code = true;
+        }
+    }
+    ensure!(!in_code, "unterminated Agda code fence");
+    Ok(code)
 }
 
 fn migration_body(source: &str) -> Result<String> {
@@ -162,15 +197,24 @@ pub fn check() -> Result<()> {
         "CLI inventory mismatch"
     );
     let mut agda = Vec::new();
-    files(&root.join("spec"), "agda", &mut agda)?;
+    files(
+        &root.join("spec"),
+        &|path| module_stem(path).is_some(),
+        &mut agda,
+    )?;
     let mut modules = BTreeMap::new();
     for path in &agda {
-        let name = path
-            .strip_prefix(root.join("spec"))?
-            .with_extension("")
-            .to_string_lossy()
-            .replace('/', ".");
-        modules.insert(name, path);
+        let name = module_name(path.strip_prefix(&root)?)?;
+        let source = fs::read_to_string(path)?;
+        let code = if path.extension().is_some_and(|ext| ext == "md") {
+            markdown_agda(&source).with_context(|| path.display().to_string())?
+        } else {
+            source
+        };
+        ensure!(
+            modules.insert(name.clone(), (path, code)).is_none(),
+            "duplicate formal module {name}"
+        );
     }
     let imports = Regex::new(r"\bimport\s+(Mimir(?:\.[A-Za-z0-9_]+)*)")?;
     let mut reached = BTreeSet::new();
@@ -179,11 +223,10 @@ pub fn check() -> Result<()> {
         if !reached.insert(name.clone()) {
             continue;
         }
-        let path = modules
+        let (_, source) = modules
             .get(&name)
             .with_context(|| format!("missing module {name}"))?;
-        let source = fs::read_to_string(path)?;
-        for c in imports.captures_iter(&source) {
+        for c in imports.captures_iter(source) {
             ensure!(modules.contains_key(&c[1]), "missing module {}", &c[1]);
             pending.push(c[1].to_string());
         }
@@ -195,9 +238,8 @@ pub fn check() -> Result<()> {
     let safe = Regex::new(r"\{-#\s*OPTIONS\s+[^#]*--safe\b")?;
     let escape =
         Regex::new(r"\bpostulate\b|\bTERMINATING\b|\bNON_TERMINATING\b|allow-unsolved|\{!")?;
-    for path in &agda {
-        let source = fs::read_to_string(path)?;
-        ensure!(safe.is_match(&source), "unsafe module {}", path.display());
+    for (path, source) in modules.values() {
+        ensure!(safe.is_match(source), "unsafe module {}", path.display());
         let code = source
             .lines()
             .map(|x| x.split("--").next().unwrap_or(""))
@@ -251,11 +293,7 @@ pub fn check() -> Result<()> {
     }
     for path in &referenced {
         ensure!(root.join(path).exists(), "missing referenced path {path}");
-        let name = Path::new(path)
-            .strip_prefix("spec")?
-            .with_extension("")
-            .to_string_lossy()
-            .replace('/', ".");
+        let name = module_name(Path::new(path))?;
         ensure!(reached.contains(&name), "unreachable module {path}");
     }
     let binding = read(&root, "spec/Mimir/MigrationScriptBinding.agda")?;
@@ -280,7 +318,11 @@ pub fn check() -> Result<()> {
         "experienceAllocation",
     ];
     let mut sql = Vec::new();
-    files(&root.join("crates/core/migrations"), "sql", &mut sql)?;
+    files(
+        &root.join("crates/core/migrations"),
+        &|path| path.extension().is_some_and(|ext| ext == "sql"),
+        &mut sql,
+    )?;
     sql.sort();
     ensure!(
         sql.len() == keys.len() && bound.len() == keys.len(),
@@ -304,7 +346,25 @@ pub fn check() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::migration_body;
+    use super::{markdown_agda, migration_body, module_name};
+    use std::path::Path;
+
+    #[test]
+    fn literate_modules_use_agda_names_and_scan_agda_fences() {
+        let source = "Prose: import Mimir.Prose\n\
+                      ````text\n```agda\nimport Mimir.CheckedInsideText\n```\n````\n\
+                      ```agda\n{-# OPTIONS --safe #-}\nimport Mimir.Real\n```\n\
+                      ```text\npostulate example\n```\n";
+        assert_eq!(
+            module_name(Path::new("spec/Mimir/Reader/Example.lagda.md")).unwrap(),
+            "Mimir.Reader.Example"
+        );
+        assert_eq!(
+            markdown_agda(source).unwrap(),
+            "import Mimir.CheckedInsideText\n{-# OPTIONS --safe #-}\nimport Mimir.Real\n"
+        );
+        assert!(markdown_agda("```agda\nimport Mimir.Unclosed\n").is_err());
+    }
     const H: &str = "-- #!migration\n-- name: \"upgrade\",\n-- description: \"Keep old IDs\";\n";
     #[test]
     fn preserves_sql_comments_and_semicolons() {

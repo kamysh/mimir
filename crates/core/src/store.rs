@@ -3,7 +3,7 @@ mod learning;
 use anyhow::{bail, ensure, Result};
 use chrono::DateTime;
 use pgvector::Vector;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_postgres::{Client, Row};
@@ -702,6 +702,31 @@ $$) AS (ok ag_catalog.agtype)"#
             })
             .collect();
 
+        let chunks = self.get_chunk_ids_by_project_on(client, project).await?;
+        let mut affected = HashSet::new();
+        if !ids.is_empty() {
+            let deleted = ids
+                .iter()
+                .map(|id| format!("'{id}'"))
+                .collect::<Vec<_>>()
+                .join(",");
+            let rows = client
+                .query(
+                    &format!(
+                        "SELECT id::text FROM ag_catalog.cypher('{g}', $$ \
+                 MATCH (a:Belief)-[r]->(b:Belief) \
+                 WHERE a.id IN [{deleted}] AND NOT (b.id IN [{deleted}]) \
+                   AND type(r) <> 'CONTRADICTS' AND r.weight > 0.0 \
+                 RETURN DISTINCT b.id $$) AS (id ag_catalog.agtype)"
+                    ),
+                    &[],
+                )
+                .await?;
+            for row in rows {
+                affected.insert(Uuid::parse_str(row.get(0))?);
+            }
+        }
+
         let stmt_del = format!("age_delproj_del_{}", Uuid::new_v4().simple());
         let prepare_del = format!(
             "PREPARE {stmt_del}(agtype) AS SELECT * \
@@ -726,8 +751,10 @@ $$) AS (ok ag_catalog.agtype)"#
                 &[&ids],
             )
             .await?;
-        let chunks = self.get_chunk_ids_by_project_on(client, project).await?;
-        self.delete_document_chunks_in(&tx, &chunks).await?;
+        affected.extend(
+            self.detach_document_chunks_on(client, &chunks, true)
+                .await?,
+        );
         self.delete_chunk_embeddings_on(client, &chunks).await?;
         client
             .execute(
@@ -735,6 +762,7 @@ $$) AS (ok ag_catalog.agtype)"#
                 &[&project],
             )
             .await?;
+        self.recompute_learning(&tx, None, affected).await?;
         tx.commit().await?;
         Ok((count, chunks.len()))
     }
@@ -1712,8 +1740,20 @@ $$) AS (ok ag_catalog.agtype)"#
         tx: &tokio_postgres::Transaction<'_>,
         ids: &[Uuid],
     ) -> Result<()> {
+        let affected = self
+            .detach_document_chunks_on(tx.client(), ids, false)
+            .await?;
+        self.recompute_learning(tx, None, affected).await
+    }
+
+    async fn detach_document_chunks_on(
+        &self,
+        client: &Client,
+        ids: &[Uuid],
+        weighted_only: bool,
+    ) -> Result<HashSet<Uuid>> {
         if ids.is_empty() {
-            return Ok(());
+            return Ok(HashSet::new());
         }
         let g = &self.graph_name;
         let id_list = ids
@@ -1728,14 +1768,18 @@ $$) AS (ok ag_catalog.agtype)"#
   RETURN 1
 $$) AS (ok ag_catalog.agtype)"#
         );
-        let grounded = tx.query(&format!("SELECT id::text FROM ag_catalog.cypher('{g}', $$ MATCH (c:DocumentChunk)-[:GROUNDS]->(b:Belief) WHERE c.id IN [{id_list}] RETURN DISTINCT b.id $$) AS (id ag_catalog.agtype)"), &[]).await?;
-        let affected: std::collections::HashSet<Uuid> = grounded
+        let weight_filter = if weighted_only {
+            " AND r.weight > 0.0"
+        } else {
+            ""
+        };
+        let grounded = client.query(&format!("SELECT id::text FROM ag_catalog.cypher('{g}', $$ MATCH (c:DocumentChunk)-[r:GROUNDS]->(b:Belief) WHERE c.id IN [{id_list}]{weight_filter} RETURN DISTINCT b.id $$) AS (id ag_catalog.agtype)"), &[]).await?;
+        let affected = grounded
             .iter()
             .map(|row| Uuid::parse_str(row.get::<_, &str>(0)))
             .collect::<std::result::Result<_, _>>()?;
-        tx.query(&sql, &[]).await?;
-        self.recompute_learning(tx, None, affected).await?;
-        Ok(())
+        client.query(&sql, &[]).await?;
+        Ok(affected)
     }
 
     /// Delete embedding rows for the given chunk IDs.
@@ -2012,19 +2056,12 @@ $$) {CHUNK_RETURN_COLUMNS}"#
     // -----------------------------------------------------------------------
     // Evidence edges (GROUNDS): DocumentChunk → Belief
     //
-    // GROUNDS originates at a DocumentChunk and is NEVER matched by belief
-    // traversal (get_downstream_beliefs / get_edges_among match (:Belief)->
-    // (:Belief) only), so it cannot affect inference. Non-interference is
-    // structural — see Mimir.Evidence (propagate-evidence-invariant).
+    // GROUNDS adds local evidence to a belief. Dependency traversal follows
+    // belief-to-belief links, then recalculates their targets from all evidence.
     // -----------------------------------------------------------------------
 
-    /// Create a GROUNDS edge from a DocumentChunk to a Belief, then apply
-    /// C-coupling: bump α += EVIDENCE_MASS_K * weight (spec: Mimir.Beta
-    /// CCoupling.coupleOne). β is unchanged; the updated (α,β) is written back.
-    /// Errors if either endpoint is missing (the MATCH yields no rows).
-    ///
-    /// Both the CREATE GROUNDS and the α update run inside a single transaction
-    /// so concurrent calls cannot lose an increment (no TOCTOU window).
+    /// Record evidence and atomically recalculate the target and its dependents
+    /// for a positive weight. A zero-weight link records the source only.
     pub async fn insert_evidence(
         &self,
         chunk_id: Uuid,
@@ -2058,10 +2095,10 @@ $$) AS (weight ag_catalog.agtype)"#
             );
         }
 
-        // Recompute from the fixed prior and every current evidence source.
-        // This also updates descendants within the same transaction.
-        self.recompute_learning(&tx, None, [belief_id].into())
-            .await?;
+        if w > 0.0 {
+            self.recompute_learning(&tx, None, [belief_id].into())
+                .await?;
+        }
 
         tx.commit().await?;
         Ok(())
@@ -2129,25 +2166,33 @@ $$) AS (belief_id ag_catalog.agtype, chunk_id ag_catalog.agtype, weight ag_catal
         Ok(out)
     }
 
-    /// Remove a specific GROUNDS edge. (Edges are also GC'd automatically by the
-    /// DETACH DELETE on either endpoint; this is for explicit unlink.)
+    /// Remove every GROUNDS edge for the pair, recalculating in the same
+    /// transaction if the removal changes the evidence weight.
     pub async fn delete_evidence(&self, chunk_id: Uuid, belief_id: Uuid) -> Result<()> {
         let g = &self.graph_name;
         let c = chunk_id.to_string();
         let b = belief_id.to_string();
         let sql = format!(
-            r#"SELECT * FROM ag_catalog.cypher('{g}', $$
+            r#"SELECT weight::text FROM ag_catalog.cypher('{g}', $$
   MATCH (c:DocumentChunk {{id: '{c}'}})-[r:GROUNDS]->(b:Belief {{id: '{b}'}})
+  WITH r, r.weight AS weight
   DELETE r
-$$) AS (v ag_catalog.agtype)"#
+  RETURN weight
+$$) AS (weight ag_catalog.agtype)"#
         );
         let mut client = self.client.lock().await;
         let tx = learning_transaction(&mut client).await?;
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
             .await?;
-        tx.execute(&sql, &[]).await?;
-        self.recompute_learning(&tx, None, [belief_id].into())
-            .await?;
+        let mut removed_positive_weight = false;
+        for row in tx.query(&sql, &[]).await? {
+            let weight = row.get::<_, &str>(0).parse::<f64>()?;
+            removed_positive_weight |= weight > 0.0;
+        }
+        if removed_positive_weight {
+            self.recompute_learning(&tx, None, [belief_id].into())
+                .await?;
+        }
         tx.commit().await?;
         Ok(())
     }

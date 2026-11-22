@@ -5163,7 +5163,7 @@
           "behavioral_area": [
             "spec/Mimir/Markdown.agda",
             "spec/Mimir/DocumentStore.agda",
-            "spec/Mimir/DocumentLoading.agda"
+            "spec/Mimir/DocumentLoading.lagda.md"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
         },
@@ -5176,7 +5176,7 @@
           "behavioral_area": [
             "spec/Mimir/Markdown.agda",
             "spec/Mimir/DocumentStore.agda",
-            "spec/Mimir/DocumentLoading.agda"
+            "spec/Mimir/DocumentLoading.lagda.md"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
         },
@@ -5189,7 +5189,7 @@
           "behavioral_area": [
             "spec/Mimir/Markdown.agda",
             "spec/Mimir/DocumentStore.agda",
-            "spec/Mimir/DocumentLoading.agda"
+            "spec/Mimir/DocumentLoading.lagda.md"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
         },
@@ -5202,7 +5202,7 @@
           "behavioral_area": [
             "spec/Mimir/Markdown.agda",
             "spec/Mimir/DocumentStore.agda",
-            "spec/Mimir/DocumentLoading.agda"
+            "spec/Mimir/DocumentLoading.lagda.md"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
         },
@@ -5219,7 +5219,7 @@
           "behavioral_area": [
             "spec/Mimir/Markdown.agda",
             "spec/Mimir/DocumentStore.agda",
-            "spec/Mimir/DocumentLoading.agda"
+            "spec/Mimir/DocumentLoading.lagda.md"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
         }
@@ -5230,7 +5230,7 @@
       "behavioral_specification": [
         "spec/Mimir/Markdown.agda",
         "spec/Mimir/DocumentStore.agda",
-        "spec/Mimir/DocumentLoading.agda"
+        "spec/Mimir/DocumentLoading.lagda.md"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked"
     },
@@ -7741,13 +7741,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -7764,13 +7764,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -7787,13 +7787,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -7810,13 +7810,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -7833,13 +7833,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -7856,13 +7856,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -7879,13 +7879,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -7902,13 +7902,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -7925,13 +7925,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -7948,13 +7948,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -7971,13 +7971,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -7994,13 +7994,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8017,13 +8017,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8040,13 +8040,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8063,13 +8063,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8086,13 +8086,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8109,13 +8109,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8132,13 +8132,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8155,13 +8155,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8178,13 +8178,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8201,13 +8201,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8224,13 +8224,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8247,13 +8247,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8270,13 +8270,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8293,13 +8293,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8316,13 +8316,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8339,13 +8339,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8362,13 +8362,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8385,13 +8385,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8408,13 +8408,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8431,13 +8431,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8454,13 +8454,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8477,13 +8477,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8500,13 +8500,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8523,13 +8523,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8546,13 +8546,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8569,13 +8569,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8592,13 +8592,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8615,13 +8615,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8642,13 +8642,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8669,13 +8669,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8692,13 +8692,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8715,13 +8715,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8738,13 +8738,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8761,13 +8761,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8784,13 +8784,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8807,13 +8807,13 @@
             "spec/Mimir/GraphMutationProtocol.agda",
             "spec/Mimir/GraphReadProtocol.agda",
             "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
+            "spec/Mimir/BeliefEmbedding.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         }
@@ -8828,13 +8828,13 @@
         "spec/Mimir/GraphMutationProtocol.agda",
         "spec/Mimir/GraphReadProtocol.agda",
         "spec/Mimir/GraphDeletion.agda",
-        "spec/Mimir/ProjectDeletion.agda",
+        "spec/Mimir/ProjectDeletion.lagda.md",
         "spec/Mimir/InferenceProtocol.agda",
         "spec/Mimir/RetrievalProtocol.agda",
-        "spec/Mimir/DocumentLoading.agda",
+        "spec/Mimir/DocumentLoading.lagda.md",
         "spec/Mimir/DocumentQuery.agda",
         "spec/Mimir/EvidenceRead.agda",
-        "spec/Mimir/BeliefEmbedding.agda"
+        "spec/Mimir/BeliefEmbedding.lagda.md"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked",
       "implementation_receipt": "docs/RUST-CONFORMANCE.md"
@@ -8941,7 +8941,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8956,7 +8956,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8971,7 +8971,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -8986,7 +8986,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9001,7 +9001,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9016,7 +9016,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9031,7 +9031,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9046,7 +9046,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9061,7 +9061,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9076,7 +9076,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9091,7 +9091,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9106,7 +9106,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9121,7 +9121,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9136,7 +9136,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9151,7 +9151,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9166,7 +9166,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9181,7 +9181,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9196,7 +9196,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9211,7 +9211,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9226,7 +9226,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9241,7 +9241,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9256,7 +9256,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9271,7 +9271,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9286,7 +9286,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9301,7 +9301,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9316,7 +9316,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9331,7 +9331,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9346,7 +9346,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9361,7 +9361,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9376,7 +9376,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9391,7 +9391,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9406,7 +9406,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9420,7 +9420,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9435,7 +9435,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9450,7 +9450,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9465,7 +9465,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9479,7 +9479,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9494,7 +9494,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9508,7 +9508,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9523,7 +9523,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9537,7 +9537,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9552,7 +9552,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9567,7 +9567,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9582,7 +9582,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9597,7 +9597,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9612,7 +9612,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9627,7 +9627,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9642,7 +9642,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9657,7 +9657,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9672,7 +9672,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9687,7 +9687,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9702,7 +9702,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9717,7 +9717,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9732,7 +9732,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9747,7 +9747,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9761,7 +9761,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9776,7 +9776,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9790,7 +9790,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9805,7 +9805,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9820,7 +9820,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9835,7 +9835,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9850,7 +9850,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9864,7 +9864,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9879,7 +9879,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9893,7 +9893,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9908,7 +9908,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9922,7 +9922,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9937,7 +9937,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9951,7 +9951,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9966,7 +9966,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9981,7 +9981,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -9995,7 +9995,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10010,7 +10010,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10024,7 +10024,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10039,7 +10039,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10054,7 +10054,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10069,7 +10069,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10084,7 +10084,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10099,7 +10099,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10114,7 +10114,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10129,7 +10129,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10144,7 +10144,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10159,7 +10159,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10174,7 +10174,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10189,7 +10189,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10203,7 +10203,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10218,7 +10218,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10233,7 +10233,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10248,7 +10248,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10263,7 +10263,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10278,7 +10278,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -10293,7 +10293,7 @@
             "spec/Mimir/GraphRecords.agda",
             "spec/Mimir/GraphPaths.agda",
             "spec/Mimir/DocumentPublication.agda",
-            "spec/Mimir/GroundingPublication.agda"
+            "spec/Mimir/GroundingPublication.lagda.md"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         }
@@ -10306,7 +10306,7 @@
         "spec/Mimir/GraphRecords.agda",
         "spec/Mimir/GraphPaths.agda",
         "spec/Mimir/DocumentPublication.agda",
-        "spec/Mimir/GroundingPublication.agda"
+        "spec/Mimir/GroundingPublication.lagda.md"
       ],
       "specification_status": "partially-specified",
       "implementation_receipt": "docs/RUST-CONFORMANCE.md"
@@ -10324,7 +10324,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/LearningTransaction.agda",
             "spec/Mimir/CandidateRegistry.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentPublication.agda",
             "spec/Mimir/DocumentStore.agda",
             "spec/Mimir/GraphMutationProtocol.agda"
@@ -10341,7 +10341,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/LearningTransaction.agda",
             "spec/Mimir/CandidateRegistry.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentPublication.agda",
             "spec/Mimir/DocumentStore.agda",
             "spec/Mimir/GraphMutationProtocol.agda"
@@ -10358,7 +10358,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/LearningTransaction.agda",
             "spec/Mimir/CandidateRegistry.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentPublication.agda",
             "spec/Mimir/DocumentStore.agda",
             "spec/Mimir/GraphMutationProtocol.agda"
@@ -10375,7 +10375,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/LearningTransaction.agda",
             "spec/Mimir/CandidateRegistry.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentPublication.agda",
             "spec/Mimir/DocumentStore.agda",
             "spec/Mimir/GraphMutationProtocol.agda"
@@ -10392,7 +10392,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/LearningTransaction.agda",
             "spec/Mimir/CandidateRegistry.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentPublication.agda",
             "spec/Mimir/DocumentStore.agda",
             "spec/Mimir/GraphMutationProtocol.agda"
@@ -10409,7 +10409,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/LearningTransaction.agda",
             "spec/Mimir/CandidateRegistry.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentPublication.agda",
             "spec/Mimir/DocumentStore.agda",
             "spec/Mimir/GraphMutationProtocol.agda"
@@ -10426,7 +10426,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/LearningTransaction.agda",
             "spec/Mimir/CandidateRegistry.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentPublication.agda",
             "spec/Mimir/DocumentStore.agda",
             "spec/Mimir/GraphMutationProtocol.agda"
@@ -10443,7 +10443,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/LearningTransaction.agda",
             "spec/Mimir/CandidateRegistry.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentPublication.agda",
             "spec/Mimir/DocumentStore.agda",
             "spec/Mimir/GraphMutationProtocol.agda"
@@ -10460,7 +10460,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/LearningTransaction.agda",
             "spec/Mimir/CandidateRegistry.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentPublication.agda",
             "spec/Mimir/DocumentStore.agda",
             "spec/Mimir/GraphMutationProtocol.agda"
@@ -10477,7 +10477,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/LearningTransaction.agda",
             "spec/Mimir/CandidateRegistry.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentPublication.agda",
             "spec/Mimir/DocumentStore.agda",
             "spec/Mimir/GraphMutationProtocol.agda"
@@ -10493,7 +10493,7 @@
         "spec/Mimir/InferenceProtocol.agda",
         "spec/Mimir/LearningTransaction.agda",
         "spec/Mimir/CandidateRegistry.agda",
-        "spec/Mimir/DocumentLoading.agda",
+        "spec/Mimir/DocumentLoading.lagda.md",
         "spec/Mimir/DocumentPublication.agda",
         "spec/Mimir/DocumentStore.agda",
         "spec/Mimir/GraphMutationProtocol.agda"
@@ -12067,7 +12067,7 @@
           "status": "partially-specified",
           "behavioral_area": [
             "spec/Mimir/McpRuntimeComposition.agda",
-            "spec/Mimir/McpApplicationComposition.agda",
+            "spec/Mimir/McpApplicationComposition.lagda.md",
             "spec/Mimir/McpToolExecution.agda",
             "spec/Mimir/PublicRequest.agda",
             "spec/Mimir/PublicEncoding.agda",
@@ -12086,7 +12086,7 @@
           "status": "partially-specified",
           "behavioral_area": [
             "spec/Mimir/McpRuntimeComposition.agda",
-            "spec/Mimir/McpApplicationComposition.agda",
+            "spec/Mimir/McpApplicationComposition.lagda.md",
             "spec/Mimir/McpToolExecution.agda",
             "spec/Mimir/PublicRequest.agda",
             "spec/Mimir/PublicEncoding.agda",
@@ -12103,7 +12103,7 @@
           "status": "partially-specified",
           "behavioral_area": [
             "spec/Mimir/McpRuntimeComposition.agda",
-            "spec/Mimir/McpApplicationComposition.agda",
+            "spec/Mimir/McpApplicationComposition.lagda.md",
             "spec/Mimir/McpToolExecution.agda",
             "spec/Mimir/PublicRequest.agda",
             "spec/Mimir/PublicEncoding.agda",
@@ -12120,7 +12120,7 @@
           "status": "partially-specified",
           "behavioral_area": [
             "spec/Mimir/McpRuntimeComposition.agda",
-            "spec/Mimir/McpApplicationComposition.agda",
+            "spec/Mimir/McpApplicationComposition.lagda.md",
             "spec/Mimir/McpToolExecution.agda",
             "spec/Mimir/PublicRequest.agda",
             "spec/Mimir/PublicEncoding.agda",
@@ -12137,7 +12137,7 @@
           "status": "partially-specified",
           "behavioral_area": [
             "spec/Mimir/McpRuntimeComposition.agda",
-            "spec/Mimir/McpApplicationComposition.agda",
+            "spec/Mimir/McpApplicationComposition.lagda.md",
             "spec/Mimir/McpToolExecution.agda",
             "spec/Mimir/PublicRequest.agda",
             "spec/Mimir/PublicEncoding.agda",
@@ -12154,7 +12154,7 @@
           "status": "partially-specified",
           "behavioral_area": [
             "spec/Mimir/McpRuntimeComposition.agda",
-            "spec/Mimir/McpApplicationComposition.agda",
+            "spec/Mimir/McpApplicationComposition.lagda.md",
             "spec/Mimir/McpToolExecution.agda",
             "spec/Mimir/PublicRequest.agda",
             "spec/Mimir/PublicEncoding.agda",
@@ -12171,7 +12171,7 @@
           "status": "partially-specified",
           "behavioral_area": [
             "spec/Mimir/McpRuntimeComposition.agda",
-            "spec/Mimir/McpApplicationComposition.agda",
+            "spec/Mimir/McpApplicationComposition.lagda.md",
             "spec/Mimir/McpToolExecution.agda",
             "spec/Mimir/PublicRequest.agda",
             "spec/Mimir/PublicEncoding.agda",
@@ -12188,7 +12188,7 @@
           "status": "partially-specified",
           "behavioral_area": [
             "spec/Mimir/McpRuntimeComposition.agda",
-            "spec/Mimir/McpApplicationComposition.agda",
+            "spec/Mimir/McpApplicationComposition.lagda.md",
             "spec/Mimir/McpToolExecution.agda",
             "spec/Mimir/PublicRequest.agda",
             "spec/Mimir/PublicEncoding.agda",
@@ -12205,7 +12205,7 @@
           "status": "partially-specified",
           "behavioral_area": [
             "spec/Mimir/McpRuntimeComposition.agda",
-            "spec/Mimir/McpApplicationComposition.agda",
+            "spec/Mimir/McpApplicationComposition.lagda.md",
             "spec/Mimir/McpToolExecution.agda",
             "spec/Mimir/PublicRequest.agda",
             "spec/Mimir/PublicEncoding.agda",
@@ -12228,7 +12228,7 @@
           "status": "partially-specified",
           "behavioral_area": [
             "spec/Mimir/McpRuntimeComposition.agda",
-            "spec/Mimir/McpApplicationComposition.agda",
+            "spec/Mimir/McpApplicationComposition.lagda.md",
             "spec/Mimir/McpToolExecution.agda",
             "spec/Mimir/PublicRequest.agda",
             "spec/Mimir/PublicEncoding.agda",
@@ -12245,7 +12245,7 @@
           "status": "partially-specified",
           "behavioral_area": [
             "spec/Mimir/McpRuntimeComposition.agda",
-            "spec/Mimir/McpApplicationComposition.agda",
+            "spec/Mimir/McpApplicationComposition.lagda.md",
             "spec/Mimir/McpToolExecution.agda",
             "spec/Mimir/PublicRequest.agda",
             "spec/Mimir/PublicEncoding.agda",
@@ -12262,7 +12262,7 @@
           "status": "partially-specified",
           "behavioral_area": [
             "spec/Mimir/McpRuntimeComposition.agda",
-            "spec/Mimir/McpApplicationComposition.agda",
+            "spec/Mimir/McpApplicationComposition.lagda.md",
             "spec/Mimir/McpToolExecution.agda",
             "spec/Mimir/PublicRequest.agda",
             "spec/Mimir/PublicEncoding.agda",
@@ -12279,7 +12279,7 @@
           "status": "partially-specified",
           "behavioral_area": [
             "spec/Mimir/McpRuntimeComposition.agda",
-            "spec/Mimir/McpApplicationComposition.agda",
+            "spec/Mimir/McpApplicationComposition.lagda.md",
             "spec/Mimir/McpToolExecution.agda",
             "spec/Mimir/PublicRequest.agda",
             "spec/Mimir/PublicEncoding.agda",
@@ -12294,7 +12294,7 @@
       "classification": "production-behavior",
       "behavioral_specification": [
         "spec/Mimir/McpRuntimeComposition.agda",
-        "spec/Mimir/McpApplicationComposition.agda",
+        "spec/Mimir/McpApplicationComposition.lagda.md",
         "spec/Mimir/McpToolExecution.agda",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/PublicEncoding.agda",
