@@ -1,7 +1,7 @@
 use super::*;
 use crate::learning::*;
 use crate::validation::{Code, Refusal, Segment};
-use anyhow::ensure;
+use anyhow::{ensure, Context};
 use std::collections::HashSet;
 use tokio_postgres::Transaction;
 
@@ -397,6 +397,17 @@ impl AgeStore {
         experience: &Experience,
         expected: i64,
     ) -> Result<ExperienceState> {
+        let request_key = (expected == 0).then_some(experience.id);
+        self.record_experience_with_key(experience, expected, request_key)
+            .await
+    }
+
+    pub(crate) async fn record_experience_with_key(
+        &self,
+        experience: &Experience,
+        expected: i64,
+        request_key: Option<Uuid>,
+    ) -> Result<ExperienceState> {
         experience.validate()?;
         ensure!(
             (0..i64::MAX).contains(&expected),
@@ -406,24 +417,48 @@ impl AgeStore {
         let tx = learning_transaction(&mut client).await?;
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
             .await?;
-        let prior = tx
-            .query_opt(&format!("{CURRENT} WHERE e.id=$1"), &[&experience.id])
-            .await?
-            .as_ref()
-            .map(state)
-            .transpose()?;
-        if prior.is_none() {
-            ensure!(expected == 0, "new experience requires expected_revision=0");
-            // The ownership FK needs its experience row. All validation and
-            // allocation below still roll back together on any refusal.
-            tx.execute(
-                "INSERT INTO mimir_experiences(id,project,revision) VALUES($1,$2,1)",
-                &[&experience.id, &experience.project],
-            )
-            .await?;
-        }
         let mut allocated = experience.clone();
-        Self::resolve_item_ids(&tx, experience.id, &mut allocated.learning_items).await?;
+        let prior = if let Some(key) = request_key {
+            ensure!(
+                expected == 0,
+                "a creation request key requires expected_revision=0"
+            );
+            let saved = tx
+                .query_opt(
+                    &format!(
+                        "{CURRENT} WHERE e.creation_request_key=$1
+                         OR (e.creation_request_key IS NULL AND e.id=$1)"
+                    ),
+                    &[&key],
+                )
+                .await?;
+            match saved {
+                Some(row) => {
+                    let saved = state(&row)?;
+                    allocated.id = saved.experience.id;
+                    Some(saved)
+                }
+                None => {
+                    // Allocate the row first for the ownership FK. The allocation,
+                    // request key and first version commit or roll back together.
+                    allocated.id = tx.query_one(
+                        "INSERT INTO mimir_experiences(project,revision,creation_request_key) VALUES($1,1,$2) RETURNING id",
+                        &[&experience.project, &key],
+                    ).await?.get(0);
+                    None
+                }
+            }
+        } else {
+            ensure!(expected > 0, "new experience requires a request key");
+            let row = tx
+                .query_opt(&format!("{CURRENT} WHERE e.id=$1"), &[&experience.id])
+                .await?
+                .context(
+                    "Experience not found. Use the experience UUID returned by record_experience.",
+                )?;
+            Some(state(&row)?)
+        };
+        Self::resolve_item_ids(&tx, allocated.id, &mut allocated.learning_items).await?;
         let experience = &allocated;
         let payload = serde_json::to_string(experience)?;
         if let Some(ref p) = prior {
@@ -475,7 +510,13 @@ impl AgeStore {
         let old_review = Self::active_review(&tx, experience.id).await?;
         let affected = review_targets(old_review.iter());
         let revision = expected + 1;
-        tx.execute("INSERT INTO mimir_experiences(id,project,revision) VALUES($1,$2,$3) ON CONFLICT(id) DO UPDATE SET revision=$3,updated_at=now()", &[&experience.id,&experience.project,&revision]).await?;
+        if prior.is_some() {
+            tx.execute(
+                "UPDATE mimir_experiences SET revision=$2,updated_at=now() WHERE id=$1",
+                &[&experience.id, &revision],
+            )
+            .await?;
+        }
         tx.execute("INSERT INTO mimir_experience_versions(experience_id,revision,payload) VALUES($1,$2,$3::text::jsonb)", &[&experience.id,&revision,&payload]).await?;
         self.replace_review_edges(&tx, experience.id, &[]).await?;
         self.recompute_learning(&tx, Some(&experience.project), affected)

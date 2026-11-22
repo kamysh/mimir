@@ -88,10 +88,26 @@ module Protocol (database : ℕ) (request : Request)
   reviewReady expected (inj₂ (staged , canonical)) =
     T.resolved (reviewed (Reviewing.plan calculation staged canonical expected clock now identities))
 
-  decide : Request → Store.World → T.Allocation T.Decision
-  decide (recordExperience sourceValue expected) before = T.bindAllocation (Normalize.experience sourceValue before) λ where
+  recordCanonical : Input.Experience → ℤ → Store.World → T.Allocation T.Decision
+  recordCanonical input expected before = T.bindAllocation (Normalize.experience input before) λ where
     (inj₁ failure) → T.resolved (T.reject failure)
     (inj₂ (staged , canonical)) → T.resolved (recorded (Recording.plan calculation staged canonical expected now))
+
+  recordNew : Input.Experience → Store.World → T.Allocation T.Decision
+  recordNew input before with Store.creationIdentity (Input.Experience.identity input) (Store.World.creationKeys before)
+  ... | just assigned = recordCanonical (record input { identity = assigned }) (+ 0) before
+  ... | nothing = T.reserve (Transaction.experienceIdentity (Input.Experience.identity input) (Input.Experience.project input)) λ where
+    (inj₁ failure) → T.resolved (T.reject failure)
+    (inj₂ assigned) → recordCanonical (record input { identity = assigned }) (+ 0)
+      (record before { creationKeys = (Input.Experience.identity input , assigned) ∷ Store.World.creationKeys before })
+
+  recordRequest : Input.Experience → ℤ → Store.World → T.Allocation T.Decision
+  recordRequest input expected before with expected Integer.≟ (+ 0)
+  ... | yes zero = recordNew input before
+  ... | no correction = recordCanonical input expected before
+
+  decide : Request → Store.World → T.Allocation T.Decision
+  decide (recordExperience sourceValue expected) before = recordRequest sourceValue expected before
   decide (reviewExperience reviewValue expected) before =
     T.bindAllocation (Normalize.review reviewValue before) (reviewReady expected)
 
@@ -120,9 +136,19 @@ module Protocol (database : ℕ) (request : Request)
   recordedExperienceRetry : ∀ input expected before assigned value →
     Normalize.RecordedItems (Input.Experience.identity input) before (Input.Experience.items input) assigned →
     Recording.plan calculation before (Input.canonicalExperience input assigned) expected now ≡ Recording.replay value →
-    decide (recordExperience input expected) before ≡ T.resolved (T.replay value)
+    recordCanonical input expected before ≡ T.resolved (T.replay value)
   recordedExperienceRetry input expected before assigned value recorded replay
     rewrite Normalize.recordedExperienceNeedsNoAllocation input before assigned recorded | replay = refl
+
+  creationRetryUsesSavedIdentity : ∀ input before id assigned value →
+    Store.creationIdentity (Input.Experience.identity input) (Store.World.creationKeys before) ≡ just id →
+    let canonical = record input { identity = id } in
+    Normalize.RecordedItems id before (Input.Experience.items input) assigned →
+    Recording.plan calculation before (Input.canonicalExperience canonical assigned) (+ 0) now ≡ Recording.replay value →
+    recordNew input before ≡ T.resolved (T.replay value)
+  creationRetryUsesSavedIdentity input before id assigned value saved items replay
+    rewrite saved =
+    recordedExperienceRetry (record input { identity = id }) (+ 0) before assigned value items replay
 
   recordedReviewRetry : ∀ input expected before assigned resolved supported value →
     Normalize.RecordedItems (Input.Review.experienceID input) before (Input.Review.extracted input) assigned →
@@ -139,7 +165,7 @@ module Protocol (database : ℕ) (request : Request)
   namedExperienceRetry : ∀ input expected before assigned value →
     Normalize.NamedItems (Input.Experience.identity input) before (Input.Experience.items input) assigned →
     Recording.plan calculation before (Input.canonicalExperience input assigned) expected now ≡ Recording.replay value →
-    decide (recordExperience input expected) before ≡ T.resolved (T.replay value)
+    recordCanonical input expected before ≡ T.resolved (T.replay value)
   namedExperienceRetry input expected before assigned value saved replay =
     recordedExperienceRetry input expected before assigned value
       (Normalize.namedItemsRecorded (Input.Experience.identity input) before (Input.Experience.items input) assigned saved) replay

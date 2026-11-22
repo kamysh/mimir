@@ -1134,7 +1134,7 @@ mod tests {
         let service = mimir_core::MimirService::connect(&core).await.unwrap();
         let mut selected = selected();
         selected.experience.project = project.clone();
-        service
+        selected = service
             .record_experience(&selected.experience, 0)
             .await
             .unwrap();

@@ -1,6 +1,6 @@
 //! Transaction boundaries and closure required by the checked application contracts.
 use super::*;
-use anyhow::ensure;
+use anyhow::{ensure, Context};
 use std::collections::{BTreeMap, HashSet};
 use tokio_postgres::Transaction;
 
@@ -147,7 +147,7 @@ impl AgeStore {
         path: &str,
         chunks: &[DocumentChunk],
         vectors: &[Vec<f32>],
-    ) -> Result<()> {
+    ) -> Result<Vec<DocumentChunk>> {
         validate_document_batch(path, chunks, vectors)?;
         let mut client = self.client.lock().await;
         let tx = learning_transaction(&mut client).await?;
@@ -156,22 +156,49 @@ impl AgeStore {
         let old = self
             .get_chunk_ids_for_document_on(tx.client(), path)
             .await?;
-        let proposed: HashSet<_> = chunks.iter().map(|c| c.id).collect();
+        let drafts: Vec<_> = chunks.iter().map(|chunk| chunk.id).collect();
+        let assigned: HashMap<Uuid, Uuid> = tx
+            .query(
+                "SELECT draft, gen_random_uuid() FROM unnest($1::uuid[]) AS drafts(draft)",
+                &[&drafts],
+            )
+            .await?
+            .into_iter()
+            .map(|row| (row.get(0), row.get(1)))
+            .collect();
+        let proposed: HashSet<_> = assigned.values().copied().collect();
+        ensure!(
+            proposed.len() == chunks.len(),
+            "duplicate PostgreSQL chunk identity"
+        );
         let g = &self.graph_name;
         // Validate against retained chunk identities before deleting anything.
         for row in tx.query(&format!("SELECT id::text FROM ag_catalog.cypher('{g}', $$ MATCH (c:DocumentChunk) RETURN c.id $$) AS (id ag_catalog.agtype)"), &[]).await? {
             let id = Uuid::parse_str(row.get(0))?;
-            ensure!(!proposed.contains(&id) || old.contains(&id), "generated chunk identity is already occupied");
+            ensure!(!proposed.contains(&id), "generated chunk identity is already occupied");
         }
         self.delete_document_chunks_in(&tx, &old).await?;
         self.delete_chunk_embeddings_on(tx.client(), &old).await?;
+        let mut published = Vec::with_capacity(chunks.len());
         for (chunk, vector) in chunks.iter().zip(vectors) {
-            self.insert_document_chunk_on(tx.client(), chunk).await?;
+            let mut chunk = chunk.clone();
+            chunk.id = assigned[&chunk.id];
+            chunk.parent_id = chunk
+                .parent_id
+                .map(|parent| {
+                    assigned
+                        .get(&parent)
+                        .copied()
+                        .context("document parent must belong to the replacement")
+                })
+                .transpose()?;
+            self.insert_document_chunk_on(tx.client(), &chunk).await?;
             self.insert_chunk_embedding_on(tx.client(), chunk.id, vector)
                 .await?;
+            published.push(chunk);
         }
         tx.commit().await?;
-        Ok(())
+        Ok(published)
     }
 
     pub async fn clear_document(&self, path: &str) -> Result<usize> {
@@ -292,11 +319,12 @@ mod tests {
             None,
             Some(project.clone()),
         );
-        service
+        let source = service
             .store
             .replace_document(&path, std::slice::from_ref(&source), &[vec![1.0, 0.0]])
             .await
-            .unwrap();
+            .unwrap()
+            .remove(0);
         let draft = || {
             Belief::new_in_project(
                 "Backups are kept for 30 days.".into(),
@@ -379,7 +407,11 @@ mod tests {
             "evidence":["document read"], "pattern_id":null
         }))
         .unwrap();
-        service.record_experience(&experience, 0).await.unwrap();
+        let experience = service
+            .record_experience(&experience, 0)
+            .await
+            .unwrap()
+            .experience;
         let mut review: crate::learning::Review = serde_json::from_value(serde_json::json!({
             "experience_id":experience.id, "experience_revision":1, "reviewer":"fixture",
             "rationale":"document confirms retention", "candidates":[{
@@ -465,7 +497,7 @@ mod tests {
             project.clone(),
         )
         .unwrap();
-        store.insert_belief(&belief).await.unwrap();
+        let belief = store.insert_belief(&belief).await.unwrap();
         // A statement trigger rejects a later deletion inside the transaction.
         // Every earlier graph mutation must roll back with it.
         {
@@ -498,7 +530,7 @@ mod tests {
             project.clone(),
         )
         .unwrap();
-        store.insert_belief(&live).await.unwrap();
+        let live = store.insert_belief(&live).await.unwrap();
         let mut client = store.client.lock().await;
         client
             .batch_execute("SET default_transaction_isolation TO 'repeatable read'")

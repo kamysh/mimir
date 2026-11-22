@@ -277,6 +277,7 @@ pub fn check() -> Result<()> {
         "owners",
         "allocation",
         "workEvents",
+        "experienceAllocation",
     ];
     let mut sql = Vec::new();
     files(&root.join("crates/core/migrations"), "sql", &mut sql)?;

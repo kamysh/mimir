@@ -7,11 +7,13 @@
 module Mimir.LearningWire where
 
 open import Data.List using (List; []; _∷_; map)
+open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ)
 open import Data.Product using (_,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.String using (String; toList)
-open import Mimir.Validation using (Fault)
+open import Mimir.Validation using (Fault; fault; key; unsupportedCombination)
+open import Mimir.UUIDGroups using (UUID)
 open import Mimir.RecordDecoding using (_>>=_; mapResult; readRecord; readArray)
 open import Mimir.PublicInput
 import Mimir.StructuredValue as V
@@ -136,10 +138,16 @@ module Decode (conversion : Conversion.Contract) (sizeMaximum : ℕ) where
     defaulted "source_records" [] (readArray (Source.decode Objects.rejectKnownRepeated)) fields >>= λ sources →
     inj₂ (X.experience id project context action outcome provenance evidence beliefs patternID items sources))
 
-  experienceInput : V.Value → Fault ⊎ Input.Experience
-  experienceInput = recordOf ("id" ∷ "project" ∷ "context" ∷ "action" ∷ "outcome" ∷ "source" ∷ "evidence" ∷
+  requestIdentity : Maybe UUID → V.Object.View → Fault ⊎ UUID
+  requestIdentity nothing fields = required "id" uuid fields
+  requestIdentity (just requestKey) fields with fields (toList "id")
+  ... | nothing = inj₂ requestKey
+  ... | just _ = inj₁ (fault (key "id" ∷ []) unsupportedCombination "Omit experience.id when supplying request_key.")
+
+  experienceInput : Maybe UUID → V.Value → Fault ⊎ Input.Experience
+  experienceInput requestKey = recordOf ("id" ∷ "project" ∷ "context" ∷ "action" ∷ "outcome" ∷ "source" ∷ "evidence" ∷
     "belief_ids" ∷ "pattern_id" ∷ "learning_items" ∷ "source_records" ∷ []) (λ fields →
-    required "id" uuid fields >>= λ id → required "project" V.asString fields >>= λ project →
+    requestIdentity requestKey fields >>= λ id → required "project" V.asString fields >>= λ project →
     required "context" V.asString fields >>= λ context → required "action" V.asString fields >>= λ action →
     required "outcome" outcome fields >>= λ outcome → required "source" Source.readProvenance fields >>= λ provenance →
     required "evidence" (readArray V.asString) fields >>= λ evidence →

@@ -1629,7 +1629,7 @@
       "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
     },
     {
-      "name": "Database bootstrap and ten schema migrations",
+      "name": "Database bootstrap and schema migrations",
       "step": 6,
       "existing_modules": [
         "spec/Mimir/Migrations.agda",

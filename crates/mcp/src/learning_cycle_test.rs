@@ -38,14 +38,20 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
         capabilities["contract_version"] == 3,
         "PostgreSQL item allocation contract missing"
     );
-    let source_id = Uuid::new_v4();
-    let source = json!({"id":source_id,"project":"isolated-source-mcp","context":"source fixture","action":"extract all","outcome":"unknown","source":"agent_report","evidence":["event/1"],"source_records":[{"source_ref":"event/1","actor":"agent","provenance":"agent_report","text":"I suggest checking first."}]});
-    handle_tool_call(
-        &service,
-        "record_experience",
-        &json!({"experience":source,"expected_revision":0}),
-    )
-    .await?;
+    let request_key = Uuid::new_v4();
+    let source = json!({"project":"isolated-source-mcp","context":"source fixture","action":"extract all","outcome":"unknown","source":"agent_report","evidence":["event/1"],"source_records":[{"source_ref":"event/1","actor":"agent","provenance":"agent_report","text":"I suggest checking first."}]});
+    let request = json!({"experience":source,"expected_revision":0,"request_key":request_key});
+    let saved = handle_tool_call(&service, "record_experience", &request).await?;
+    let source_id: Uuid = serde_json::from_value(saved["experience"]["id"].clone())?;
+    ensure!(
+        source_id != request_key,
+        "the request key became the record ID"
+    );
+    let repeat = handle_tool_call(&service, "record_experience", &request).await?;
+    ensure!(
+        repeat == saved,
+        "the creation retry did not return the original receipt"
+    );
     ensure!(
         handle_tool_call(&service, "get_learning_review", &json!({"id":source_id})).await?
             ["review"]
@@ -120,13 +126,14 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
         mimir_core::db::connect(&fixture_db).await?,
         fixture_db.dbname.clone(),
     )?;
-    store
+    let passage = store
         .replace_document(
             &passage.document_path,
             std::slice::from_ref(&passage),
             &[vec![1.0, 0.0]],
         )
-        .await?;
+        .await?
+        .remove(0);
     let id = Uuid::new_v4();
     let foreign_project = format!("{project}-foreign");
     let foreign_passage = mimir_core::documents::DocumentChunk::new(
@@ -136,13 +143,14 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
         None,
         Some(foreign_project.clone()),
     );
-    store
+    let foreign_passage = store
         .replace_document(
             &foreign_passage.document_path,
             std::slice::from_ref(&foreign_passage),
             &[vec![1.0, 0.0]],
         )
-        .await?;
+        .await?
+        .remove(0);
     let foreign = service
         .publish_supported_belief(
             mimir_core::graph::Belief::new_in_project(
@@ -169,6 +177,7 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
         )
         .await?;
         ensure!(first["revision"] == 1, "source was not recorded");
+        let id: Uuid = serde_json::from_value(first["experience"]["id"].clone())?;
         ensure!(
             handle_tool_call(
                 &service,
@@ -259,8 +268,10 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
             "outcome":"success","source":"tool_result",
             "evidence":["later process ID and indicator were verified"],
             "belief_ids":[belief_id],"pattern_id":pattern_id});
-        handle_tool_call(&service, "record_experience",
+        let saved = handle_tool_call(&service, "record_experience",
             &json!({"experience":later,"expected_revision":0})).await?;
+        let later_id: Uuid = serde_json::from_value(saved["experience"]["id"].clone())?;
+        later["id"] = json!(later_id);
         let observed = handle_tool_call(&service,"query_learning_context",
             &json!({"project":project,"context":"stale keyboard layout indicator","limit":20})).await?;
         ensure!(observed["patterns"].as_array().is_some_and(|patterns| patterns.iter().any(

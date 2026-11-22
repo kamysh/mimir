@@ -74,9 +74,10 @@ arrive together, keep the requirement direct and the observed incident in its
 experience; state their different provenance. Do not turn a user report into
 `tool_result` merely because it passed through an MCP tool.
 
-Use a stable incident UUID and `expected_revision: 0` on first submission. Keep
-the returned identity/revision with the task's receipt and carry that same UUID
-into any later correction. Retrieve the existing experience, update the same ID
+Use a stable `request_key` UUID and `expected_revision: 0` on first submission,
+omitting `experience.id`. Reuse the key for an exact creation retry. Keep the
+returned PostgreSQL UUID and revision with the task's receipt. Retrieve the
+existing experience and correct it using the returned UUID
 with its current revision, and describe what changed. If the earlier ID is lost,
 look for the existing incident before creating another; different UUIDs for one
 real-world event cannot be deduplicated automatically.

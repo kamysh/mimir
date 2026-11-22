@@ -57,7 +57,8 @@ impl IndependentProvenance {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Experience {
-    /// Caller-stable identity: retry the same incident using the same ID.
+    /// Stored UUID returned by PostgreSQL. On legacy create calls this field
+    /// carries only the request key.
     pub id: Uuid,
     pub project: String,
     pub context: String,
@@ -428,6 +429,16 @@ impl crate::MimirService {
             .record_experience(experience, expected_revision)
             .await
     }
+    pub async fn create_experience(
+        &self,
+        experience: &Experience,
+        request_key: Uuid,
+    ) -> Result<ExperienceState> {
+        self.store
+            .record_experience_with_key(experience, 0, Some(request_key))
+            .await
+    }
+
     pub async fn review_experience(
         &self,
         review: &Review,
@@ -536,8 +547,7 @@ impl crate::MimirService {
     ) -> Result<Pattern> {
         let mut pattern = Pattern::new(situation.into(), approach.into(), success_rate)?;
         pattern.project = project.map(str::to_owned);
-        self.store.insert_pattern(&pattern).await?;
-        Ok(pattern)
+        self.store.insert_pattern(&pattern).await
     }
     /// Retrieve relevant procedures with observed results alongside beliefs.
     /// Relevance comes first; outcome estimates break ties between equally

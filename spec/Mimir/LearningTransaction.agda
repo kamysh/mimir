@@ -18,6 +18,11 @@ import Mimir.Effects as Effects
 import Mimir.DatabaseTransaction as Database
 import Mimir.Recovery as Recovery
 
+-- The database allocates either a whole experience or an owned learning item.
+data IdentityRequest : Set where
+  experienceIdentity : UUID → Text → IdentityRequest
+  itemIdentity : UUID → Text → Text → Text → IdentityRequest
+
 module Over (State Value Failure : Set) (database key : ℕ) where
   -- Identities name an adapter transaction, not a pool or client connection.
   Transaction = ℕ
@@ -56,7 +61,7 @@ module Over (State Value Failure : Set) (database key : ℕ) where
     acquire : Transaction → ℕ → Effect
     read : Transaction → Effect
     write : Transaction → State → Effect
-    allocateItem : Transaction → UUID → Text → Text → Text → Effect
+    allocateIdentity : Transaction → IdentityRequest → Effect
     commit rollback : Transaction → Effect
 
   Reply : Effect → Set
@@ -64,7 +69,7 @@ module Over (State Value Failure : Set) (database key : ℕ) where
   Reply (acquire _ _) = Failure ⊎ ⊤
   Reply (read _) = Failure ⊎ State
   Reply (write _ _) = Failure ⊎ ⊤
-  Reply (allocateItem _ _ _ _ _) = Failure ⊎ UUID
+  Reply (allocateIdentity _ _) = Failure ⊎ UUID
   Reply (commit _) = CommitReply
   Reply (rollback _) = Cleanup
 
@@ -229,19 +234,19 @@ module Over (State Value Failure : Set) (database key : ℕ) where
   -- publish the pending owner/key rows independently of the enclosing write.
   data Allocation (A : Set) : Set where
     resolved : A → Allocation A
-    reserve : UUID → Text → Text → Text → (Failure ⊎ UUID → Allocation A) → Allocation A
+    reserve : IdentityRequest → (Failure ⊎ UUID → Allocation A) → Allocation A
 
   bindAllocation : ∀ {A B} → Allocation A → (A → Allocation B) → Allocation B
   bindAllocation (resolved value) next = next value
-  bindAllocation (reserve experience name source actor continuation) next =
-    reserve experience name source actor (λ reply → bindAllocation (continuation reply) next)
+  bindAllocation (reserve target continuation) next =
+    reserve target (λ reply → bindAllocation (continuation reply) next)
 
   -- The result is selected by the observed database replies, not by a
   -- caller-chosen UUID or a deterministic interpretation of allocation.
   data Resolves {A : Set} : Allocation A → A → Set where
     resolvedResult : ∀ {value} → Resolves (resolved value) value
-    reservedResult : ∀ {experience name source actor next value} reply →
-      Resolves (next reply) value → Resolves (reserve experience name source actor next) value
+    reservedResult : ∀ {target next value} reply →
+      Resolves (next reply) value → Resolves (reserve target next) value
 
   abstract
     resolvedValue : ∀ {A} {value result : A} → Resolves (resolved value) result → value ≡ result
@@ -251,14 +256,14 @@ module Over (State Value Failure : Set) (database key : ℕ) where
       Resolves (bindAllocation program next) result →
       Σ A (λ value → Resolves program value × Resolves (next value) result)
     bindResolution (resolved value) next result observed = value , resolvedResult , observed
-    bindResolution (reserve experience name source actor continuation) next result (reservedResult reply observed)
+    bindResolution (reserve target continuation) next result (reservedResult reply observed)
       with bindResolution (continuation reply) next result observed
     ... | value , first , remaining = value , reservedResult reply first , remaining
 
   executeAllocation : Transaction → Allocation Decision → E.Script Outcome
   executeAllocation tx (resolved decision) = decide tx decision
-  executeAllocation tx (reserve experience name source actor next) =
-    E.ask (allocateItem tx experience name source actor) (λ reply → executeAllocation tx (next reply))
+  executeAllocation tx (reserve target next) =
+    E.ask (allocateIdentity tx target) (λ reply → executeAllocation tx (next reply))
 
   module PreparedPlan (plan : State → Allocation Decision) where
     afterRead : Transaction → Failure ⊎ State → E.Script Outcome
@@ -289,8 +294,8 @@ module Over (State Value Failure : Set) (database key : ℕ) where
     lockHeld : ∀ tx → Allowed (opened tx) (acquire tx key , inj₂ tt) (held tx)
     readHeld : ∀ tx reply → Allowed (held tx) (read tx , reply) (held tx)
     writeHeld : ∀ tx proposed reply → Allowed (held tx) (write tx proposed , reply) (held tx)
-    allocationHeld : ∀ tx experience name source actor reply →
-      Allowed (held tx) (allocateItem tx experience name source actor , reply) (held tx)
+    allocationHeld : ∀ tx target reply →
+      Allowed (held tx) (allocateIdentity tx target , reply) (held tx)
     commitHeld : ∀ tx reply → Allowed (held tx) (commit tx , reply) finished
     rollbackOpened : ∀ tx reply → Allowed (opened tx) (rollback tx , reply) finished
     rollbackHeld : ∀ tx reply → Allowed (held tx) (rollback tx , reply) finished
@@ -344,8 +349,8 @@ module Over (State Value Failure : Set) (database key : ℕ) where
 
   allocationScoped : ∀ tx plan → Scoped (held tx) (executeAllocation tx plan)
   allocationScoped tx (resolved decision) = decideScoped tx decision
-  allocationScoped tx (reserve experience name source actor next) = ask
-    (λ reply → held tx , allocationHeld tx experience name source actor reply , allocationScoped tx (next reply))
+  allocationScoped tx (reserve target next) = ask
+    (λ reply → held tx , allocationHeld tx target reply , allocationScoped tx (next reply))
 
   module PreparedLaws (plan : State → Allocation Decision) where
     open PreparedPlan plan
@@ -415,9 +420,9 @@ module Over (State Value Failure : Set) (database key : ℕ) where
   commitNeedsHeld : ∀ {before tx reply after} → Allowed before (commit tx , reply) after → before ≡ held tx
   commitNeedsHeld (commitHeld tx reply) = refl
 
-  allocationNeedsHeld : ∀ {before tx experience name source actor reply after} →
-    Allowed before (allocateItem tx experience name source actor , reply) after → before ≡ held tx
-  allocationNeedsHeld (allocationHeld tx experience name source actor reply) = refl
+  allocationNeedsHeld : ∀ {before tx target reply after} →
+    Allowed before (allocateIdentity tx target , reply) after → before ≡ held tx
+  allocationNeedsHeld (allocationHeld tx target reply) = refl
 
   -- Private preparation ends either with confirmed cleanup or with the one
   -- transaction that is ready to commit. It cannot publish business changes.
@@ -428,7 +433,7 @@ module Over (State Value Failure : Set) (database key : ℕ) where
     NoCommit (acquire tx key) = ⊤
     NoCommit (read tx) = ⊤
     NoCommit (write tx proposed) = ⊤
-    NoCommit (allocateItem tx experience name source actor) = ⊤
+    NoCommit (allocateIdentity tx target) = ⊤
     NoCommit (rollback tx) = ⊤
 
     PreparationEffect = Σ Effect NoCommit
@@ -464,8 +469,8 @@ module Over (State Value Failure : Set) (database key : ℕ) where
 
     stageAllocation : Transaction → Allocation Decision → P.Script Result
     stageAllocation tx (resolved decision) = stageDecision tx decision
-    stageAllocation tx (reserve experience name source actor next) =
-      P.ask (allocateItem tx experience name source actor , tt) (λ reply → stageAllocation tx (next reply))
+    stageAllocation tx (reserve target next) =
+      P.ask (allocateIdentity tx target , tt) (λ reply → stageAllocation tx (next reply))
 
     afterStageRead : Transaction → Failure ⊎ State → P.Script Result
     afterStageRead tx (inj₁ detail) = closeStage tx
@@ -511,8 +516,8 @@ module Over (State Value Failure : Set) (database key : ℕ) where
 
     allocationStageScoped : ∀ tx allocation → StagedScope (held tx) (stageAllocation tx allocation)
     allocationStageScoped tx (resolved decision) = decisionStageScoped tx decision
-    allocationStageScoped tx (reserve experience name source actor next) = step
-      (λ reply → held tx , allocationHeld tx experience name source actor reply , allocationStageScoped tx (next reply))
+    allocationStageScoped tx (reserve target next) = step
+      (λ reply → held tx , allocationHeld tx target reply , allocationStageScoped tx (next reply))
 
     readStageScoped : ∀ tx reply → StagedScope (held tx) (afterStageRead tx reply)
     readStageScoped tx (inj₁ detail) = closeHeldStage tx _ _

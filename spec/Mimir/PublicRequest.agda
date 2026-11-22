@@ -6,6 +6,7 @@ module Mimir.PublicRequest where
 open import Data.Bool using (Bool; true; false)
 open import Data.Float.Base using (Float; _*_)
 open import Data.Integer using (ℤ; +_) renaming (_*_ to _*ℤ_)
+import Data.Integer.Properties as Integer
 open import Data.List using (List; []; _∷_; map)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; zero; suc)
@@ -99,7 +100,7 @@ allowedFields Tools.learningCapabilities = []
 allowedFields Tools.getLessonAssessment = map toList ("project" ∷ "belief_id" ∷ "scope" ∷ "rubric" ∷ [])
 allowedFields Tools.lessonAssessmentHistory = map toList ("project" ∷ "belief_id" ∷ "scope" ∷ "rubric" ∷ "offset" ∷ "limit" ∷ [])
 allowedFields Tools.explainBelief = map toList ("id" ∷ "offset" ∷ "limit" ∷ [])
-allowedFields Tools.recordExperience = map toList ("experience" ∷ "expected_revision" ∷ [])
+allowedFields Tools.recordExperience = map toList ("experience" ∷ "expected_revision" ∷ "request_key" ∷ [])
 allowedFields Tools.pendingExperiences = map toList ("project" ∷ "limit" ∷ "exclude_ids" ∷ [])
 allowedFields Tools.reviewExperience = map toList ("review" ∷ "expected_review_revision" ∷ [])
 allowedFields Tools.getExperience = map toList ("id" ∷ [])
@@ -170,6 +171,13 @@ module Decode (conversion : Conversion.Contract) where
     ... | Validation.rejected fault invalid = inj₁ fault
     ... | Validation.accepted valid = inj₂ origin
 
+  recordRequestKey : ℤ → Maybe UUID → Fault ⊎ Maybe UUID
+  recordRequestKey expected nothing = inj₂ nothing
+  recordRequestKey expected (just requestKey) with expected Integer.≟ (+ 0)
+  ... | yes _ = inj₂ (just requestKey)
+  ... | no _ = inj₁ (Validation.fault (Validation.key "request_key" ∷ [])
+    Validation.unsupportedCombination "Use request_key only for creation with expected_revision=0.")
+
   decode : Tools.Tool → V.Object.View → Fault ⊎ Request
   decode Tools.insertBelief fields = required "provenance" validOrigin fields >>= λ origin →
     required "supporting_passage_id" uuid fields >>= λ passage →
@@ -227,8 +235,11 @@ module Decode (conversion : Conversion.Contract) where
   decode Tools.explainBelief fields = required "id" uuid fields >>= λ id →
     defaulted "offset" 0 integer fields >>= λ offset → optional "limit" positive fields >>= λ limit →
     inj₂ (read (Read.explain id offset limit))
-  decode Tools.recordExperience fields = required "experience" L.experienceInput fields >>= λ experience →
-    required "expected_revision" i64 fields >>= λ expected → inj₂ (learning (Learning.recordExperience experience expected))
+  decode Tools.recordExperience fields = required "expected_revision" i64 fields >>= λ expected →
+    present "request_key" uuid fields >>= λ requestKey →
+    recordRequestKey expected requestKey >>= λ accepted →
+    required "experience" (L.experienceInput accepted) fields >>= λ experience →
+    inj₂ (learning (Learning.recordExperience experience expected))
   decode Tools.reviewExperience fields = required "review" L.reviewInput fields >>= λ review →
     required "expected_review_revision" i64 fields >>= λ expected → inj₂ (learning (Learning.reviewExperience review expected))
   decode Tools.pendingExperiences fields = present "project" V.asString fields >>= λ project →

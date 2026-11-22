@@ -1,5 +1,5 @@
 //! Isolated Step-11 judge comparison. Live calls require --live and two explicit configs.
-use anyhow::{anyhow, bail, ensure, Context, Result};
+use anyhow::{anyhow, ensure, Context, Result};
 use clap::Parser;
 use serde_json::{json, Value};
 use std::fs::{self, DirBuilder, OpenOptions};
@@ -7,7 +7,6 @@ use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 #[derive(Parser)]
@@ -355,6 +354,11 @@ fn run_case(
             recorded["revision"] == 1,
             "initial experience revision mismatch"
         );
+        let id: Uuid = recorded["experience"]["id"]
+            .as_str()
+            .context("record_experience did not return the saved experience UUID")?
+            .parse()
+            .context("record_experience returned an invalid experience UUID")?;
         let first = judge(mimir, &config, &state)?;
         let first_history = mcp_call(
             mcp,

@@ -100,7 +100,7 @@ module For (Failure : Set) (invalid : Fault → Failure) (database : ℕ) where
   ... | just identity = finishItem input before
     (Allocation.reuse (Store.World.itemKeys before)
       (Publication.World.owners (Store.World.publication before)) identity (owner experience input))
-  ... | nothing = T.reserve experience name (Input.Item.reference input) (Input.Item.actor input)
+  ... | nothing = T.reserve (Transaction.itemIdentity experience name (Input.Item.reference input) (Input.Item.actor input))
     (afterPostgres experience name input before)
 
   identified : UUID → Input.Item → Store.World →
@@ -142,7 +142,7 @@ module For (Failure : Set) (invalid : Fault → Failure) (database : ℕ) where
   unreservedItemRequestsPostgres : ∀ experience input before name →
     Input.Item.identity input ≡ nothing → Input.Item.localKey input ≡ just name →
     Source.NamedText name → Store.World.itemKeys before experience name ≡ nothing →
-    item experience input before ≡ T.reserve experience name (Input.Item.reference input) (Input.Item.actor input)
+    item experience input before ≡ T.reserve (Transaction.itemIdentity experience name (Input.Item.reference input) (Input.Item.actor input))
       (afterPostgres experience name input before)
   unreservedItemRequestsPostgres experience input before name omitted keyed named absent
     rewrite keyed with Source.checkNamed name
