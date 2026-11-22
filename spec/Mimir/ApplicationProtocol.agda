@@ -7,7 +7,7 @@ module Mimir.ApplicationProtocol where
 open import Data.Bool using (Bool; true; false)
 open import Data.Float.Base using (Float)
 open import Data.Integer using (ℤ)
-open import Data.List using (List; []; _∷_; map)
+open import Data.List using (List; []; _∷_; map; filterᵇ)
 open import Data.List.Membership.Propositional using (_∈_)
 open import Data.List.Relation.Unary.Any using (here)
 open import Data.Maybe using (Maybe; just; nothing)
@@ -17,7 +17,7 @@ open import Data.Product using (Σ; _×_; _,_; proj₁)
 import Data.String
 open import Data.Unit using (⊤; tt)
 open import Data.Empty using (⊥; ⊥-elim)
-open import Relation.Nullary using (yes; no; ¬_)
+open import Relation.Nullary using (does; yes; no; ¬_)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; sym; trans; cong; subst)
 open import Mimir.Text using (Text)
 open import Mimir.UUIDGroups using (UUID; _≟UUID_)
@@ -153,11 +153,12 @@ module Run (environment : Environment) where
       beliefWasAbsent : Ranking.lookup (Graph.BeliefValues.identity belief) (Store.beliefs before) ≡ nothing
       beliefStored : Ranking.lookup (Graph.BeliefValues.identity belief) (Store.beliefs after) ≡ just belief
       vectorStored : (Graph.BeliefValues.identity belief , BeliefEmbedding.vector material) ∈ Store.World.beliefVectors after
-      -- Recording the selected passage adds no evidence mass for later inference.
-      sourceStored : Σ Store.Ground (λ source → source ∈ Store.World.grounds after ×
-        Store.Ground.belief source ≡ Graph.BeliefValues.identity belief ×
-        Store.Ground.chunk source ≡ DocumentStore.Chunk.identity (BeliefEmbedding.Prepared.supportingPassage material) ×
-        Store.Ground.weight source ≡ 0.0)
+      -- The new belief starts with exactly one source link and no evidence mass.
+      sourceStored :
+        filterᵇ (λ source → does (Graph.BeliefValues.identity belief ≟UUID Store.Ground.belief source))
+          (Store.World.grounds after) ≡
+        (Store.ground (BeliefEmbedding.Draft.supportingPassageID proposal)
+          (Graph.BeliefValues.identity belief) 0.0 ∷ [])
       contentMatches : Graph.BeliefValues.content belief ≡ BeliefEmbedding.Draft.content proposal
       projectMatches : Graph.BeliefValues.project belief ≡ BeliefEmbedding.Draft.project proposal
       memoryMatches : Graph.BeliefValues.memory belief ≡ BeliefEmbedding.Draft.memory proposal

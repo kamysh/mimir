@@ -153,11 +153,15 @@ weight here could change the belief later, even though publication
 returned 0.60. The zero weight makes the citation's contribution zero.
 Other evidence can still change the belief.
 
-Agda requires two facts in the publication receipt. The saved
-probability equals the submitted probability, and the link to the
-selected passage has weight zero. The first controls what publication
-saves. The second controls what the citation contributes to future
-calculations. Rust writes both values in the publication transaction.
+Agda requires the saved probability to equal the submitted probability.
+It also takes the complete list of links to the new belief immediately
+after publication and requires exactly one entry, the selected passage
+with weight zero. Checking only that a zero-weight link exists would
+also allow a second link with positive weight, even a second link to
+the same passage. That link could change the result of recalculation.
+Rust saves the probability and inserts the single link in the same
+transaction. This requirement applies at publication, so later explicit
+evidence can still be added.
 
 [Direct publication receipt](ApplicationProtocol.agda#L157) · [Weights read for recalculation](ApplicationStore.agda#L114) · [Rust source write](../../crates/core/src/store.rs#L610)
 
@@ -178,7 +182,7 @@ request. If preparation succeeded but publication failed, the application
 protocol specifies rollback separately. Once the prerequisite is fixed,
 the caller can restart the request from the beginning.
 
-[Publication failure and rollback](ApplicationProtocol.agda#L527)
+[Publication failure and rollback](ApplicationProtocol.agda#L528)
 
 ```agda
 -- A request for a user decision has not issued the publication operation.
