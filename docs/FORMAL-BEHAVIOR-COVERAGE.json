@@ -918,7 +918,7 @@
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
         "spec/Mimir/McpApplicationComposition.lagda.md",
-        "spec/Mimir/ReviewBeliefPreparation.agda"
+        "spec/Mimir/ReviewBeliefPreparation.lagda.md"
       ],
       "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
       "remaining": "Recovery and public-entry coverage are checked by the registered controllers and structural coverage check. Rust conformance and installed-application verification remain pending; statistics, library algorithms and formatting are outside this recovery task."

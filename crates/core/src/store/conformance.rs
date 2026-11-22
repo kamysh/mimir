@@ -389,10 +389,32 @@ mod tests {
         }))
         .unwrap();
         service.embeddings = Some(Box::new(Provider { fail: true }));
-        assert!(service
-            .review_supported_experience(&review, 0)
-            .await
-            .is_err());
+        let mut stale = review.clone();
+        stale.experience_revision += 1;
+        assert_eq!(
+            service
+                .review_supported_experience(&stale, 0)
+                .await
+                .unwrap_err()
+                .to_string(),
+            "stale review: experience has changed"
+        );
+        assert_eq!(
+            service
+                .review_supported_experience(&review, 1)
+                .await
+                .unwrap_err()
+                .to_string(),
+            "stale review revision: current is 0"
+        );
+        assert!(format!(
+            "{:#}",
+            service
+                .review_supported_experience(&review, 0)
+                .await
+                .unwrap_err()
+        )
+        .contains("fixture embedding failed"));
         assert!(service
             .store
             .existing_belief_candidates(experience.id)
