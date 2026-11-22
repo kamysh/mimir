@@ -1560,7 +1560,7 @@ mod tests {
             source_records: vec![],
         };
         let e = make_experience();
-        service.record_experience(&e, 0).await.unwrap();
+        let e = service.record_experience(&e, 0).await.unwrap().experience;
         let mut fake = Fake {
             mode: Mode::Review,
             calls: 0,
@@ -1606,7 +1606,7 @@ mod tests {
 
         for mode in [Mode::FalseDone, Mode::Stale, Mode::Crash, Mode::Correct] {
             let e = make_experience();
-            service.record_experience(&e, 0).await.unwrap();
+            let e = service.record_experience(&e, 0).await.unwrap().experience;
             let mut backend = Fake {
                 mode,
                 calls: 0,
@@ -1642,8 +1642,16 @@ mod tests {
         settings.judge.batch_size = Some(2);
         let first = make_experience();
         let second = make_experience();
-        service.record_experience(&first, 0).await.unwrap();
-        service.record_experience(&second, 0).await.unwrap();
+        let first = service
+            .record_experience(&first, 0)
+            .await
+            .unwrap()
+            .experience;
+        let second = service
+            .record_experience(&second, 0)
+            .await
+            .unwrap()
+            .experience;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let port = listener.local_addr().unwrap().port();

@@ -318,7 +318,8 @@ impl MimirService {
         belief: Belief,
         provenance: Option<&crate::learning::IndependentProvenance>,
     ) -> Result<Belief> {
-        self.store
+        let belief = self
+            .store
             .insert_belief_with_provenance(&belief, provenance)
             .await?;
         if let Some(embedder) = &self.embeddings {
@@ -428,8 +429,7 @@ impl MimirService {
         success_rate: f64,
     ) -> Result<Pattern> {
         let pattern = Pattern::new(situation.to_string(), approach.to_string(), success_rate)?;
-        self.store.insert_pattern(&pattern).await?;
-        Ok(pattern)
+        self.store.insert_pattern(&pattern).await
     }
 
     /// Add an edge between two beliefs. Validates both exist.

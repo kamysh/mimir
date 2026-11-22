@@ -469,9 +469,11 @@ source change.
 The application loop is:
 
 1. `record_experience` records a project, situation, action, observed outcome,
-   evidence references, and optionally the beliefs/procedure used. Choose a
-   stable UUID for an incident. Send `expected_revision: 0` to create it, then
-   the returned revision when correcting it. Replaying the same submission does
+   evidence references, and optionally the beliefs/procedure used. For creation,
+   send a stable `request_key` and `expected_revision: 0`, omitting
+   `experience.id`. PostgreSQL assigns the returned `experience.id`. To correct
+   the record, send that ID with its current revision and omit `request_key`.
+   Replaying the same creation request does
    not count another observation. Evidence references are supplied by the
    caller; Mimir does not independently verify their contents.
 2. `pending_experiences` returns a bounded batch of new or changed experiences,

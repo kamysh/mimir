@@ -34,12 +34,13 @@ async fn missing_references_and_stale_revisions_are_correctable() -> Result<()> 
     .await?;
     let project = format!("corrections-{}", Uuid::new_v4());
     let experience_id = Uuid::new_v4();
-    handle_tool_call(
+    let saved = handle_tool_call(
         &service,
         "record_experience",
         &json!({"experience":experience(experience_id, &project),"expected_revision":0}),
     )
     .await?;
+    let experience_id: Uuid = serde_json::from_value(saved["experience"]["id"].clone())?;
     let belief = service
         .add_belief_in_project(
             "correction fixture belief",
@@ -184,12 +185,13 @@ async fn source_actor_and_quotation_mistakes_are_explained() -> Result<()> {
     .await?;
     let project = format!("sources-{}", Uuid::new_v4());
     let experience_id = Uuid::new_v4();
-    handle_tool_call(
+    let saved = handle_tool_call(
         &service,
         "record_experience",
         &json!({"experience":sourced_experience(experience_id, &project),"expected_revision":0}),
     )
     .await?;
+    let experience_id: Uuid = serde_json::from_value(saved["experience"]["id"].clone())?;
 
     let wrong_actor = sourced_review(
         experience_id,
@@ -244,12 +246,13 @@ async fn undeclared_candidate_references_are_refused() -> Result<()> {
     .await?;
     let project = format!("candidates-{}", Uuid::new_v4());
     let experience_id = Uuid::new_v4();
-    handle_tool_call(
+    let saved = handle_tool_call(
         &service,
         "record_experience",
         &json!({"experience":sourced_experience(experience_id, &project),"expected_revision":0}),
     )
     .await?;
+    let experience_id: Uuid = serde_json::from_value(saved["experience"]["id"].clone())?;
 
     let undeclared = json!({"review":{"experience_id":experience_id,"experience_revision":1,"reviewer":"correction-fixture","rationale":"undeclared candidate",
         "extracted_items":[],"source_coverage":[{"source_ref":"event/9","status":"unresolved","reason":"untried"}],
@@ -311,12 +314,13 @@ async fn review_history_stays_readable_after_candidate_deletion() -> Result<()> 
     let passage_id = Uuid::parse_str(&passage[0].id)?;
 
     let experience_id = Uuid::new_v4();
-    handle_tool_call(
+    let saved = handle_tool_call(
         &service,
         "record_experience",
         &json!({"experience":sourced_experience(experience_id, &project),"expected_revision":0}),
     )
     .await?;
+    let experience_id: Uuid = serde_json::from_value(saved["experience"]["id"].clone())?;
     let reviewed = handle_tool_call(
         &service,
         "review_experience",
@@ -376,12 +380,13 @@ async fn protected_originals_are_explained_on_correction() -> Result<()> {
     let original = json!({"id":experience_id,"project":project,"context":"protected observation","action":"observe","outcome":"unknown","source":"agent_report","evidence":["event/7"],
         "source_records":[{"source_ref":"event/7","actor":"agent","provenance":"agent_report","text":"The original statement."}],
         "learning_items":[{"key":"original-item","kind":"suggestion","source_ref":"event/7","actor":"agent","statement":"The original statement.","conditions":"untried"}]});
-    handle_tool_call(
+    let saved = handle_tool_call(
         &service,
         "record_experience",
         &json!({"experience":original,"expected_revision":0}),
     )
     .await?;
+    let experience_id: Uuid = serde_json::from_value(saved["experience"]["id"].clone())?;
     let recorded =
         handle_tool_call(&service, "get_experience", &json!({"id":experience_id})).await?;
     let recorded_item_id = Uuid::parse_str(

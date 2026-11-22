@@ -461,17 +461,20 @@ async fn offline_learning_scenario_matrix() {
         ObservationSource::ToolResult,
         "Observed process ID changed and the indicator loaded the new layout",
     );
-    assert_eq!(
-        svc.record_experience(&success, 0).await.unwrap().revision,
-        1
-    );
+    let initial = svc.record_experience(&success, 0).await.unwrap();
+    assert_eq!(initial.revision, 1);
+    let success_request = success;
+    let success = initial.experience;
     let success_review = assess(&success, Some(Verdict::Support));
     let applied = svc.review_experience(&success_review, 0).await.unwrap();
     let success_id = applied.candidate_ids["layout-lesson"];
     let supported = svc.get_belief(success_id).await.unwrap().unwrap();
     assert!(supported.alpha > supported.beta);
     assert_eq!(
-        svc.record_experience(&success, 0).await.unwrap().revision,
+        svc.record_experience(&success_request, 0)
+            .await
+            .unwrap()
+            .revision,
         1
     );
     assert_eq!(
@@ -551,7 +554,7 @@ async fn offline_learning_scenario_matrix() {
         ),
     ] {
         let e = capture(tag, outcome, source, evidence);
-        svc.record_experience(&e, 0).await.unwrap();
+        let e = svc.record_experience(&e, 0).await.unwrap().experience;
         let r = assess(&e, verdict);
         let applied = svc.review_experience(&r, 0).await.unwrap();
         let id = applied.candidate_ids["layout-lesson"];
@@ -578,13 +581,17 @@ async fn offline_learning_scenario_matrix() {
 
     // A correction keeps incident identity, retracts the old contribution,
     // rejects the old revision, and permits one replacement interpretation.
-    let mut corrected = capture(
+    let corrected = capture(
         "correction",
         Outcome::Success,
         ObservationSource::UserFeedback,
         "User initially reported the indicator changed",
     );
-    svc.record_experience(&corrected, 0).await.unwrap();
+    let mut corrected = svc
+        .record_experience(&corrected, 0)
+        .await
+        .unwrap()
+        .experience;
     let old = assess(&corrected, Some(Verdict::Support));
     let first = svc.review_experience(&old, 0).await.unwrap();
     let id = first.candidate_ids["layout-lesson"];
@@ -621,7 +628,7 @@ async fn offline_learning_scenario_matrix() {
         ObservationSource::ToolResult,
         "Observed local result",
     );
-    svc.record_experience(&cross, 0).await.unwrap();
+    let cross = svc.record_experience(&cross, 0).await.unwrap().experience;
     let mut bad = review(&cross);
     bad.feedback.push(Feedback {
         belief_id: foreign_belief.id,
@@ -664,7 +671,7 @@ async fn standalone_foreground_belief_can_still_double_count_one_incident() {
         .unwrap();
     let mut e = experience(&project);
     e.belief_ids.push(belief.id);
-    svc.record_experience(&e, 0).await.unwrap();
+    let e = svc.record_experience(&e, 0).await.unwrap().experience;
     let before = svc.get_belief(belief.id).await.unwrap().unwrap();
     let mut r = review(&e);
     r.feedback.push(Feedback {
@@ -717,6 +724,7 @@ async fn learning_cycle_retry_revision_causal_projection_and_retraction() {
     let first = svc.record_experience(&e, 0).await.unwrap();
     assert_eq!(first.revision, 1);
     assert_eq!(svc.record_experience(&e, 0).await.unwrap().revision, 1);
+    let mut e = first.experience;
     let mut r = review(&e);
     r.links.push(LearningLink {
         from_id: a.id,
@@ -781,7 +789,7 @@ async fn atomic_candidates_retry_retraction_and_observed_pattern_use() {
     let svc = service().await;
     let project = format!("learning-{}", Uuid::new_v4());
     let e = experience(&project);
-    svc.record_experience(&e, 0).await.unwrap();
+    let e = svc.record_experience(&e, 0).await.unwrap().experience;
     let mut r = review(&e);
     r.candidates = vec![
         Candidate::Belief {
@@ -889,8 +897,8 @@ async fn atomic_candidates_retry_retraction_and_observed_pattern_use() {
 async fn source_correction_deactivates_candidate_support_without_deleting_identity() {
     let svc = service().await;
     let project = format!("learning-{}", Uuid::new_v4());
-    let mut e = experience(&project);
-    svc.record_experience(&e, 0).await.unwrap();
+    let e = experience(&project);
+    let mut e = svc.record_experience(&e, 0).await.unwrap().experience;
     let mut r = review(&e);
     r.candidates.push(Candidate::Belief {
         key: "hypothesis".into(),
@@ -937,7 +945,7 @@ async fn rejected_candidate_review_rolls_back_node_and_acknowledgement() {
     let svc = service().await;
     let project = format!("learning-{}", Uuid::new_v4());
     let e = experience(&project);
-    svc.record_experience(&e, 0).await.unwrap();
+    let e = svc.record_experience(&e, 0).await.unwrap().experience;
     let mut r = review(&e);
     r.candidates.push(Candidate::Belief {
         key: "rolled-back".into(),
@@ -1003,7 +1011,7 @@ async fn deleting_candidate_recomputes_linked_belief_and_keeps_tombstone() {
         .await
         .unwrap();
     let e = experience(&project);
-    svc.record_experience(&e, 0).await.unwrap();
+    let e = svc.record_experience(&e, 0).await.unwrap().experience;
     let mut r = review(&e);
     r.candidates.push(Candidate::Belief {
         key: "source".into(),
@@ -1044,7 +1052,7 @@ async fn project_deletion_removes_pattern_only_candidate_and_ledger() {
     let svc = service().await;
     let project = format!("learning-{}", Uuid::new_v4());
     let e = experience(&project);
-    svc.record_experience(&e, 0).await.unwrap();
+    let e = svc.record_experience(&e, 0).await.unwrap().experience;
     let mut r = review(&e);
     r.candidates.push(Candidate::Pattern {
         key: "procedure".into(),
@@ -1086,7 +1094,7 @@ async fn review_recompute_stays_in_project_and_keeps_external_incoming_support()
         .await
         .unwrap();
     let e = experience(&own);
-    svc.record_experience(&e, 0).await.unwrap();
+    let e = svc.record_experience(&e, 0).await.unwrap().experience;
     let mut r = review(&e);
     r.feedback.push(Feedback {
         belief_id: seed.id,
@@ -1157,7 +1165,7 @@ async fn grounding_removal_recomputes_without_erasing_independent_support() {
         config.database.dbname,
     )
     .unwrap();
-    raw.insert_document_chunk(&chunk).await.unwrap();
+    let chunk = raw.insert_document_chunk(&chunk).await.unwrap();
     svc.add_evidence(target.id, chunk.id, 0.8).await.unwrap();
     let grounded = svc.get_belief(target.id).await.unwrap().unwrap();
     assert!((grounded.alpha - (target.alpha0 + 0.8 + 0.5 * 0.5 * 4.0)).abs() < 1e-8);
@@ -1199,7 +1207,7 @@ async fn supersession_is_reversible_and_feedback_survives_propagation() {
         .await
         .unwrap();
     let e = experience(&project);
-    svc.record_experience(&e, 0).await.unwrap();
+    let e = svc.record_experience(&e, 0).await.unwrap().experience;
     let mut r = review(&e);
     r.feedback.push(Feedback {
         belief_id: a.id,
@@ -1249,7 +1257,7 @@ async fn scoped_pattern_outcomes_replace_instead_of_accumulate() {
     let mut e = experience(&project);
     e.pattern_id = Some(p.id);
     svc.record_experience(&e, 0).await.unwrap();
-    svc.record_experience(&e, 0).await.unwrap();
+    let mut e = svc.record_experience(&e, 0).await.unwrap().experience;
     let context = svc
         .query_learning_context("keyboard", &project, 5)
         .await
@@ -1328,7 +1336,7 @@ async fn concurrent_review_conflict_is_atomic_and_keeps_manual_edges() {
         .await
         .unwrap();
     let e = experience(&project);
-    svc.record_experience(&e, 0).await.unwrap();
+    let e = svc.record_experience(&e, 0).await.unwrap().experience;
     let mut r1 = review(&e);
     r1.links.push(LearningLink {
         from_id: a.id,
@@ -1403,7 +1411,7 @@ async fn contradiction_review_changes_detection_without_triggering_evidence_prop
         .await
         .unwrap();
     let e = experience(&project);
-    svc.record_experience(&e, 0).await.unwrap();
+    let e = svc.record_experience(&e, 0).await.unwrap().experience;
     let mut r = review(&e);
     r.links.push(LearningLink {
         from_id: a.id,
@@ -1446,7 +1454,7 @@ async fn source_coverage_is_atomic_revision_owned_and_preserves_unresolved_items
         text: "I suggest testing first. Estimate: 30 minutes.".into(),
     }];
     e.evidence = vec!["event/1".into()];
-    svc.record_experience(&e, 0).await.unwrap();
+    let mut e = svc.record_experience(&e, 0).await.unwrap().experience;
     let mut r = review(&e);
     assert!(
         svc.review_experience(&r, 0).await.is_err(),
@@ -1572,7 +1580,7 @@ async fn complete_large_source_review_is_stored_and_read_back_without_caps() {
         .iter()
         .map(|s| s.source_ref.clone())
         .collect();
-    svc.record_experience(&e, 0).await.unwrap();
+    let e = svc.record_experience(&e, 0).await.unwrap().experience;
     let mut r = review(&e);
     r.source_coverage = e
         .source_records
@@ -1620,7 +1628,7 @@ async fn item_database_client() -> tokio_postgres::Client {
         .unwrap()
 }
 
-fn postgres_item_fixture(project: &str) -> (Experience, Review) {
+async fn postgres_item_fixture(svc: &MimirService, project: &str) -> (Experience, Review) {
     use mimir_core::learning_sources::SourceRecord;
     let mut e = experience(project);
     e.outcome = Outcome::Unknown;
@@ -1633,6 +1641,7 @@ fn postgres_item_fixture(project: &str) -> (Experience, Review) {
         text: "I estimate 30 minutes.".into(),
         recorded_at: None,
     }];
+    let e = svc.record_experience(&e, 0).await.unwrap().experience;
     let r = serde_json::from_value(serde_json::json!({
         "experience_id":e.id,"experience_revision":1,"reviewer":"postgres-item-fixture",
         "rationale":"Retain an estimate without inventing observed correctness",
@@ -1652,8 +1661,7 @@ async fn postgres_item_ids_isolate_keys_and_keep_concurrent_retries_stable() {
     let svc = service().await;
     let other = service().await;
     let project = format!("postgres-items-{}", Uuid::new_v4());
-    let (e, r) = postgres_item_fixture(&project);
-    svc.record_experience(&e, 0).await.unwrap();
+    let (e, r) = postgres_item_fixture(&svc, &project).await;
     let (a, b) = tokio::join!(svc.review_experience(&r, 0), other.review_experience(&r, 0));
     let a = a.unwrap();
     let b = b.unwrap();
@@ -1687,8 +1695,7 @@ async fn postgres_item_ids_isolate_keys_and_keep_concurrent_retries_stable() {
     let history = svc.experience_history(e.id).await.unwrap();
     assert_eq!(history["reviews"].as_array().unwrap().len(), 2);
 
-    let (e2, r2) = postgres_item_fixture(&project);
-    svc.record_experience(&e2, 0).await.unwrap();
+    let (_, r2) = postgres_item_fixture(&svc, &project).await;
     let second = svc.review_experience(&r2, 0).await.unwrap();
     assert_ne!(second.item_ids["estimate-1"], assigned);
     let client = item_database_client().await;
@@ -1705,8 +1712,7 @@ async fn postgres_item_ids_roll_back_allocations_and_reject_invented_uuids() {
     let svc = service().await;
     let client = item_database_client().await;
     let project = format!("postgres-items-{}", Uuid::new_v4());
-    let (e, mut r) = postgres_item_fixture(&project);
-    svc.record_experience(&e, 0).await.unwrap();
+    let (e, mut r) = postgres_item_fixture(&svc, &project).await;
     r.extracted_items[0].statement = "An invented quotation".into();
     let rejected = svc.review_experience(&r, 0).await.unwrap_err();
     assert!(
@@ -1826,8 +1832,10 @@ async fn postgres_item_ids_record_and_correct_experiences_without_reallocation()
     });
     let first = svc.record_experience(&e, 0).await.unwrap();
     let assigned = first.item_ids["estimate-1"];
+    assert_ne!(first.experience.id, e.id);
     let retry = service().await.record_experience(&e, 0).await.unwrap();
     assert_eq!(retry.revision, 1);
+    assert_eq!(retry.experience.id, first.experience.id);
     assert_eq!(retry.item_ids["estimate-1"], assigned);
     let mut another = e.clone();
     another.id = Uuid::new_v4();
@@ -1835,6 +1843,17 @@ async fn postgres_item_ids_record_and_correct_experiences_without_reallocation()
         svc.record_experience(&another, 0).await.unwrap().item_ids["estimate-1"],
         assigned
     );
+    let client = item_database_client().await;
+    client
+        .execute(
+            "UPDATE mimir_experiences SET creation_request_key=NULL WHERE id=$1",
+            &[&first.experience.id],
+        )
+        .await
+        .unwrap();
+    let legacy_retry = svc.record_experience(&first.experience, 0).await.unwrap();
+    assert_eq!(legacy_retry.experience.id, first.experience.id);
+    assert_eq!(legacy_retry.revision, 1);
     let mut correction = first.experience;
     correction.learning_items[0].conditions = "Outcome still unknown".into();
     correction.learning_items[0].key = None; // Legacy UUID-only correction.

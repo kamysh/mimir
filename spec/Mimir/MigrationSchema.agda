@@ -21,6 +21,7 @@ open import Mimir.Migrations public
   renaming (name to migrationName; beliefEmbeddings to embeddingTable; learningLedger to learning;
     reviewCandidates to candidates; assessments to assessment; itemOwners to owners;
     postgresItemAllocation to allocation; reviewWorkEvents to workEvents;
+    postgresExperienceIDs to experienceAllocation;
     predecessor to requires; manifest to ordered)
 
 data Type : Set where uuid text bigint timestamp jsonb double boolean vector : Type
@@ -180,6 +181,11 @@ body allocation =
     ("experience_id" ∷ "item_key" ∷ []) ∷
   addCheckConstraint "mimir_learning_item_owners" "mimir_learning_item_key_nonempty" localKeyValid ∷ []
 body workEvents = notifyExperienceChanges "mimir_review_work" ∷ []
+body experienceAllocation =
+  setColumnDefault "mimir_experiences" "id" postgresUUID ∷
+  addNullableColumn "mimir_experiences" (optional "creation_request_key" uuid) ∷
+  addUniqueConstraint "mimir_experiences" "mimir_experiences_creation_request_key"
+    ("creation_request_key" ∷ []) ∷ []
 
 -- PostgreSQL supplies the decoded historical rows and execution order. The
 -- application's data rule is insert-missing-only, linked to its general laws.

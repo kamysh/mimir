@@ -38,8 +38,8 @@ module Over (State Value Failure : Set) (database key : ℕ) where
   allocationReceipt : ∀ tx plan events actual →
     E.Runs (executeAllocation tx plan) events (applied actual) → Receipt events
   allocationReceipt tx (resolved decision) events actual execution = decisionReceipt tx decision events actual execution
-  allocationReceipt tx (reserve experience name source actor next) events actual (E.replied _ _ reply execution) =
-    prepend (allocateItem tx experience name source actor , reply) (allocationReceipt tx (next reply) _ actual execution)
+  allocationReceipt tx (reserve target next) events actual (E.replied _ _ reply execution) =
+    prepend (allocateIdentity tx target , reply) (allocationReceipt tx (next reply) _ actual execution)
 
   module WithPreparedPlan (plan : State → Allocation Decision) where
     open T.PreparedPlan plan

@@ -42,7 +42,7 @@ async fn closure_mixes_relations_crosses_depth_ten_and_deduplicates_cycles() {
     let mut beliefs = Vec::new();
     for n in 0..17 {
         let b = Belief::new_in_project(format!("node {n}"), 0.5, 0.0, project.clone()).unwrap();
-        store.insert_belief(&b).await.unwrap();
+        let b = store.insert_belief(&b).await.unwrap();
         beliefs.push(b);
     }
     for n in 0..13 {
@@ -81,6 +81,7 @@ async fn closure_mixes_relations_crosses_depth_ten_and_deduplicates_cycles() {
     store.delete_project(&project).await.unwrap();
 }
 
+#[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
 #[tokio::test]
 async fn replacement_rejects_bad_preparation_and_rolls_back_late_vector_failure() {
     let store = store().await;
@@ -88,10 +89,11 @@ async fn replacement_rejects_bad_preparation_and_rolls_back_late_vector_failure(
     let observer = db::connect(&cfg.database).await.unwrap();
     let path = format!("/fixture/{}", Uuid::new_v4());
     let old = DocumentChunk::new(path.clone(), vec![], "old".into(), None, None);
-    store
+    let old = store
         .replace_document(&path, std::slice::from_ref(&old), &[vec![1.0, 0.0]])
         .await
-        .unwrap();
+        .unwrap()
+        .remove(0);
     let new = DocumentChunk::new(path.clone(), vec![], "new".into(), None, None);
     assert!(store
         .replace_document(&path, std::slice::from_ref(&new), &[])
@@ -128,32 +130,53 @@ async fn replacement_rejects_bad_preparation_and_rolls_back_late_vector_failure(
         None,
         None,
     );
-    store
+    let other = store
         .replace_document(
             &other.document_path,
             std::slice::from_ref(&other),
             &[vec![0.0, 1.0]],
         )
         .await
-        .unwrap();
-    let mut collision = new.clone();
-    collision.id = other.id;
-    assert!(store
-        .replace_document(&path, &[collision], &[vec![1.0, 0.0]])
+        .unwrap()
+        .remove(0);
+    let root = DocumentChunk {
+        id: other.id,
+        ..new
+    };
+    let child = DocumentChunk::new(
+        path.clone(),
+        vec!["child".into()],
+        "detail".into(),
+        Some(root.id),
+        None,
+    );
+    let published = store
+        .replace_document(
+            &path,
+            &[root, child.clone()],
+            &[vec![0.5, 0.5], vec![1.0, 0.0]],
+        )
         .await
-        .is_err());
-    store
-        .replace_document(&path, std::slice::from_ref(&new), &[vec![0.5, 0.5]])
-        .await
         .unwrap();
+    assert_ne!(published[0].id, other.id);
+    assert_ne!(published[1].id, child.id);
+    assert_eq!(
+        store
+            .get_chunk_by_id(published[1].id)
+            .await
+            .unwrap()
+            .unwrap()
+            .parent_id,
+        Some(published[0].id)
+    );
     assert!(store.get_chunk_by_id(old.id).await.unwrap().is_none());
     assert!(store.get_chunk_by_id(other.id).await.unwrap().is_some());
-    assert_eq!(store.clear_document(&path).await.unwrap(), 1);
+    assert_eq!(store.clear_document(&path).await.unwrap(), 2);
     assert_eq!(store.clear_document(&path).await.unwrap(), 0);
     let count: i64 = observer
         .query_one(
             "SELECT count(*) FROM public.chunk_embeddings WHERE chunk_id=ANY($1)",
-            &[&vec![old.id, new.id]],
+            &[&vec![old.id, published[0].id, published[1].id]],
         )
         .await
         .unwrap()
@@ -174,8 +197,8 @@ async fn propagation_waits_for_learning_lock_before_reading_seed() {
     let project = format!("lock-fixture-{}", Uuid::new_v4());
     let seed = Belief::new_in_project("seed".into(), 0.1, 0.0, project.clone()).unwrap();
     let target = Belief::new_in_project("target".into(), 0.5, 0.0, project.clone()).unwrap();
-    store.insert_belief(&seed).await.unwrap();
-    store.insert_belief(&target).await.unwrap();
+    let seed = store.insert_belief(&seed).await.unwrap();
+    let target = store.insert_belief(&target).await.unwrap();
     store
         .insert_edge(&Edge::new(seed.id, target.id, EdgeType::Supports, 1.0).unwrap())
         .await
@@ -227,8 +250,8 @@ async fn failed_defeat_recalculation_rolls_back_the_link() {
     let project = format!("edge-prefix-{}", Uuid::new_v4());
     let seed = Belief::new_in_project("seed".into(), 0.8, 0.0, project.clone()).unwrap();
     let target = Belief::new_in_project("target".into(), 0.5, 0.0, project.clone()).unwrap();
-    store.insert_belief(&seed).await.unwrap();
-    store.insert_belief(&target).await.unwrap();
+    let seed = store.insert_belief(&seed).await.unwrap();
+    let target = store.insert_belief(&target).await.unwrap();
     let observer = db::connect(&cfg.database).await.unwrap();
     let g = &cfg.database.dbname;
     let id = target.id;

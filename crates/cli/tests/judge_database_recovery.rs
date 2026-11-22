@@ -128,7 +128,11 @@ jq -c 'if (.history | length) > 0 then {calls:[]}
         source_records: vec![],
     };
     let first = new_experience();
-    service.record_experience(&first, 0).await.unwrap();
+    let first = service
+        .record_experience(&first, 0)
+        .await
+        .unwrap()
+        .experience;
     let mut watcher = Command::new(&fixture.mimir)
         .args(["judge", "watch", "--config"])
         .arg(&config)
@@ -198,7 +202,11 @@ jq -c 'if (.history | length) > 0 then {calls:[]}
     assert!(terminated);
     wait_for_state(&status, "block_reason", "database_unavailable").await;
     let second = new_experience();
-    service.record_experience(&second, 0).await.unwrap();
+    let second = service
+        .record_experience(&second, 0)
+        .await
+        .unwrap()
+        .experience;
     assert_reviewed(&service, second.id).await;
     wait_for_state(&runtime, "phase", "waiting_for_work").await;
 

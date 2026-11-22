@@ -94,7 +94,9 @@ async fn service() -> MimirService {
 async fn test_insert_and_get_belief() {
     let ctx = TestCtx::new().await;
     let b = ctx.belief(format!("belief-{}", Uuid::new_v4()), 0.75, 0.85);
-    ctx.store.insert_belief(&b).await.expect("insert_belief");
+    let draft_id = b.id;
+    let b = ctx.store.insert_belief(&b).await.expect("insert_belief");
+    assert_ne!(b.id, draft_id);
     let got = ctx
         .store
         .get_belief(b.id)
@@ -124,7 +126,7 @@ async fn test_get_nonexistent_belief_returns_none() {
 async fn test_list_beliefs_contains_inserted() {
     let ctx = TestCtx::new().await;
     let b = ctx.belief(format!("list-{}", Uuid::new_v4()), 0.5, 0.5);
-    ctx.store.insert_belief(&b).await.unwrap();
+    let b = ctx.store.insert_belief(&b).await.unwrap();
     let all = ctx.store.list_beliefs().await.unwrap();
     assert!(all.iter().any(|x| x.id == b.id));
     ctx.cleanup().await;
@@ -136,7 +138,7 @@ async fn test_list_beliefs_multiple() {
     let mut inserted = Vec::new();
     for i in 0..5 {
         let b = ctx.belief(format!("multi-{}-{}", i, Uuid::new_v4()), 0.5, 0.5);
-        ctx.store.insert_belief(&b).await.unwrap();
+        let b = ctx.store.insert_belief(&b).await.unwrap();
         inserted.push(b.id);
     }
     let all = ctx.store.list_beliefs().await.unwrap();
@@ -152,7 +154,7 @@ async fn test_list_beliefs_by_project_scopes_correctly() {
     let other_project = format!("_test-other-{}", Uuid::new_v4().simple());
 
     let mine = ctx.belief(format!("scope-mine-{}", Uuid::new_v4()), 0.5, 0.5);
-    ctx.store.insert_belief(&mine).await.unwrap();
+    let mine = ctx.store.insert_belief(&mine).await.unwrap();
 
     let other = Belief::new_in_project(
         format!("scope-other-{}", Uuid::new_v4()),
@@ -161,10 +163,10 @@ async fn test_list_beliefs_by_project_scopes_correctly() {
         other_project.clone(),
     )
     .unwrap();
-    ctx.store.insert_belief(&other).await.unwrap();
+    let other = ctx.store.insert_belief(&other).await.unwrap();
 
     let untagged = Belief::new(format!("scope-untagged-{}", Uuid::new_v4()), 0.5, 0.5).unwrap();
-    ctx.store.insert_belief(&untagged).await.unwrap();
+    let untagged = ctx.store.insert_belief(&untagged).await.unwrap();
 
     let scoped = ctx
         .store
@@ -195,7 +197,7 @@ async fn test_list_beliefs_by_project_scopes_correctly() {
 async fn test_update_belief_beta_round_trips_mean_and_strength() {
     let ctx = TestCtx::new().await;
     let b = ctx.belief(format!("upd-beta-{}", Uuid::new_v4()), 0.5, 0.5);
-    ctx.store.insert_belief(&b).await.unwrap();
+    let b = ctx.store.insert_belief(&b).await.unwrap();
     // A strong support posterior: mean 0.9 at strength 100 ⇒ (α,β)=(90,10).
     ctx.store
         .update_belief_beta(b.id, 90.0, 10.0)
@@ -226,9 +228,9 @@ async fn test_memory_type_round_trips_through_store() {
         .belief(format!("mt-work-{}", Uuid::new_v4()), 0.5, 0.5)
         .with_memory_type(MemoryType::Working);
 
-    ctx.store.insert_belief(&fact).await.unwrap();
-    ctx.store.insert_belief(&experiential).await.unwrap();
-    ctx.store.insert_belief(&working).await.unwrap();
+    let fact = ctx.store.insert_belief(&fact).await.unwrap();
+    let experiential = ctx.store.insert_belief(&experiential).await.unwrap();
+    let working = ctx.store.insert_belief(&working).await.unwrap();
 
     let got_fact = ctx.store.get_belief(fact.id).await.unwrap().unwrap();
     let got_exp = ctx
@@ -262,7 +264,7 @@ async fn test_memory_type_round_trips_through_store() {
 async fn test_belief_boundary_probabilities() {
     let ctx = TestCtx::new().await;
     let b = ctx.belief(format!("bound-{}", Uuid::new_v4()), 0.0, 1.0);
-    ctx.store.insert_belief(&b).await.unwrap();
+    let b = ctx.store.insert_belief(&b).await.unwrap();
     let got = ctx.store.get_belief(b.id).await.unwrap().unwrap();
     assert!((got.probability.value() - 0.0).abs() < 1e-9);
     assert!((got.confidence.value() - 1.0).abs() < 1e-9);
@@ -278,7 +280,7 @@ async fn test_belief_content_with_special_chars() {
         0.6,
         0.7,
     );
-    ctx.store.insert_belief(&b).await.unwrap();
+    let b = ctx.store.insert_belief(&b).await.unwrap();
     let got = ctx.store.get_belief(b.id).await.unwrap().unwrap();
     assert_eq!(got.content, b.content);
     ctx.cleanup().await;
@@ -294,7 +296,7 @@ async fn test_belief_content_with_backslash_and_doublequote() {
         0.7,
         0.8,
     );
-    ctx.store.insert_belief(&b).await.unwrap();
+    let b = ctx.store.insert_belief(&b).await.unwrap();
     let got = ctx.store.get_belief(b.id).await.unwrap().unwrap();
     assert_eq!(got.content, b.content);
     ctx.cleanup().await;
@@ -308,7 +310,7 @@ async fn test_belief_content_with_unicode() {
         0.7,
         0.8,
     );
-    ctx.store.insert_belief(&b).await.unwrap();
+    let b = ctx.store.insert_belief(&b).await.unwrap();
     let got = ctx.store.get_belief(b.id).await.unwrap().unwrap();
     assert_eq!(got.content, b.content);
     ctx.cleanup().await;
@@ -326,7 +328,9 @@ async fn test_insert_and_list_patterns() {
         format!("approach-{}", Uuid::new_v4()),
         0.8,
     );
-    ctx.store.insert_pattern(&p).await.unwrap();
+    let draft_id = p.id;
+    let p = ctx.store.insert_pattern(&p).await.unwrap();
+    assert_ne!(p.id, draft_id);
     let all = ctx.store.list_patterns().await.unwrap();
     assert!(all.iter().any(|x| x.id == p.id));
     ctx.cleanup().await;
@@ -342,7 +346,7 @@ async fn test_list_patterns_by_project_scopes_correctly() {
         format!("approach-mine-{}", Uuid::new_v4()),
         0.8,
     );
-    ctx.store.insert_pattern(&mine).await.unwrap();
+    let mine = ctx.store.insert_pattern(&mine).await.unwrap();
 
     let other = Pattern::new_in_project(
         format!("situation-other-{}", Uuid::new_v4()),
@@ -351,7 +355,7 @@ async fn test_list_patterns_by_project_scopes_correctly() {
         other_project.clone(),
     )
     .unwrap();
-    ctx.store.insert_pattern(&other).await.unwrap();
+    let other = ctx.store.insert_pattern(&other).await.unwrap();
 
     let scoped = ctx
         .store
@@ -381,7 +385,7 @@ async fn test_list_patterns_multiple() {
             format!("app-{}-{}", i, Uuid::new_v4()),
             0.5 + i as f64 * 0.1,
         );
-        ctx.store.insert_pattern(&p).await.unwrap();
+        let p = ctx.store.insert_pattern(&p).await.unwrap();
         inserted.push(p.id);
     }
     let all = ctx.store.list_patterns().await.unwrap();
@@ -399,7 +403,7 @@ async fn test_pattern_boundary_success_rate() {
         "approach".to_string(),
         1.0,
     );
-    ctx.store.insert_pattern(&p).await.unwrap();
+    let p = ctx.store.insert_pattern(&p).await.unwrap();
     let all = ctx.store.list_patterns().await.unwrap();
     let got = all.iter().find(|x| x.id == p.id).unwrap();
     assert!((got.success_rate.value() - 1.0).abs() < 1e-9);
@@ -415,8 +419,8 @@ async fn test_insert_edge_supports() {
     let ctx = TestCtx::new().await;
     let b1 = ctx.belief(format!("cause-{}", Uuid::new_v4()), 0.8, 0.9);
     let b2 = ctx.belief(format!("effect-{}", Uuid::new_v4()), 0.7, 0.8);
-    ctx.store.insert_belief(&b1).await.unwrap();
-    ctx.store.insert_belief(&b2).await.unwrap();
+    let b1 = ctx.store.insert_belief(&b1).await.unwrap();
+    let b2 = ctx.store.insert_belief(&b2).await.unwrap();
     let edge = Edge::new(b1.id, b2.id, EdgeType::Supports, 0.9).unwrap();
     ctx.store.insert_edge(&edge).await.unwrap();
     let downstream = ctx.store.get_downstream_beliefs(b1.id).await.unwrap();
@@ -429,8 +433,8 @@ async fn test_insert_edge_causes() {
     let ctx = TestCtx::new().await;
     let b1 = ctx.belief(format!("cause-{}", Uuid::new_v4()), 0.8, 0.9);
     let b2 = ctx.belief(format!("effect-{}", Uuid::new_v4()), 0.7, 0.8);
-    ctx.store.insert_belief(&b1).await.unwrap();
-    ctx.store.insert_belief(&b2).await.unwrap();
+    let b1 = ctx.store.insert_belief(&b1).await.unwrap();
+    let b2 = ctx.store.insert_belief(&b2).await.unwrap();
     let edge = Edge::new(b1.id, b2.id, EdgeType::Causes, 0.8).unwrap();
     ctx.store.insert_edge(&edge).await.unwrap();
     let downstream = ctx.store.get_downstream_beliefs(b1.id).await.unwrap();
@@ -443,8 +447,8 @@ async fn test_insert_edge_defeats() {
     let ctx = TestCtx::new().await;
     let b1 = ctx.belief(format!("defeater-{}", Uuid::new_v4()), 0.9, 0.9);
     let b2 = ctx.belief(format!("defeated-{}", Uuid::new_v4()), 0.8, 0.8);
-    ctx.store.insert_belief(&b1).await.unwrap();
-    ctx.store.insert_belief(&b2).await.unwrap();
+    let b1 = ctx.store.insert_belief(&b1).await.unwrap();
+    let b2 = ctx.store.insert_belief(&b2).await.unwrap();
     let edge = Edge::new(b1.id, b2.id, EdgeType::Defeats, 1.0).unwrap();
     ctx.store.insert_edge(&edge).await.unwrap();
     // Edge stored — verify via get_edges_among
@@ -459,7 +463,7 @@ async fn test_insert_edge_defeats() {
 async fn test_insert_edge_missing_source_fails() {
     let ctx = TestCtx::new().await;
     let b = ctx.belief(format!("only-{}", Uuid::new_v4()), 0.5, 0.5);
-    ctx.store.insert_belief(&b).await.unwrap();
+    let b = ctx.store.insert_belief(&b).await.unwrap();
     // from_id is a random UUID that was never inserted
     let edge = Edge::new(Uuid::new_v4(), b.id, EdgeType::Supports, 0.5).unwrap();
     let result = ctx.store.insert_edge(&edge).await;
@@ -471,7 +475,7 @@ async fn test_insert_edge_missing_source_fails() {
 async fn test_insert_edge_missing_target_fails() {
     let ctx = TestCtx::new().await;
     let b = ctx.belief(format!("only-{}", Uuid::new_v4()), 0.5, 0.5);
-    ctx.store.insert_belief(&b).await.unwrap();
+    let b = ctx.store.insert_belief(&b).await.unwrap();
     let edge = Edge::new(b.id, Uuid::new_v4(), EdgeType::Supports, 0.5).unwrap();
     let result = ctx.store.insert_edge(&edge).await;
     assert!(result.is_err());
@@ -487,8 +491,8 @@ async fn test_contradicts_bidirectional() {
     let ctx = TestCtx::new().await;
     let b1 = ctx.belief(format!("contra-a-{}", Uuid::new_v4()), 0.6, 0.7);
     let b2 = ctx.belief(format!("contra-b-{}", Uuid::new_v4()), 0.4, 0.6);
-    ctx.store.insert_belief(&b1).await.unwrap();
-    ctx.store.insert_belief(&b2).await.unwrap();
+    let b1 = ctx.store.insert_belief(&b1).await.unwrap();
+    let b2 = ctx.store.insert_belief(&b2).await.unwrap();
     let w = Probability::new(0.95).unwrap();
     ctx.store.insert_contradicts(b1.id, b2.id, w).await.unwrap();
     let pairs = ctx.store.get_contradiction_pairs().await.unwrap();
@@ -502,8 +506,8 @@ async fn test_no_contradiction_without_edge() {
     let ctx = TestCtx::new().await;
     let b1 = ctx.belief(format!("nocont-a-{}", Uuid::new_v4()), 0.6, 0.7);
     let b2 = ctx.belief(format!("nocont-b-{}", Uuid::new_v4()), 0.6, 0.7);
-    ctx.store.insert_belief(&b1).await.unwrap();
-    ctx.store.insert_belief(&b2).await.unwrap();
+    let b1 = ctx.store.insert_belief(&b1).await.unwrap();
+    let b2 = ctx.store.insert_belief(&b2).await.unwrap();
     let pairs = ctx.store.get_contradiction_pairs().await.unwrap();
     let has = pairs
         .iter()
@@ -520,8 +524,8 @@ async fn test_get_contradiction_pairs_by_project_scopes_correctly() {
     // In-scope pair: both endpoints in ctx.project.
     let a1 = ctx.belief(format!("scopecontra-a1-{}", Uuid::new_v4()), 0.6, 0.7);
     let a2 = ctx.belief(format!("scopecontra-a2-{}", Uuid::new_v4()), 0.4, 0.6);
-    ctx.store.insert_belief(&a1).await.unwrap();
-    ctx.store.insert_belief(&a2).await.unwrap();
+    let a1 = ctx.store.insert_belief(&a1).await.unwrap();
+    let a2 = ctx.store.insert_belief(&a2).await.unwrap();
     let w = Probability::new(0.95).unwrap();
     ctx.store.insert_contradicts(a1.id, a2.id, w).await.unwrap();
 
@@ -540,8 +544,8 @@ async fn test_get_contradiction_pairs_by_project_scopes_correctly() {
         other_project.clone(),
     )
     .unwrap();
-    ctx.store.insert_belief(&b1).await.unwrap();
-    ctx.store.insert_belief(&b2).await.unwrap();
+    let b1 = ctx.store.insert_belief(&b1).await.unwrap();
+    let b2 = ctx.store.insert_belief(&b2).await.unwrap();
     ctx.store.insert_contradicts(b1.id, b2.id, w).await.unwrap();
 
     let scoped = ctx
@@ -572,9 +576,9 @@ async fn test_get_edges_among_two_edges() {
     let b1 = ctx.belief(format!("ea-{}", Uuid::new_v4()), 0.8, 0.9);
     let b2 = ctx.belief(format!("eb-{}", Uuid::new_v4()), 0.7, 0.8);
     let b3 = ctx.belief(format!("ec-{}", Uuid::new_v4()), 0.6, 0.7);
-    ctx.store.insert_belief(&b1).await.unwrap();
-    ctx.store.insert_belief(&b2).await.unwrap();
-    ctx.store.insert_belief(&b3).await.unwrap();
+    let b1 = ctx.store.insert_belief(&b1).await.unwrap();
+    let b2 = ctx.store.insert_belief(&b2).await.unwrap();
+    let b3 = ctx.store.insert_belief(&b3).await.unwrap();
     ctx.store
         .insert_edge(&Edge::new(b1.id, b2.id, EdgeType::Supports, 0.9).unwrap())
         .await
@@ -612,9 +616,9 @@ async fn test_get_edges_among_excludes_outside_set() {
     let b1 = ctx.belief(format!("excl-a-{}", Uuid::new_v4()), 0.8, 0.9);
     let b2 = ctx.belief(format!("excl-b-{}", Uuid::new_v4()), 0.7, 0.8);
     let b3 = ctx.belief(format!("excl-c-{}", Uuid::new_v4()), 0.6, 0.7);
-    ctx.store.insert_belief(&b1).await.unwrap();
-    ctx.store.insert_belief(&b2).await.unwrap();
-    ctx.store.insert_belief(&b3).await.unwrap();
+    let b1 = ctx.store.insert_belief(&b1).await.unwrap();
+    let b2 = ctx.store.insert_belief(&b2).await.unwrap();
+    let b3 = ctx.store.insert_belief(&b3).await.unwrap();
     ctx.store
         .insert_edge(&Edge::new(b1.id, b3.id, EdgeType::Supports, 0.9).unwrap())
         .await
@@ -635,8 +639,8 @@ async fn test_get_downstream_via_causes() {
     let ctx = TestCtx::new().await;
     let b1 = ctx.belief(format!("dn-cause-{}", Uuid::new_v4()), 0.8, 0.9);
     let b2 = ctx.belief(format!("dn-effect-{}", Uuid::new_v4()), 0.6, 0.7);
-    ctx.store.insert_belief(&b1).await.unwrap();
-    ctx.store.insert_belief(&b2).await.unwrap();
+    let b1 = ctx.store.insert_belief(&b1).await.unwrap();
+    let b2 = ctx.store.insert_belief(&b2).await.unwrap();
     ctx.store
         .insert_edge(&Edge::new(b1.id, b2.id, EdgeType::Causes, 0.8).unwrap())
         .await
@@ -650,7 +654,7 @@ async fn test_get_downstream_via_causes() {
 async fn test_get_downstream_no_edges_empty() {
     let ctx = TestCtx::new().await;
     let b = ctx.belief(format!("isolated-{}", Uuid::new_v4()), 0.5, 0.5);
-    ctx.store.insert_belief(&b).await.unwrap();
+    let b = ctx.store.insert_belief(&b).await.unwrap();
     let downstream = ctx.store.get_downstream_beliefs(b.id).await.unwrap();
     assert!(!downstream.iter().any(|x| x.id == b.id)); // self not included
     ctx.cleanup().await;
@@ -662,9 +666,9 @@ async fn test_get_downstream_multi_hop() {
     let b1 = ctx.belief(format!("hop1-{}", Uuid::new_v4()), 0.9, 0.9);
     let b2 = ctx.belief(format!("hop2-{}", Uuid::new_v4()), 0.8, 0.8);
     let b3 = ctx.belief(format!("hop3-{}", Uuid::new_v4()), 0.7, 0.7);
-    ctx.store.insert_belief(&b1).await.unwrap();
-    ctx.store.insert_belief(&b2).await.unwrap();
-    ctx.store.insert_belief(&b3).await.unwrap();
+    let b1 = ctx.store.insert_belief(&b1).await.unwrap();
+    let b2 = ctx.store.insert_belief(&b2).await.unwrap();
+    let b3 = ctx.store.insert_belief(&b3).await.unwrap();
     ctx.store
         .insert_edge(&Edge::new(b1.id, b2.id, EdgeType::Supports, 0.9).unwrap())
         .await
@@ -692,9 +696,9 @@ async fn test_get_direct_downstream_by_project_one_hop() {
         other_project.clone(),
     )
     .unwrap();
-    ctx.store.insert_belief(&seed).await.unwrap();
-    ctx.store.insert_belief(&in_scope).await.unwrap();
-    ctx.store.insert_belief(&out_of_scope).await.unwrap();
+    let seed = ctx.store.insert_belief(&seed).await.unwrap();
+    let in_scope = ctx.store.insert_belief(&in_scope).await.unwrap();
+    let out_of_scope = ctx.store.insert_belief(&out_of_scope).await.unwrap();
     ctx.store
         .insert_edge(&Edge::new(seed.id, in_scope.id, EdgeType::Supports, 0.8).unwrap())
         .await
@@ -726,19 +730,20 @@ async fn test_get_direct_downstream_by_project_one_hop() {
 async fn test_batch_scoped_neighbors_match_individual_reads() {
     let ctx = TestCtx::new().await;
     let other = format!("_test-other-{}", Uuid::new_v4().simple());
-    let seeds: Vec<_> = (0..3)
+    let mut seeds: Vec<_> = (0..3)
         .map(|n| ctx.belief(format!("batch-seed-{n}"), 0.6, 0.6))
         .collect();
-    let targets: Vec<_> = (0..6)
+    let mut targets: Vec<_> = (0..6)
         .map(|n| ctx.belief(format!("batch-target-{n}"), 0.6, 0.6))
         .collect();
-    let foreign = Belief::new_in_project("batch-foreign".into(), 0.6, 0.6, other.clone()).unwrap();
+    let mut foreign =
+        Belief::new_in_project("batch-foreign".into(), 0.6, 0.6, other.clone()).unwrap();
     for b in seeds
-        .iter()
-        .chain(targets.iter())
-        .chain(std::iter::once(&foreign))
+        .iter_mut()
+        .chain(targets.iter_mut())
+        .chain(std::iter::once(&mut foreign))
     {
-        ctx.store.insert_belief(b).await.unwrap();
+        *b = ctx.store.insert_belief(b).await.unwrap();
     }
     for (i, target) in targets.iter().enumerate() {
         let kind = match i % 3 {
@@ -801,8 +806,8 @@ async fn test_query_relevant_excludes_working_from_candidate_pool() {
     let working = ctx
         .belief(format!("factterm {term}"), 0.6, 0.6)
         .with_memory_type(mimir_core::graph::MemoryType::Working);
-    ctx.store.insert_belief(&fact).await.unwrap();
-    ctx.store.insert_belief(&working).await.unwrap();
+    let fact = ctx.store.insert_belief(&fact).await.unwrap();
+    let working = ctx.store.insert_belief(&working).await.unwrap();
 
     let results = svc
         .query_relevant(&format!("factterm {term}"), 0, Some(&ctx.project), None)
@@ -835,8 +840,8 @@ async fn test_query_relevant_excludes_working_from_graph_expansion() {
     let working_neighbor = ctx
         .belief("unreachable working scratch note".to_string(), 0.6, 0.6)
         .with_memory_type(mimir_core::graph::MemoryType::Working);
-    ctx.store.insert_belief(&seed).await.unwrap();
-    ctx.store.insert_belief(&working_neighbor).await.unwrap();
+    let seed = ctx.store.insert_belief(&seed).await.unwrap();
+    let working_neighbor = ctx.store.insert_belief(&working_neighbor).await.unwrap();
     ctx.store
         .insert_edge(&Edge::new(seed.id, working_neighbor.id, EdgeType::Supports, 0.8).unwrap())
         .await
@@ -882,7 +887,7 @@ async fn test_query_relevant_prefer_type_reorders_tied_matches() {
         .belief(format!("tiedterm {term} shared content"), 0.6, 0.6)
         .with_memory_type(mimir_core::graph::MemoryType::Experiential);
     ctx.store.insert_belief(&fact).await.unwrap();
-    ctx.store.insert_belief(&experiential).await.unwrap();
+    let experiential = ctx.store.insert_belief(&experiential).await.unwrap();
 
     let neutral = svc
         .query_relevant(&format!("tiedterm {term}"), 0, Some(&ctx.project), None)
@@ -939,9 +944,9 @@ async fn test_query_relevant_excludes_beliefs_reachable_only_via_out_of_scope_br
     )
     .unwrap();
     let target = ctx.belief("wombat burrow ventilation shaft".to_string(), 0.6, 0.6);
-    ctx.store.insert_belief(&seed).await.unwrap();
-    ctx.store.insert_belief(&bridge).await.unwrap();
-    ctx.store.insert_belief(&target).await.unwrap();
+    let seed = ctx.store.insert_belief(&seed).await.unwrap();
+    let bridge = ctx.store.insert_belief(&bridge).await.unwrap();
+    let target = ctx.store.insert_belief(&target).await.unwrap();
     ctx.store
         .insert_edge(&Edge::new(seed.id, bridge.id, EdgeType::Supports, 0.8).unwrap())
         .await
@@ -988,8 +993,8 @@ async fn test_intervention_is_read_only() {
 
     let t = ctx.belief(format!("do-T-{}", Uuid::new_v4()), 0.4, 0.9);
     let b = ctx.belief(format!("do-B-{}", Uuid::new_v4()), 0.4, 0.9);
-    ctx.store.insert_belief(&t).await.unwrap();
-    ctx.store.insert_belief(&b).await.unwrap();
+    let t = ctx.store.insert_belief(&t).await.unwrap();
+    let b = ctx.store.insert_belief(&b).await.unwrap();
     ctx.store
         .insert_edge(&Edge::new(t.id, b.id, EdgeType::Causes, 0.5).unwrap())
         .await
@@ -1072,15 +1077,15 @@ async fn test_evidence_preserves_substrate_and_survives_propagation() {
     let svc = service().await;
     let a = ctx.belief("grounding source".into(), 0.8, 0.1);
     let b = ctx.belief("grounding target".into(), 0.3, 0.1);
-    ctx.store.insert_belief(&a).await.unwrap();
-    ctx.store.insert_belief(&b).await.unwrap();
+    let a = ctx.store.insert_belief(&a).await.unwrap();
+    let b = ctx.store.insert_belief(&b).await.unwrap();
     ctx.store
         .insert_edge(&Edge::new(a.id, b.id, EdgeType::Supports, 0.5).unwrap())
         .await
         .unwrap();
     let before = ctx.store.get_edges_among(&[a.id, b.id]).await.unwrap();
     let chunk = ctx.chunk("grounding-recompute.md", "observation");
-    ctx.store.insert_document_chunk(&chunk).await.unwrap();
+    let chunk = ctx.store.insert_document_chunk(&chunk).await.unwrap();
     svc.add_evidence(b.id, chunk.id, 0.9).await.unwrap();
     assert_eq!(
         before,
@@ -1105,11 +1110,11 @@ async fn test_add_evidence_raises_alpha() {
     let svc = service().await;
 
     let b = ctx.belief(format!("coupling-{}", Uuid::new_v4()), 0.7, 0.8);
-    ctx.store.insert_belief(&b).await.unwrap();
+    let b = ctx.store.insert_belief(&b).await.unwrap();
     let alpha_before = b.alpha;
 
     let chunk = ctx.chunk("coupling-doc.md", "grounding passage for coupling test");
-    ctx.store.insert_document_chunk(&chunk).await.unwrap();
+    let chunk = ctx.store.insert_document_chunk(&chunk).await.unwrap();
     svc.add_evidence(b.id, chunk.id, 0.8).await.unwrap();
 
     let b_after = ctx.store.get_belief(b.id).await.unwrap().unwrap();
@@ -1135,7 +1140,7 @@ async fn test_add_and_query_grounded() {
 
     let token = format!("zqxgrounded{}", Uuid::new_v4().simple());
     let b = ctx.belief(format!("a belief about {}", token), 0.7, 0.8);
-    ctx.store.insert_belief(&b).await.unwrap();
+    let b = ctx.store.insert_belief(&b).await.unwrap();
     let chunk = DocumentChunk::new(
         "src.md".to_string(),
         vec!["Section One".to_string()],
@@ -1143,7 +1148,7 @@ async fn test_add_and_query_grounded() {
         None,
         Some(ctx.project.clone()),
     );
-    ctx.store.insert_document_chunk(&chunk).await.unwrap();
+    let chunk = ctx.store.insert_document_chunk(&chunk).await.unwrap();
     svc.add_evidence(b.id, chunk.id, 0.8).await.unwrap();
 
     let grounded = svc
@@ -1170,9 +1175,9 @@ async fn test_delete_belief_removes_grounds_edge() {
     let svc = service().await;
 
     let b = ctx.belief(format!("grnd-del-{}", Uuid::new_v4()), 0.5, 0.5);
-    ctx.store.insert_belief(&b).await.unwrap();
+    let b = ctx.store.insert_belief(&b).await.unwrap();
     let chunk = ctx.chunk("d.md", "passage");
-    ctx.store.insert_document_chunk(&chunk).await.unwrap();
+    let chunk = ctx.store.insert_document_chunk(&chunk).await.unwrap();
     svc.add_evidence(b.id, chunk.id, 1.0).await.unwrap();
 
     assert_eq!(
@@ -1212,9 +1217,9 @@ async fn test_propagate_preserves_out_of_subgraph_evidence() {
     let x = ctx.belief(format!("oosX-{}", Uuid::new_v4()), 0.9, 0.5);
     let y = ctx.belief(format!("oosY-{}", Uuid::new_v4()), 0.9, 0.5);
     let t = ctx.belief(format!("oosT-{}", Uuid::new_v4()), 0.3, 0.5);
-    ctx.store.insert_belief(&x).await.unwrap();
-    ctx.store.insert_belief(&y).await.unwrap();
-    ctx.store.insert_belief(&t).await.unwrap();
+    let x = ctx.store.insert_belief(&x).await.unwrap();
+    let y = ctx.store.insert_belief(&y).await.unwrap();
+    let t = ctx.store.insert_belief(&t).await.unwrap();
     let t_alpha0 = t.alpha;
 
     svc.add_edge(x.id, t.id, EdgeType::Supports, 1.0)
@@ -1262,8 +1267,8 @@ async fn test_bare_defeat_lowers_target() {
 
     let seed = ctx.belief(format!("defS-{}", Uuid::new_v4()), 0.9, 0.9);
     let t = ctx.belief(format!("defT-{}", Uuid::new_v4()), 0.6, 0.5);
-    ctx.store.insert_belief(&seed).await.unwrap();
-    ctx.store.insert_belief(&t).await.unwrap();
+    let seed = ctx.store.insert_belief(&seed).await.unwrap();
+    let t = ctx.store.insert_belief(&t).await.unwrap();
     let t_beta0 = t.beta;
     let t_mean0 = t.probability.value();
 
@@ -1301,9 +1306,9 @@ async fn test_intervene_counts_out_of_set_cocause() {
     let t = ctx.belief(format!("ccT-{}", Uuid::new_v4()), 0.3, 0.9);
     let m = ctx.belief(format!("ccM-{}", Uuid::new_v4()), 0.3, 0.9);
     let x = ctx.belief(format!("ccX-{}", Uuid::new_v4()), 0.95, 0.9);
-    ctx.store.insert_belief(&t).await.unwrap();
-    ctx.store.insert_belief(&m).await.unwrap();
-    ctx.store.insert_belief(&x).await.unwrap();
+    let t = ctx.store.insert_belief(&t).await.unwrap();
+    let m = ctx.store.insert_belief(&m).await.unwrap();
+    let x = ctx.store.insert_belief(&x).await.unwrap();
     svc.add_edge(t.id, m.id, EdgeType::Causes, 0.5)
         .await
         .unwrap();
@@ -1353,8 +1358,8 @@ async fn test_sweep_expired_defeated_deletes_low_prob_past_grace() {
 
     let defeater = ctx.belief(format!("sweepA-{}", Uuid::new_v4()), 0.9, 0.9);
     let defeated = ctx.belief(format!("sweepB-{}", Uuid::new_v4()), 0.9, 0.9);
-    ctx.store.insert_belief(&defeater).await.unwrap();
-    ctx.store.insert_belief(&defeated).await.unwrap();
+    let defeater = ctx.store.insert_belief(&defeater).await.unwrap();
+    let defeated = ctx.store.insert_belief(&defeated).await.unwrap();
     ctx.store
         .insert_edge(&Edge::new(defeater.id, defeated.id, EdgeType::Defeats, 1.0).unwrap())
         .await
@@ -1387,8 +1392,8 @@ async fn test_sweep_expired_defeated_keeps_within_grace_period() {
 
     let defeater = ctx.belief(format!("sweepC-{}", Uuid::new_v4()), 0.9, 0.9);
     let defeated = ctx.belief(format!("sweepD-{}", Uuid::new_v4()), 0.9, 0.9);
-    ctx.store.insert_belief(&defeater).await.unwrap();
-    ctx.store.insert_belief(&defeated).await.unwrap();
+    let defeater = ctx.store.insert_belief(&defeater).await.unwrap();
+    let defeated = ctx.store.insert_belief(&defeated).await.unwrap();
     ctx.store
         .insert_edge(&Edge::new(defeater.id, defeated.id, EdgeType::Defeats, 1.0).unwrap())
         .await
@@ -1419,8 +1424,8 @@ async fn test_sweep_expired_defeated_keeps_above_threshold() {
 
     let defeater = ctx.belief(format!("sweepE-{}", Uuid::new_v4()), 0.9, 0.9);
     let defeated = ctx.belief(format!("sweepF-{}", Uuid::new_v4()), 0.9, 0.9);
-    ctx.store.insert_belief(&defeater).await.unwrap();
-    ctx.store.insert_belief(&defeated).await.unwrap();
+    let defeater = ctx.store.insert_belief(&defeater).await.unwrap();
+    let defeated = ctx.store.insert_belief(&defeated).await.unwrap();
     ctx.store
         .insert_edge(&Edge::new(defeater.id, defeated.id, EdgeType::Defeats, 1.0).unwrap())
         .await
@@ -1456,8 +1461,8 @@ async fn test_sweep_expired_defeated_is_project_scoped() {
 
     let defeater_a = ctx_a.belief(format!("sweepG-{}", Uuid::new_v4()), 0.9, 0.9);
     let defeated_a = ctx_a.belief(format!("sweepH-{}", Uuid::new_v4()), 0.9, 0.9);
-    ctx_a.store.insert_belief(&defeater_a).await.unwrap();
-    ctx_a.store.insert_belief(&defeated_a).await.unwrap();
+    let defeater_a = ctx_a.store.insert_belief(&defeater_a).await.unwrap();
+    let defeated_a = ctx_a.store.insert_belief(&defeated_a).await.unwrap();
     ctx_a
         .store
         .insert_edge(&Edge::new(defeater_a.id, defeated_a.id, EdgeType::Defeats, 1.0).unwrap())
@@ -1471,8 +1476,8 @@ async fn test_sweep_expired_defeated_is_project_scoped() {
 
     let defeater_b = ctx_b.belief(format!("sweepI-{}", Uuid::new_v4()), 0.9, 0.9);
     let defeated_b = ctx_b.belief(format!("sweepJ-{}", Uuid::new_v4()), 0.9, 0.9);
-    ctx_b.store.insert_belief(&defeater_b).await.unwrap();
-    ctx_b.store.insert_belief(&defeated_b).await.unwrap();
+    let defeater_b = ctx_b.store.insert_belief(&defeater_b).await.unwrap();
+    let defeated_b = ctx_b.store.insert_belief(&defeated_b).await.unwrap();
     ctx_b
         .store
         .insert_edge(&Edge::new(defeater_b.id, defeated_b.id, EdgeType::Defeats, 1.0).unwrap())
@@ -1522,8 +1527,8 @@ async fn test_sweep_expired_defeated_refuses_without_configured_retention() {
 
     let defeater = ctx.belief(format!("sweepK-{}", Uuid::new_v4()), 0.9, 0.9);
     let defeated = ctx.belief(format!("sweepL-{}", Uuid::new_v4()), 0.9, 0.9);
-    ctx.store.insert_belief(&defeater).await.unwrap();
-    ctx.store.insert_belief(&defeated).await.unwrap();
+    let defeater = ctx.store.insert_belief(&defeater).await.unwrap();
+    let defeated = ctx.store.insert_belief(&defeated).await.unwrap();
     ctx.store
         .insert_edge(&Edge::new(defeater.id, defeated.id, EdgeType::Defeats, 1.0).unwrap())
         .await
@@ -1571,7 +1576,7 @@ async fn test_backfill_skips_belief_deleted_during_embedding() {
 
     let ctx = TestCtx::new().await;
     let belief = ctx.belief(format!("backfill-{}", Uuid::new_v4()), 0.9, 0.9);
-    ctx.store.insert_belief(&belief).await.unwrap();
+    let belief = ctx.store.insert_belief(&belief).await.unwrap();
 
     let backfill = service()
         .await

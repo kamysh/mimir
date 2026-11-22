@@ -442,7 +442,7 @@ impl AgeStore {
     // Beliefs
     // -----------------------------------------------------------------------
 
-    pub async fn insert_belief(&self, belief: &Belief) -> Result<()> {
+    pub async fn insert_belief(&self, belief: &Belief) -> Result<Belief> {
         self.insert_belief_with_provenance(belief, None).await
     }
 
@@ -450,15 +450,17 @@ impl AgeStore {
         &self,
         belief: &Belief,
         provenance: Option<&crate::learning::IndependentProvenance>,
-    ) -> Result<()> {
+    ) -> Result<Belief> {
         let mut client = self.client.lock().await;
         let tx = learning_transaction(&mut client).await?;
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
             .await?;
-        self.insert_belief_on(tx.client(), belief, provenance)
+        let mut belief = belief.clone();
+        belief.id = tx.query_one("SELECT gen_random_uuid()", &[]).await?.get(0);
+        self.insert_belief_on(tx.client(), &belief, provenance)
             .await?;
         tx.commit().await?;
-        Ok(())
+        Ok(belief)
     }
 
     async fn insert_belief_on(
@@ -1054,7 +1056,13 @@ $$) AS (defeater_id ag_catalog.agtype, defeated_id ag_catalog.agtype, defeater_c
     // Patterns
     // -----------------------------------------------------------------------
 
-    pub async fn insert_pattern(&self, pattern: &Pattern) -> Result<()> {
+    pub async fn insert_pattern(&self, pattern: &Pattern) -> Result<Pattern> {
+        let mut client = self.client.lock().await;
+        let tx = learning_transaction(&mut client).await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        let mut pattern = pattern.clone();
+        pattern.id = tx.query_one("SELECT gen_random_uuid()", &[]).await?.get(0);
         let g = &self.graph_name;
         let id = pattern.id.to_string();
         let activation_count = pattern.activation_count;
@@ -1086,13 +1094,9 @@ $$) AS (defeater_id ag_catalog.agtype, defeated_id ag_catalog.agtype, defeater_c
              RETURN p.id $$, $1) AS (id ag_catalog.agtype)"
         );
 
-        let mut client = self.client.lock().await;
-        let tx = learning_transaction(&mut client).await?;
-        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
-            .await?;
         age_execute(tx.client(), &stmt, &prepare, &agtype_json).await?;
         tx.commit().await?;
-        Ok(())
+        Ok(pattern)
     }
 
     pub async fn get_pattern(&self, id: Uuid) -> Result<Option<Pattern>> {
@@ -1505,14 +1509,16 @@ $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype, label ag_catalog.agt
 
     /// Insert a DocumentChunk vertex into AGE.
     /// If the chunk has a parent_id, also inserts a CONTAINS edge from parent→child.
-    pub async fn insert_document_chunk(&self, chunk: &DocumentChunk) -> Result<()> {
+    pub async fn insert_document_chunk(&self, chunk: &DocumentChunk) -> Result<DocumentChunk> {
         let mut client = self.client.lock().await;
         let tx = learning_transaction(&mut client).await?;
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
             .await?;
-        self.insert_document_chunk_on(tx.client(), chunk).await?;
+        let mut chunk = chunk.clone();
+        chunk.id = tx.query_one("SELECT gen_random_uuid()", &[]).await?.get(0);
+        self.insert_document_chunk_on(tx.client(), &chunk).await?;
         tx.commit().await?;
-        Ok(())
+        Ok(chunk)
     }
 
     async fn insert_document_chunk_on(&self, client: &Client, chunk: &DocumentChunk) -> Result<()> {

@@ -8,7 +8,7 @@ open import Data.Bool using (Bool; true; false; not)
 open import Data.List using (List; []; _∷_; _++_; filterᵇ; map; length)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; _+_; z≤n)
-open import Data.Product using (Σ; _×_; _,_; proj₁)
+open import Data.Product using (Σ; _×_; _,_; proj₁; proj₂)
 open import Data.String using (toList)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
@@ -50,6 +50,7 @@ forgetLearning project w = record w { learning = record learn
   { current = filterᵇ (λ r → keep (Read.identity r)) (Learning.World.current learn)
   ; sources = filterᵇ (λ r → keep (Experience.Experience.identity (Learning.SourceVersion.payload r))) (Learning.World.sources learn)
   ; reviewTimes = filterᵇ (λ r → keep (Learning.ReviewTime.experience r)) (Learning.World.reviewTimes learn)
+  ; creationKeys = filterᵇ (λ binding → keep (proj₂ binding)) (Learning.World.creationKeys learn)
   ; itemKeys = keys
   ; publication = record pub
     { ledger = Ledger.world cells histories
@@ -833,7 +834,7 @@ module Standalone (database : ℕ) (project : Text) where
   Atomic before (P.learning (P.T.write tx proposed)) (inj₁ failure) after = after ≡ before
   Atomic before (P.learning (P.T.write tx proposed)) (inj₂ tt) after =
     (after ≡ before) × (proposed ≡ published project before)
-  Atomic before (P.learning (P.T.allocateItem tx owner key source actor)) reply after = after ≡ before
+  Atomic before (P.learning (P.T.allocateIdentity tx target)) reply after = after ≡ before
   Atomic before (P.learning (P.T.commit tx)) reply after =
     DB.Atomic before (published project before) (P.T.receipt reply) after
   Atomic before (P.learning (P.T.rollback tx)) reply after = after ≡ before
@@ -868,7 +869,7 @@ module Standalone (database : ℕ) (project : Text) where
   classify before (P.learning (P.T.read tx)) (inj₂ observed) after (same , snapshot) = inj₁ same
   classify before (P.learning (P.T.write tx proposed)) (inj₁ failure) after same = inj₁ same
   classify before (P.learning (P.T.write tx proposed)) (inj₂ tt) after (same , staged) = inj₁ same
-  classify before (P.learning (P.T.allocateItem tx owner key source actor)) reply after same = inj₁ same
+  classify before (P.learning (P.T.allocateIdentity tx target)) reply after same = inj₁ same
   classify before (P.learning (P.T.commit tx)) reply after commit = inj₂ (P.T.receipt reply , commit)
   classify before (P.learning (P.T.rollback tx)) reply after same = inj₁ same
 
