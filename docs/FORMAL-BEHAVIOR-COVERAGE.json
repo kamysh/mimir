@@ -445,7 +445,7 @@
       "completion_modules": [
         "spec/Mimir/RetrievalProtocol.agda",
         "spec/Mimir/RetrievalRanking.agda",
-        "spec/Mimir/EvidenceRead.agda",
+        "spec/Mimir/EvidenceRead.lagda.md",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
         "spec/Mimir/ApplicationOutput.agda",
@@ -470,7 +470,7 @@
       "status": "partially-specified",
       "rust_correspondence": "open; separate from behavioral specification",
       "completion_modules": [
-        "spec/Mimir/EvidenceRead.agda",
+        "spec/Mimir/EvidenceRead.lagda.md",
         "spec/Mimir/GroundingPublication.lagda.md",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
@@ -496,7 +496,7 @@
       "status": "partially-specified",
       "rust_correspondence": "open; separate from behavioral specification",
       "completion_modules": [
-        "spec/Mimir/EvidenceRead.agda",
+        "spec/Mimir/EvidenceRead.lagda.md",
         "spec/Mimir/GroundingPublication.lagda.md",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
@@ -1111,7 +1111,7 @@
       "completion_modules": [
         "spec/Mimir/RetrievalProtocol.agda",
         "spec/Mimir/RetrievalRanking.agda",
-        "spec/Mimir/EvidenceRead.agda",
+        "spec/Mimir/EvidenceRead.lagda.md",
         "spec/Mimir/CLI.agda",
         "spec/Mimir/ApplicationProtocol.agda"
       ],
@@ -1254,7 +1254,7 @@
         "Beta"
       ],
       "completion_modules": [
-        "spec/Mimir/EvidenceRead.agda",
+        "spec/Mimir/EvidenceRead.lagda.md",
         "spec/Mimir/CLI.agda",
         "spec/Mimir/ApplicationProtocol.agda"
       ],

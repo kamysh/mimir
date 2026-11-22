@@ -926,9 +926,12 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
                 return Ok(serde_json::to_value(&report)?);
             }
             // Omitted evidence_per_belief selects all grounding passages.
-            let per = args["evidence_per_belief"].as_u64().unwrap_or(0) as usize;
+            let per = args["evidence_per_belief"]
+                .as_u64()
+                .map(usize::try_from)
+                .transpose()?;
             let report = svc
-                .query_relevant_grounded(query, limit, per, project)
+                .query_relevant_grounded(query, limit, per, project, prefer_type)
                 .await?;
             let beliefs: Vec<Value> = report
                 .beliefs
@@ -980,10 +983,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'belief_id'"))?;
             let belief_id = uuid::Uuid::parse_str(belief_str)?;
-            // query_relevant_grounded with a degenerate query would re-rank; instead
-            // pull evidence directly for this one belief via the grounded path on an
-            // exact id is overkill — use the store accessor through a tiny helper.
-            let grounded = svc.evidence_for_belief(belief_id, 0).await?;
+            let grounded = svc.evidence_for_belief(belief_id, None).await?;
             let result: Vec<Value> = grounded
                 .into_iter()
                 .map(|e| {

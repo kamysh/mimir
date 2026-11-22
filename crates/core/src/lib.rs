@@ -1081,109 +1081,40 @@ impl MimirService {
     }
 
     /// The grounding passages for a single belief, strongest first.
-    /// `limit = 0` means no cap.
     pub async fn evidence_for_belief(
         &self,
         belief_id: Uuid,
-        limit: usize,
+        limit: Option<usize>,
     ) -> Result<Vec<EvidenceRef>> {
-        let mut ev = self.store.get_evidence_for_beliefs(&[belief_id]).await?;
-        ev.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
-        if limit > 0 {
-            ev.truncate(limit);
-        }
-        let mut out = Vec::with_capacity(ev.len());
-        for (_belief, chunk_id, weight) in ev {
-            if let Some(c) = self.store.get_chunk_by_id(chunk_id).await? {
-                out.push(EvidenceRef {
-                    chunk_id,
-                    document_path: c.document_path,
-                    section_path: c.section_path,
-                    snippet: c.content.trim().to_string(),
-                    weight,
-                });
-            }
-        }
-        Ok(out)
+        let mut evidence = self.store.read_evidence(&[belief_id], limit).await?;
+        Ok(evidence.remove(&belief_id).unwrap_or_default())
     }
 
-    /// `query_relevant`, enriched with the grounding passages per belief, as a
-    /// retrieval report carrying the query context and semantic-search status.
-    /// `evidence_per_belief = 0` means no cap (all grounding passages per belief).
+    /// Run the ordinary search and attach grounding passages in belief order.
     pub async fn query_relevant_grounded(
         &self,
         query: &str,
         limit: usize,
-        evidence_per_belief: usize,
+        evidence_per_belief: Option<usize>,
         project: Option<&str>,
+        prefer_type: Option<MemoryType>,
     ) -> Result<RetrievalReport<GroundedBelief>> {
-        let report = self.query_relevant(query, limit, project, None).await?;
-        if report.beliefs.is_empty() {
-            return Ok(RetrievalReport {
-                context: report.context,
-                beliefs: Vec::new(),
-                semantic_search: report.semantic_search,
-            });
-        }
-        let beliefs = report.beliefs;
-        let ids: Vec<Uuid> = beliefs.iter().map(|b| b.id).collect();
-        let ev = self.store.get_evidence_for_beliefs(&ids).await?;
-
-        // Group (chunk_id, weight) by belief_id.
-        let mut by_belief: std::collections::HashMap<Uuid, Vec<(Uuid, f64)>> =
-            std::collections::HashMap::new();
-        for (belief_id, chunk_id, weight) in ev {
-            by_belief
-                .entry(belief_id)
-                .or_default()
-                .push((chunk_id, weight));
-        }
-
-        // Cache chunk lookups so a chunk grounding several beliefs is fetched once.
-        let mut chunk_cache: std::collections::HashMap<Uuid, Option<EvidenceRef>> =
-            std::collections::HashMap::new();
-
-        let mut out = Vec::with_capacity(beliefs.len());
-        for belief in beliefs {
-            let mut refs: Vec<EvidenceRef> = Vec::new();
-            if let Some(entries) = by_belief.get(&belief.id) {
-                let mut entries = entries.clone();
-                // Strongest grounding first.
-                entries.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-                if evidence_per_belief > 0 {
-                    entries.truncate(evidence_per_belief);
-                }
-                for (chunk_id, weight) in entries {
-                    if let std::collections::hash_map::Entry::Vacant(e) =
-                        chunk_cache.entry(chunk_id)
-                    {
-                        let r = self
-                            .store
-                            .get_chunk_by_id(chunk_id)
-                            .await?
-                            .map(|c| EvidenceRef {
-                                chunk_id,
-                                document_path: c.document_path,
-                                section_path: c.section_path,
-                                snippet: c.content.trim().to_string(),
-                                weight,
-                            });
-                        e.insert(r);
-                    }
-                    if let Some(base) = chunk_cache.get(&chunk_id).and_then(|o| o.clone()) {
-                        // Reuse the cached chunk metadata but keep this edge's weight.
-                        refs.push(EvidenceRef { weight, ..base });
-                    }
-                }
-            }
-            out.push(GroundedBelief {
+        let report = self
+            .query_relevant(query, limit, project, prefer_type)
+            .await?;
+        let ids: Vec<_> = report.beliefs.iter().map(|belief| belief.id).collect();
+        let mut evidence = self.store.read_evidence(&ids, evidence_per_belief).await?;
+        let beliefs = report
+            .beliefs
+            .into_iter()
+            .map(|belief| GroundedBelief {
+                evidence: evidence.remove(&belief.id).unwrap_or_default(),
                 belief,
-                evidence: refs,
-            });
-        }
+            })
+            .collect();
         Ok(RetrievalReport {
-            context: query.to_string(),
-            beliefs: out,
+            context: report.context,
+            beliefs,
             semantic_search: report.semantic_search,
         })
     }

@@ -594,7 +594,9 @@ async fn cmd_query(
     let svc = connect().await?;
 
     if evidence {
-        let report = svc.query_relevant_grounded(text, limit, 0, project).await?;
+        let report = svc
+            .query_relevant_grounded(text, limit, None, project, None)
+            .await?;
         note_semantic_search(&report.semantic_search);
         if report.beliefs.is_empty() {
             println!("(no results)");
@@ -696,7 +698,7 @@ async fn cmd_evidence(cmd: EvidenceCmd) -> Result<()> {
             let belief = belief_id
                 .parse::<uuid::Uuid>()
                 .map_err(|_| anyhow::anyhow!("invalid belief UUID: {}", belief_id))?;
-            let refs = svc.evidence_for_belief(belief, 0).await?;
+            let refs = svc.evidence_for_belief(belief, None).await?;
             if refs.is_empty() {
                 println!("(no evidence)");
                 return Ok(());

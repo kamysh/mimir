@@ -14,6 +14,90 @@ use serde_json::json;
 
 #[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
 #[tokio::test]
+async fn evidence_preserves_the_search_and_returns_ranked_passages() -> Result<()> {
+    let database = isolation::fixture().database_config();
+    let store = mimir_core::store::AgeStore::new(
+        mimir_core::db::connect(&database).await?,
+        database.dbname.clone(),
+    )?;
+    let service = MimirService::connect(&Config {
+        database,
+        embeddings: None,
+        llm: None,
+        judge: None,
+        email: None,
+        retirement: None,
+    })
+    .await?;
+    let term = format!("citation-test-{}", uuid::Uuid::new_v4().simple());
+    let fact = service
+        .add_belief_in_project(&term, 0.9, 0.6, &term, MemoryType::Fact)
+        .await?;
+    let lesson = service
+        .add_belief_in_project(&term, 0.4, 0.6, &term, MemoryType::Experiential)
+        .await?;
+    let shared = store
+        .insert_document_chunk(&mimir_core::documents::DocumentChunk::new(
+            "evidence.md".into(),
+            vec!["Shared section".into()],
+            "  shared passage  ".into(),
+            None,
+            Some(term.clone()),
+        ))
+        .await?;
+    let stronger = store
+        .insert_document_chunk(&mimir_core::documents::DocumentChunk::new(
+            "evidence.md".into(),
+            vec!["Other section".into()],
+            "stronger passage".into(),
+            None,
+            Some(term.clone()),
+        ))
+        .await?;
+    service.add_evidence(lesson.id, shared.id, 0.0).await?;
+    service.add_evidence(lesson.id, stronger.id, 0.25).await?;
+    service.add_evidence(fact.id, shared.id, 0.5).await?;
+
+    let mut args =
+        json!({"context": term, "project": term, "prefer_type": "experiential", "limit": 1});
+    let plain = handle_tool_call(&service, "query_relevant", &args).await?;
+    args["include_evidence"] = json!(true);
+    args["evidence_per_belief"] = json!(1);
+    let bounded = handle_tool_call(&service, "query_relevant", &args).await?;
+    let expected_id = json!(lesson.id);
+    ensure!(plain["beliefs"][0]["id"] == expected_id);
+    ensure!(bounded["beliefs"][0]["id"] == expected_id);
+    ensure!(bounded["context"] == plain["context"]);
+    ensure!(bounded["semantic_search"] == plain["semantic_search"]);
+
+    let sources =
+        handle_tool_call(&service, "get_evidence", &json!({"belief_id": lesson.id})).await?;
+    ensure!(sources.as_array().map(Vec::len) == Some(2));
+    ensure!(sources[0]["chunk_id"] == json!(stronger.id));
+    ensure!(
+        sources[1]
+            == json!({
+                "chunk_id": shared.id, "document_path": "evidence.md", "section_path": ["Shared section"],
+                "snippet": "shared passage", "weight": 0.0
+            })
+    );
+    ensure!(bounded["beliefs"][0]["evidence"] == json!([sources[0]]));
+
+    let all = handle_tool_call(
+        &service,
+        "query_relevant",
+        &json!({"context": term, "project": term, "prefer_type": "experiential", "include_evidence": true}),
+    ).await?;
+    ensure!(all["beliefs"][0]["id"] == expected_id);
+    ensure!(all["beliefs"][0]["evidence"] == sources);
+    ensure!(all["beliefs"][1]["id"] == json!(fact.id));
+    ensure!(all["beliefs"][1]["evidence"][0]["chunk_id"] == json!(shared.id));
+    ensure!(all["beliefs"][1]["evidence"][0]["weight"] == json!(0.5));
+    Ok(())
+}
+
+#[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
+#[tokio::test]
 async fn query_relevant_reports_semantic_search_and_selects_all_by_default() -> Result<()> {
     let service = MimirService::connect(&Config {
         database: isolation::fixture().database_config(),

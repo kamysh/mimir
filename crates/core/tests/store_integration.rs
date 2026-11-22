@@ -1152,7 +1152,7 @@ async fn test_add_and_query_grounded() {
     svc.add_evidence(b.id, chunk.id, 0.8).await.unwrap();
 
     let grounded = svc
-        .query_relevant_grounded(&token, 10, 3, None)
+        .query_relevant_grounded(&token, 10, Some(3), None, None)
         .await
         .unwrap()
         .beliefs;

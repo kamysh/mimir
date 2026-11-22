@@ -394,11 +394,11 @@ module Run (environment : Environment) where
   evidenceSucceeded (evidenceResult (inj₂ _)) = ⊤
   evidenceSucceeded _ = ⊥
   module EvidenceRecovery = Recovery Store.World Evidence.Effect Result (λ _ → ⊤) Evidence.Reply
-    (λ before effect reply after → after ≡ before)
+    (λ before effect reply after → (after ≡ before) × Evidence.Observed before effect reply)
     (λ before after → after ≡ before)
     (λ _ _ → Store.World) (λ _ _ world → world)
     (λ _ world → world) evidenceSucceeded (λ _ → ⊤)
-  module EvidenceProof = EvidenceRecovery.ReadOnly (λ _ _ _ _ same → same)
+  module EvidenceProof = EvidenceRecovery.ReadOnly (λ _ _ _ _ observed → proj₁ observed)
     (λ _ _ same → same) (λ _ _ → refl)
   evidenceOperation : EvidenceRecovery.Recoverable EvidenceRequest
   evidenceOperation = EvidenceProof.readOnly evidenceProgram
@@ -592,13 +592,18 @@ module Run (environment : Environment) where
   SearchReply (retrieval state) = Retrieval.Reply state
   SearchReply (evidence effect) = Evidence.Reply effect
 
+  searchObserved : Store.World → (effect : SearchEffect) → SearchReply effect → Set
+  searchObserved before (retrieval state) reply = ⊤
+  searchObserved before (evidence effect) reply = Evidence.Observed before effect reply
+
   searchSucceeded : Result → Set
   searchSucceeded (relevantResult _) = ⊤
   searchSucceeded (groundedResult (inj₂ _)) = ⊤
   searchSucceeded _ = ⊥
 
   module SearchRecovery = Recovery Store.World SearchEffect Result (λ _ → ⊤) SearchReply
-    (λ before effect reply after → after ≡ before) (λ before after → after ≡ before)
+    (λ before effect reply after → (after ≡ before) × searchObserved before effect reply)
+    (λ before after → after ≡ before)
     (λ _ _ → Store.World) (λ _ _ world → world) (λ _ world → world) searchSucceeded (λ _ → ⊤)
 
   evidenceSearchNext : Text → Retrieval.SemanticStatus →
@@ -632,18 +637,14 @@ module Run (environment : Environment) where
 
   searchMachine : SearchRecovery.Machine
   searchMachine = record { State = SearchPhase ; next = searchNext }
-  module SearchProof = SearchRecovery.ReadOnlyMachine searchMachine (λ _ _ _ _ same → same)
+  module SearchProof = SearchRecovery.ReadOnlyMachine searchMachine (λ _ _ _ _ observed → proj₁ observed)
     (λ _ _ same → same) (λ _ _ → refl)
-
-  preference : Bool → Maybe Candidates.Memory → Maybe Candidates.Memory
-  preference false requested = requested
-  preference true requested = nothing
 
   searchOperation : SearchRecovery.Recoverable SearchRequest
   searchOperation = SearchProof.readOnly (λ request → retrieving
     (SearchRequest.includeEvidence request) (SearchRequest.evidencePerBelief request)
     (Retrieval.overlay (Retrieval.request (SearchRequest.query request) (SearchRequest.limit request)
-      (SearchRequest.project request) (preference (SearchRequest.includeEvidence request) (SearchRequest.prefer request)) embeddingsEnabled)))
+      (SearchRequest.project request) (SearchRequest.prefer request) embeddingsEnabled)))
 
   contextSucceeded : Result → Set
   contextSucceeded (contextResult _) = ⊤
@@ -1415,11 +1416,13 @@ module Run (environment : Environment) where
     learningRead : ∀ {state effect reply before} →
       RequestStep (queryEffect effect) state reply before before
     evidenceRead : ∀ {state effect reply before} →
+      Evidence.Observed before effect reply →
       RequestStep (evidenceEffect effect) state reply before before
     documentSearchRead : ∀ {state effect reply before} →
       DocumentQuery.Observed documentDistance before effect reply →
       RequestStep (documentQueryEffect effect) state reply before before
     searchRead : ∀ {state effect reply before} →
+      searchObserved before effect reply →
       RequestStep (searchEffect effect) state reply before before
     contextRead : ∀ {state effect reply before} →
       RequestStep (contextEffect effect) state reply before before

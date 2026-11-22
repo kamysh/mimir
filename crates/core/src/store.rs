@@ -2201,6 +2201,64 @@ $$) AS (belief_id ag_catalog.agtype, chunk_id ag_catalog.agtype, weight ag_catal
         Ok(out)
     }
 
+    /// Read each grounding link together with its passage in one database view.
+    pub(crate) async fn read_evidence(
+        &self,
+        belief_ids: &[Uuid],
+        limit: Option<usize>,
+    ) -> Result<HashMap<Uuid, Vec<crate::EvidenceRef>>> {
+        let mut by_belief = HashMap::<_, Vec<_>>::new();
+        if belief_ids.is_empty() {
+            return Ok(by_belief);
+        }
+        let g = &self.graph_name;
+        let ids = belief_ids
+            .iter()
+            .map(|id| format!("'{id}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            r#"SELECT belief_id, chunk_id, document_path, section_path, content, weight
+FROM ag_catalog.cypher('{g}', $$
+  MATCH (c:DocumentChunk)-[r:GROUNDS]->(b:Belief)
+  WHERE b.id IN [{ids}]
+  RETURN b.id, c.id, c.documentPath, c.sectionPath, c.content, r.weight
+$$) AS (
+  belief_id text, chunk_id text, document_path text,
+  section_path text, content text, weight text
+)"#
+        );
+        let rows = {
+            let client = self.client.lock().await;
+            client.query(&sql, &[]).await?
+        };
+        for row in rows {
+            let belief_id = Uuid::parse_str(row.get("belief_id"))?;
+            let content: &str = row.get("content");
+            by_belief
+                .entry(belief_id)
+                .or_default()
+                .push(crate::EvidenceRef {
+                    chunk_id: Uuid::parse_str(row.get("chunk_id"))?,
+                    document_path: row.get("document_path"),
+                    section_path: serde_json::from_str(row.get("section_path")).unwrap_or_default(),
+                    snippet: content.trim().to_owned(),
+                    weight: row.get::<_, &str>("weight").parse()?,
+                });
+        }
+        for references in by_belief.values_mut() {
+            references.sort_by(|a, b| {
+                b.weight
+                    .partial_cmp(&a.weight)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            if let Some(limit) = limit {
+                references.truncate(limit);
+            }
+        }
+        Ok(by_belief)
+    }
+
     /// Remove every GROUNDS edge for the pair, recalculating in the same
     /// transaction if the removal changes the evidence weight.
     pub async fn delete_evidence(&self, chunk_id: Uuid, belief_id: Uuid) -> Result<()> {
