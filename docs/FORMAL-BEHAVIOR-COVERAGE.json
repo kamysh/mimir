@@ -580,7 +580,7 @@
       "status": "partially-specified",
       "rust_correspondence": "open; separate from behavioral specification",
       "completion_modules": [
-        "spec/Mimir/DocumentLoading.agda",
+        "spec/Mimir/DocumentLoading.lagda.md",
         "spec/Mimir/DocumentPublication.agda",
         "spec/Mimir/DocumentQuery.agda",
         "spec/Mimir/PublicRequest.agda",
@@ -607,7 +607,7 @@
       "status": "partially-specified",
       "rust_correspondence": "open; separate from behavioral specification",
       "completion_modules": [
-        "spec/Mimir/DocumentLoading.agda",
+        "spec/Mimir/DocumentLoading.lagda.md",
         "spec/Mimir/DocumentPublication.agda",
         "spec/Mimir/DocumentQuery.agda",
         "spec/Mimir/PublicRequest.agda",
@@ -634,7 +634,7 @@
       "status": "partially-specified",
       "rust_correspondence": "open; separate from behavioral specification",
       "completion_modules": [
-        "spec/Mimir/DocumentLoading.agda",
+        "spec/Mimir/DocumentLoading.lagda.md",
         "spec/Mimir/DocumentPublication.agda",
         "spec/Mimir/DocumentQuery.agda",
         "spec/Mimir/PublicRequest.agda",
@@ -1304,7 +1304,7 @@
         "EmbeddingBatch"
       ],
       "completion_modules": [
-        "spec/Mimir/DocumentLoading.agda",
+        "spec/Mimir/DocumentLoading.lagda.md",
         "spec/Mimir/DocumentPublication.agda",
         "spec/Mimir/CLI.agda",
         "spec/Mimir/ApplicationProtocol.agda"
@@ -1341,7 +1341,7 @@
         "EmbeddingBatch"
       ],
       "completion_modules": [
-        "spec/Mimir/DocumentLoading.agda",
+        "spec/Mimir/DocumentLoading.lagda.md",
         "spec/Mimir/DocumentPublication.agda",
         "spec/Mimir/CLI.agda",
         "spec/Mimir/ApplicationProtocol.agda"
@@ -1697,7 +1697,7 @@
       ],
       "completion_modules": [
         "spec/Mimir/EmbeddingBatch.agda",
-        "spec/Mimir/DocumentLoading.agda"
+        "spec/Mimir/DocumentLoading.lagda.md"
       ],
       "status": "partially-specified",
       "baseline_gap": "Compose backend readiness, output cardinality/dimension, belief/document association, scope threshold and side effects, including reembed.",

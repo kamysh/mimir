@@ -163,13 +163,16 @@ impl AgeStore {
             let id = Uuid::parse_str(row.get(0))?;
             ensure!(!proposed.contains(&id) || old.contains(&id), "generated chunk identity is already occupied");
         }
-        self.delete_document_chunks_in(&tx, &old).await?;
+        let affected = self
+            .detach_document_chunks_on(tx.client(), &old, true)
+            .await?;
         self.delete_chunk_embeddings_on(tx.client(), &old).await?;
         for (chunk, vector) in chunks.iter().zip(vectors) {
             self.insert_document_chunk_on(tx.client(), chunk).await?;
             self.insert_chunk_embedding_on(tx.client(), chunk.id, vector)
                 .await?;
         }
+        self.recompute_learning(&tx, None, affected).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -182,8 +185,11 @@ impl AgeStore {
         let old = self
             .get_chunk_ids_for_document_on(tx.client(), path)
             .await?;
-        self.delete_document_chunks_in(&tx, &old).await?;
+        let affected = self
+            .detach_document_chunks_on(tx.client(), &old, true)
+            .await?;
         self.delete_chunk_embeddings_on(tx.client(), &old).await?;
+        self.recompute_learning(&tx, None, affected).await?;
         tx.commit().await?;
         Ok(old.len())
     }
@@ -207,9 +213,14 @@ fn validate_document_batch(
         ensure!(ids.insert(chunk.id), "duplicate generated chunk identity");
     }
     if let Some(first) = vectors.first() {
+        ensure!(!first.is_empty(), "document embeddings must be nonempty");
         ensure!(
             vectors.iter().all(|v| v.len() == first.len()),
             "inconsistent document embedding dimensions"
+        );
+        ensure!(
+            vectors.iter().flatten().all(|value| value.is_finite()),
+            "document embeddings must contain only finite numbers"
         );
     }
     Ok(())
@@ -237,6 +248,12 @@ mod tests {
         )
         .is_ok());
         assert!(validate_document_batch("document", std::slice::from_ref(&chunk), &[]).is_err());
+        for vector in [vec![], vec![f32::INFINITY], vec![f32::NAN]] {
+            assert!(
+                validate_document_batch("document", std::slice::from_ref(&chunk), &[vector])
+                    .is_err()
+            );
+        }
         assert!(
             validate_document_batch("other", std::slice::from_ref(&chunk), &[vec![1.0]]).is_err()
         );
@@ -254,6 +271,130 @@ mod tests {
             &[vec![1.0], vec![1.0, 2.0]]
         )
         .is_err());
+    }
+
+    #[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
+    #[tokio::test]
+    async fn document_reload_rolls_back_late_failure_and_never_adds_evidence() {
+        struct FixtureEmbedder;
+        impl crate::embed::EmbeddingProvider for FixtureEmbedder {
+            fn embed<'a>(&'a self, texts: &'a [String]) -> crate::embed::EmbedFuture<'a> {
+                Box::pin(async move { Ok(vec![vec![1.0, 0.0]; texts.len()]) })
+            }
+        }
+
+        let fixture = isolation::fixture();
+        let mut service = crate::MimirService::connect(&crate::config::Config {
+            database: fixture.database_config(),
+            embeddings: None,
+            llm: None,
+            judge: None,
+            email: None,
+            retirement: None,
+        })
+        .await
+        .unwrap();
+        let project = format!("document-reload-{}", Uuid::new_v4());
+        let path = fixture.root.join(format!("{project}.md"));
+        let path = path.to_str().unwrap();
+        std::fs::write(path, "# Retention\nKeep backups for 30 days.\n").unwrap();
+        let belief = service
+            .add_belief_in_project(
+                "Keep backups for 30 days.",
+                0.5,
+                0.0,
+                &project,
+                MemoryType::Fact,
+            )
+            .await
+            .unwrap();
+        service
+            .store
+            .insert_belief_embedding(belief.id, &[1.0, 0.0])
+            .await
+            .unwrap();
+        service.embeddings = Some(Box::new(FixtureEmbedder));
+        assert_eq!(
+            service.load_document(path, Some(&project)).await.unwrap(),
+            1
+        );
+
+        let store = &service.store;
+        let old = store.get_chunk_ids_for_document(path).await.unwrap()[0];
+        let sources = || async { store.get_evidence_for_beliefs(&[belief.id]).await.unwrap() };
+        let probability = || async {
+            store
+                .get_belief(belief.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .probability
+        };
+        let has_vector = |id: Uuid| async move {
+            let client = store.client.lock().await;
+            client
+                .query_one(
+                    "SELECT EXISTS (SELECT 1 FROM chunk_embeddings WHERE chunk_id=$1)",
+                    &[&id],
+                )
+                .await
+                .unwrap()
+                .get::<_, bool>(0)
+        };
+        assert!(
+            sources().await.is_empty(),
+            "identical vectors must not create evidence"
+        );
+        store
+            .insert_evidence(old, belief.id, Probability::new(1.0).unwrap())
+            .await
+            .unwrap();
+        let grounded = probability().await;
+        assert!(grounded.value() > belief.probability.value());
+
+        std::fs::write(path, "# Retention revised\nKeep backups for 60 days.\n").unwrap();
+        {
+            let client = store.client.lock().await;
+            client.batch_execute("CREATE FUNCTION mimir_test_reject_chunk_vector() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture chunk vector rejected'; END $$; CREATE TRIGGER mimir_test_reject_chunk_vector BEFORE INSERT ON chunk_embeddings FOR EACH STATEMENT EXECUTE FUNCTION mimir_test_reject_chunk_vector()").await.unwrap();
+        }
+        let failed = service
+            .load_document(path, Some(&project))
+            .await
+            .unwrap_err();
+        {
+            let client = store.client.lock().await;
+            client.batch_execute("DROP TRIGGER mimir_test_reject_chunk_vector ON chunk_embeddings; DROP FUNCTION mimir_test_reject_chunk_vector()").await.unwrap();
+        }
+        assert!(failed.chain().any(|cause| cause
+            .downcast_ref::<tokio_postgres::Error>()
+            .and_then(tokio_postgres::Error::as_db_error)
+            .is_some_and(|detail| detail.message() == "fixture chunk vector rejected")));
+        assert_eq!(
+            store.get_chunk_ids_for_document(path).await.unwrap(),
+            vec![old]
+        );
+        assert!(has_vector(old).await);
+        assert_eq!(sources().await, vec![(belief.id, old, 1.0)]);
+        assert_eq!(probability().await, grounded);
+
+        assert_eq!(
+            service.load_document(path, Some(&project)).await.unwrap(),
+            1
+        );
+        let replacement = store.get_chunk_ids_for_document(path).await.unwrap()[0];
+        assert_ne!(replacement, old);
+        assert!(has_vector(replacement).await);
+        assert!(!has_vector(old).await);
+        assert!(sources().await.is_empty());
+        assert_eq!(probability().await, belief.probability);
+
+        store
+            .insert_evidence(replacement, belief.id, Probability::new(1.0).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(service.clear_document(path).await.unwrap(), 1);
+        assert!(!has_vector(replacement).await);
+        assert_eq!(probability().await, belief.probability);
     }
 
     #[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]

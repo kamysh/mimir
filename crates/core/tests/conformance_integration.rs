@@ -82,7 +82,7 @@ async fn closure_mixes_relations_crosses_depth_ten_and_deduplicates_cycles() {
 }
 
 #[tokio::test]
-async fn replacement_rejects_bad_preparation_and_rolls_back_late_vector_failure() {
+async fn replacement_rejects_bad_preparation_and_preserves_old_index() {
     let store = store().await;
     let cfg = config();
     let observer = db::connect(&cfg.database).await.unwrap();
@@ -101,8 +101,7 @@ async fn replacement_rejects_bad_preparation_and_rolls_back_late_vector_failure(
         .replace_document(&path, &[new.clone(), new.clone()], &[vec![1.0], vec![1.0]])
         .await
         .is_err());
-    // pgvector rejects NaN after the old graph/vector pair has been removed
-    // inside the still-uncommitted transaction. The old pair must survive.
+    // A malformed provider response must leave the old graph/vector pair intact.
     assert!(store
         .replace_document(&path, std::slice::from_ref(&new), &[vec![f32::NAN, 0.0]])
         .await

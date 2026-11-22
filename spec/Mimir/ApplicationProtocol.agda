@@ -92,7 +92,7 @@ module Run (environment : Environment) where
   module Standalone (project : Text) = Project.Standalone database calculation project
   module Grounding = Ground.Operation database calculation
   module GroundRecovery (request : Ground.Request) = Grounding.T.RecoveryPlan (Grounding.plan request)
-  module Document = Documents.Operations database dimension
+  module Document = Documents.Operations database dimension calculation
   module DocumentClearRecovery (path : Text) = Document.ClearRecovery path
   module DocumentReplaceRecovery (path : Text) (chunks : List DocumentStore.Chunk) (vectors : List Store.Vector) =
     Document.ReplaceRecovery path chunks vectors

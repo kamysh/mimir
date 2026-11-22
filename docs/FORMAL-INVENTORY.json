@@ -5150,7 +5150,7 @@
           "behavioral_area": [
             "spec/Mimir/Markdown.agda",
             "spec/Mimir/DocumentStore.agda",
-            "spec/Mimir/DocumentLoading.agda"
+            "spec/Mimir/DocumentLoading.lagda.md"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
         },
@@ -5163,7 +5163,7 @@
           "behavioral_area": [
             "spec/Mimir/Markdown.agda",
             "spec/Mimir/DocumentStore.agda",
-            "spec/Mimir/DocumentLoading.agda"
+            "spec/Mimir/DocumentLoading.lagda.md"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
         },
@@ -5176,7 +5176,7 @@
           "behavioral_area": [
             "spec/Mimir/Markdown.agda",
             "spec/Mimir/DocumentStore.agda",
-            "spec/Mimir/DocumentLoading.agda"
+            "spec/Mimir/DocumentLoading.lagda.md"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
         },
@@ -5189,7 +5189,7 @@
           "behavioral_area": [
             "spec/Mimir/Markdown.agda",
             "spec/Mimir/DocumentStore.agda",
-            "spec/Mimir/DocumentLoading.agda"
+            "spec/Mimir/DocumentLoading.lagda.md"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
         },
@@ -5206,7 +5206,7 @@
           "behavioral_area": [
             "spec/Mimir/Markdown.agda",
             "spec/Mimir/DocumentStore.agda",
-            "spec/Mimir/DocumentLoading.agda"
+            "spec/Mimir/DocumentLoading.lagda.md"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
         }
@@ -5217,7 +5217,7 @@
       "behavioral_specification": [
         "spec/Mimir/Markdown.agda",
         "spec/Mimir/DocumentStore.agda",
-        "spec/Mimir/DocumentLoading.agda"
+        "spec/Mimir/DocumentLoading.lagda.md"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked"
     },
@@ -7731,7 +7731,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -7754,7 +7754,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -7777,7 +7777,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -7800,7 +7800,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -7823,7 +7823,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -7846,7 +7846,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -7869,7 +7869,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -7892,7 +7892,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -7915,7 +7915,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -7938,7 +7938,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -7961,7 +7961,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -7984,7 +7984,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8007,7 +8007,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8030,7 +8030,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8053,7 +8053,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8076,7 +8076,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8099,7 +8099,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8122,7 +8122,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8145,7 +8145,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8168,7 +8168,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8191,7 +8191,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8214,7 +8214,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8237,7 +8237,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8260,7 +8260,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8283,7 +8283,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8306,7 +8306,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8329,7 +8329,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8352,7 +8352,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8375,7 +8375,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8398,7 +8398,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8421,7 +8421,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8444,7 +8444,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8467,7 +8467,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8490,7 +8490,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8513,7 +8513,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8536,7 +8536,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8559,7 +8559,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8582,7 +8582,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8605,7 +8605,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8632,7 +8632,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8659,7 +8659,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8682,7 +8682,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8705,7 +8705,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8728,7 +8728,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8751,7 +8751,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8774,7 +8774,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8797,7 +8797,7 @@
             "spec/Mimir/ProjectDeletion.lagda.md",
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentQuery.agda",
             "spec/Mimir/EvidenceRead.agda",
             "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -8818,7 +8818,7 @@
         "spec/Mimir/ProjectDeletion.lagda.md",
         "spec/Mimir/InferenceProtocol.agda",
         "spec/Mimir/RetrievalProtocol.agda",
-        "spec/Mimir/DocumentLoading.agda",
+        "spec/Mimir/DocumentLoading.lagda.md",
         "spec/Mimir/DocumentQuery.agda",
         "spec/Mimir/EvidenceRead.agda",
         "spec/Mimir/BeliefEmbedding.lagda.md"
@@ -10311,7 +10311,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/LearningTransaction.agda",
             "spec/Mimir/CandidateRegistry.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentPublication.agda",
             "spec/Mimir/DocumentStore.agda",
             "spec/Mimir/GraphMutationProtocol.agda"
@@ -10328,7 +10328,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/LearningTransaction.agda",
             "spec/Mimir/CandidateRegistry.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentPublication.agda",
             "spec/Mimir/DocumentStore.agda",
             "spec/Mimir/GraphMutationProtocol.agda"
@@ -10345,7 +10345,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/LearningTransaction.agda",
             "spec/Mimir/CandidateRegistry.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentPublication.agda",
             "spec/Mimir/DocumentStore.agda",
             "spec/Mimir/GraphMutationProtocol.agda"
@@ -10362,7 +10362,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/LearningTransaction.agda",
             "spec/Mimir/CandidateRegistry.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentPublication.agda",
             "spec/Mimir/DocumentStore.agda",
             "spec/Mimir/GraphMutationProtocol.agda"
@@ -10379,7 +10379,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/LearningTransaction.agda",
             "spec/Mimir/CandidateRegistry.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentPublication.agda",
             "spec/Mimir/DocumentStore.agda",
             "spec/Mimir/GraphMutationProtocol.agda"
@@ -10396,7 +10396,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/LearningTransaction.agda",
             "spec/Mimir/CandidateRegistry.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentPublication.agda",
             "spec/Mimir/DocumentStore.agda",
             "spec/Mimir/GraphMutationProtocol.agda"
@@ -10413,7 +10413,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/LearningTransaction.agda",
             "spec/Mimir/CandidateRegistry.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentPublication.agda",
             "spec/Mimir/DocumentStore.agda",
             "spec/Mimir/GraphMutationProtocol.agda"
@@ -10430,7 +10430,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/LearningTransaction.agda",
             "spec/Mimir/CandidateRegistry.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentPublication.agda",
             "spec/Mimir/DocumentStore.agda",
             "spec/Mimir/GraphMutationProtocol.agda"
@@ -10447,7 +10447,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/LearningTransaction.agda",
             "spec/Mimir/CandidateRegistry.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentPublication.agda",
             "spec/Mimir/DocumentStore.agda",
             "spec/Mimir/GraphMutationProtocol.agda"
@@ -10464,7 +10464,7 @@
             "spec/Mimir/InferenceProtocol.agda",
             "spec/Mimir/LearningTransaction.agda",
             "spec/Mimir/CandidateRegistry.agda",
-            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentLoading.lagda.md",
             "spec/Mimir/DocumentPublication.agda",
             "spec/Mimir/DocumentStore.agda",
             "spec/Mimir/GraphMutationProtocol.agda"
@@ -10480,7 +10480,7 @@
         "spec/Mimir/InferenceProtocol.agda",
         "spec/Mimir/LearningTransaction.agda",
         "spec/Mimir/CandidateRegistry.agda",
-        "spec/Mimir/DocumentLoading.agda",
+        "spec/Mimir/DocumentLoading.lagda.md",
         "spec/Mimir/DocumentPublication.agda",
         "spec/Mimir/DocumentStore.agda",
         "spec/Mimir/GraphMutationProtocol.agda"
