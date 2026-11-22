@@ -1,3 +1,19 @@
+# How an MCP tool call becomes an application operation
+
+An MCP client sends a tool name and arguments. The exchange layer owns the
+request identity and the response delivery. The application handler decides
+which operation the request denotes, whether its arguments are valid, and
+what result the operation produces. This module connects those layers.
+
+That connection matters because a well-formed exchange alone can carry an
+arbitrary tool reply. Here a tool event carries evidence that the concrete
+handler processed the same identity, name, and arguments. The resulting reply
+is tied to that handler's result. Response delivery is the external effect at
+this boundary.
+
+[Exchange protocol](McpExchange.agda) · [Typed tool handler](McpToolExecution.agda) · [Application protocol](ApplicationProtocol.agda)
+
+```agda
 {-# OPTIONS --safe #-}
 -- Server transport composed with the concrete application handler. Ordinary
 -- exchange traces alone allowed arbitrary handleTool replies; this relation
@@ -32,6 +48,20 @@ module Compose (environment : Application.Environment) (format : Encoding.Format
     using (Diagnostic; operationFailed; userDecisionRequired; invalidArguments; unknownTool; Result; Handled)
   module A = Application.Run environment using (Result; Event; failed; mutated)
 
+```
+
+## Choose the reply from the application result
+
+A completed operation supplies its public value. Invalid arguments and unknown
+tools supply correction guidance. An operation failure or a required decision
+supplies a request for input. The latter replies are useful to the caller even
+though the requested application operation did not complete.
+
+The formatter can describe a diagnostic. The cases in Materialized determine
+the kind of reply. In particular, a database failure while publishing a belief
+gives guidance to resolve the prerequisite and retry after cleanup.
+
+```agda
   -- The formatter cannot select application success.
   module WithDiagnostic (render : H.Diagnostic → Text) where
     diagnostic : H.Diagnostic → Text
@@ -75,6 +105,18 @@ module Compose (environment : Application.Environment) (format : Encoding.Format
       unknown : ∀ name → Materialized (inj₁ (H.unknownTool name)) (inj₂ (toolCorrection name))
       value : ∀ schema → Materialized (inj₂ schema) (inj₂ schema)
 
+```
+
+## Establish what the caller receives
+
+The proofs pin each diagnostic to its application reply. A required decision
+carries the reason and guidance from the handler. An argument refusal carries
+the field path and correction information. The general result covers every
+handler diagnostic that can be materialized. Each travels as an MCP tool
+result with an application status, so the caller can tell correction and
+recovery from ordinary completion.
+
+```agda
     decisionIsNotAnError : ∀ reason guidance reply →
       Materialized (inj₁ (H.userDecisionRequired reason guidance)) reply →
       reply ≡ inj₂ (decisionRequest reason guidance)
@@ -100,6 +142,17 @@ module Compose (environment : Application.Environment) (format : Encoding.Format
     diagnosticCannotBeFatal _ _ (invalid fault) = _ , refl
     diagnosticCannotBeFatal _ _ (unknown name) = _ , refl
 
+```
+
+## Keep the application evidence when composing the exchange
+
+The execution relation follows the exchange one event at a time. A transport
+delivery keeps the store unchanged. A tool call uses the store before and after
+the application handler, carries the typed operation trace, and continues the
+exchange from the resulting store. transportPreserved recovers the ordinary
+exchange trace by forgetting the extra application evidence.
+
+```agda
     data Event : Set where
       external : (effect : Exchange.Effect) → External effect → Exchange.Reply effect → Event
       tool : Envelope.Identity → Envelope.Text → JSON.Value → List A.Event → Text ⊎ JSON.Value → Event
@@ -126,3 +179,18 @@ module Compose (environment : Application.Environment) (format : Encoding.Format
       Exchange.replied effect continuation reply (transportPreserved (continuation reply) before events₁ after result proof)
     transportPreserved program before events after result (tool identityValue name args continuation .before applicationEvents applicationResult middle reply events₁ .after result₁ handled materialized proof) =
       Exchange.replied (Exchange.handleTool identityValue name args) continuation reply (transportPreserved (continuation reply) middle events₁ after result proof)
+```
+
+## Where Rust implements the boundary
+
+The [MCP request loop](../../crates/mcp/src/main.rs#L1182) reads the tool name and
+arguments and passes them to [the handler](../../crates/mcp/src/main.rs#L633).
+The handler checks the arguments before dispatching through the Rust operation
+table. The request loop then returns a value or a structured status through
+the [tool response formatter](../../crates/mcp/src/main.rs#L1233).
+
+The correction payloads currently differ. The Agda encoding puts the field
+path at the top level and gives an unavailable tool its own reply shape. Rust
+uses the same refusal formatter for invalid arguments and unknown tools, with
+the field path inside `fault`. The proofs above establish the Agda reply and
+its recovery behavior. Exact correspondence of those fields remains open.

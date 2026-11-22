@@ -12054,7 +12054,7 @@
           "status": "partially-specified",
           "behavioral_area": [
             "spec/Mimir/McpRuntimeComposition.agda",
-            "spec/Mimir/McpApplicationComposition.agda",
+            "spec/Mimir/McpApplicationComposition.lagda.md",
             "spec/Mimir/McpToolExecution.agda",
             "spec/Mimir/PublicRequest.agda",
             "spec/Mimir/PublicEncoding.agda",
@@ -12073,7 +12073,7 @@
           "status": "partially-specified",
           "behavioral_area": [
             "spec/Mimir/McpRuntimeComposition.agda",
-            "spec/Mimir/McpApplicationComposition.agda",
+            "spec/Mimir/McpApplicationComposition.lagda.md",
             "spec/Mimir/McpToolExecution.agda",
             "spec/Mimir/PublicRequest.agda",
             "spec/Mimir/PublicEncoding.agda",
@@ -12090,7 +12090,7 @@
           "status": "partially-specified",
           "behavioral_area": [
             "spec/Mimir/McpRuntimeComposition.agda",
-            "spec/Mimir/McpApplicationComposition.agda",
+            "spec/Mimir/McpApplicationComposition.lagda.md",
             "spec/Mimir/McpToolExecution.agda",
             "spec/Mimir/PublicRequest.agda",
             "spec/Mimir/PublicEncoding.agda",
@@ -12107,7 +12107,7 @@
           "status": "partially-specified",
           "behavioral_area": [
             "spec/Mimir/McpRuntimeComposition.agda",
-            "spec/Mimir/McpApplicationComposition.agda",
+            "spec/Mimir/McpApplicationComposition.lagda.md",
             "spec/Mimir/McpToolExecution.agda",
             "spec/Mimir/PublicRequest.agda",
             "spec/Mimir/PublicEncoding.agda",
@@ -12124,7 +12124,7 @@
           "status": "partially-specified",
           "behavioral_area": [
             "spec/Mimir/McpRuntimeComposition.agda",
-            "spec/Mimir/McpApplicationComposition.agda",
+            "spec/Mimir/McpApplicationComposition.lagda.md",
             "spec/Mimir/McpToolExecution.agda",
             "spec/Mimir/PublicRequest.agda",
             "spec/Mimir/PublicEncoding.agda",
@@ -12141,7 +12141,7 @@
           "status": "partially-specified",
           "behavioral_area": [
             "spec/Mimir/McpRuntimeComposition.agda",
-            "spec/Mimir/McpApplicationComposition.agda",
+            "spec/Mimir/McpApplicationComposition.lagda.md",
             "spec/Mimir/McpToolExecution.agda",
             "spec/Mimir/PublicRequest.agda",
             "spec/Mimir/PublicEncoding.agda",
@@ -12158,7 +12158,7 @@
           "status": "partially-specified",
           "behavioral_area": [
             "spec/Mimir/McpRuntimeComposition.agda",
-            "spec/Mimir/McpApplicationComposition.agda",
+            "spec/Mimir/McpApplicationComposition.lagda.md",
             "spec/Mimir/McpToolExecution.agda",
             "spec/Mimir/PublicRequest.agda",
             "spec/Mimir/PublicEncoding.agda",
@@ -12175,7 +12175,7 @@
           "status": "partially-specified",
           "behavioral_area": [
             "spec/Mimir/McpRuntimeComposition.agda",
-            "spec/Mimir/McpApplicationComposition.agda",
+            "spec/Mimir/McpApplicationComposition.lagda.md",
             "spec/Mimir/McpToolExecution.agda",
             "spec/Mimir/PublicRequest.agda",
             "spec/Mimir/PublicEncoding.agda",
@@ -12192,7 +12192,7 @@
           "status": "partially-specified",
           "behavioral_area": [
             "spec/Mimir/McpRuntimeComposition.agda",
-            "spec/Mimir/McpApplicationComposition.agda",
+            "spec/Mimir/McpApplicationComposition.lagda.md",
             "spec/Mimir/McpToolExecution.agda",
             "spec/Mimir/PublicRequest.agda",
             "spec/Mimir/PublicEncoding.agda",
@@ -12215,7 +12215,7 @@
           "status": "partially-specified",
           "behavioral_area": [
             "spec/Mimir/McpRuntimeComposition.agda",
-            "spec/Mimir/McpApplicationComposition.agda",
+            "spec/Mimir/McpApplicationComposition.lagda.md",
             "spec/Mimir/McpToolExecution.agda",
             "spec/Mimir/PublicRequest.agda",
             "spec/Mimir/PublicEncoding.agda",
@@ -12232,7 +12232,7 @@
           "status": "partially-specified",
           "behavioral_area": [
             "spec/Mimir/McpRuntimeComposition.agda",
-            "spec/Mimir/McpApplicationComposition.agda",
+            "spec/Mimir/McpApplicationComposition.lagda.md",
             "spec/Mimir/McpToolExecution.agda",
             "spec/Mimir/PublicRequest.agda",
             "spec/Mimir/PublicEncoding.agda",
@@ -12249,7 +12249,7 @@
           "status": "partially-specified",
           "behavioral_area": [
             "spec/Mimir/McpRuntimeComposition.agda",
-            "spec/Mimir/McpApplicationComposition.agda",
+            "spec/Mimir/McpApplicationComposition.lagda.md",
             "spec/Mimir/McpToolExecution.agda",
             "spec/Mimir/PublicRequest.agda",
             "spec/Mimir/PublicEncoding.agda",
@@ -12266,7 +12266,7 @@
           "status": "partially-specified",
           "behavioral_area": [
             "spec/Mimir/McpRuntimeComposition.agda",
-            "spec/Mimir/McpApplicationComposition.agda",
+            "spec/Mimir/McpApplicationComposition.lagda.md",
             "spec/Mimir/McpToolExecution.agda",
             "spec/Mimir/PublicRequest.agda",
             "spec/Mimir/PublicEncoding.agda",
@@ -12281,7 +12281,7 @@
       "classification": "production-behavior",
       "behavioral_specification": [
         "spec/Mimir/McpRuntimeComposition.agda",
-        "spec/Mimir/McpApplicationComposition.agda",
+        "spec/Mimir/McpApplicationComposition.lagda.md",
         "spec/Mimir/McpToolExecution.agda",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/PublicEncoding.agda",
