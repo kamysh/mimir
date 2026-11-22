@@ -153,9 +153,11 @@ module Run (environment : Environment) where
       beliefWasAbsent : Ranking.lookup (Graph.BeliefValues.identity belief) (Store.beliefs before) ≡ nothing
       beliefStored : Ranking.lookup (Graph.BeliefValues.identity belief) (Store.beliefs after) ≡ just belief
       vectorStored : (Graph.BeliefValues.identity belief , BeliefEmbedding.vector material) ∈ Store.World.beliefVectors after
+      -- Recording the selected passage adds no evidence mass for later inference.
       sourceStored : Σ Store.Ground (λ source → source ∈ Store.World.grounds after ×
         Store.Ground.belief source ≡ Graph.BeliefValues.identity belief ×
-        Store.Ground.chunk source ≡ DocumentStore.Chunk.identity (BeliefEmbedding.Prepared.supportingPassage material))
+        Store.Ground.chunk source ≡ DocumentStore.Chunk.identity (BeliefEmbedding.Prepared.supportingPassage material) ×
+        Store.Ground.weight source ≡ 0.0)
       contentMatches : Graph.BeliefValues.content belief ≡ BeliefEmbedding.Draft.content proposal
       projectMatches : Graph.BeliefValues.project belief ≡ BeliefEmbedding.Draft.project proposal
       memoryMatches : Graph.BeliefValues.memory belief ≡ BeliefEmbedding.Draft.memory proposal

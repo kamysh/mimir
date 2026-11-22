@@ -96,10 +96,10 @@ the saved belief or reports a failure.
 In Rust, PostgreSQL generates the belief UUID inside the transaction that
 writes the belief, its vector, and its source link. The store checks the
 passage again before commit because it can change while the embedding is
-being prepared. The source link carries zero evidence weight in Rust, so
-attaching the passage preserves the supplied probability. The application
-spec requires the link and the saved probability, but does not constrain
-the link's weight.
+being prepared. Both the application contract and Rust require the source
+link to have zero evidence weight. The link records the source while
+preserving the supplied probability and adding no evidence mass for
+later recalculation.
 
 [Publication transaction](../../crates/core/src/store.rs#L534) · [Publication requirements in Agda](ApplicationProtocol.agda#L145)
 
@@ -150,7 +150,7 @@ request. If preparation succeeded but publication failed, the application
 protocol specifies rollback separately. Once the prerequisite is fixed,
 the caller can restart the request from the beginning.
 
-[Publication failure and rollback](ApplicationProtocol.agda#L525)
+[Publication failure and rollback](ApplicationProtocol.agda#L527)
 
 ```agda
 -- A request for a user decision has not issued the publication operation.
