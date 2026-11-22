@@ -96,10 +96,7 @@ the saved belief or reports a failure.
 In Rust, PostgreSQL generates the belief UUID inside the transaction that
 writes the belief, its vector, and its source link. The store checks the
 passage again before commit because it can change while the embedding is
-being prepared. Both the application contract and Rust require the source
-link to have zero evidence weight. The link records the source while
-preserving the supplied probability and adding no evidence mass for
-later recalculation.
+being prepared.
 
 [Publication transaction](../../crates/core/src/store.rs#L534) · [Publication requirements in Agda](ApplicationProtocol.agda#L145)
 
@@ -140,6 +137,37 @@ start enabled input with admit enabled input
     (inj₂ belief) → done (inj₂ belief)
 
 ```
+
+## Why the source link has zero evidence weight
+
+A supporting passage makes a belief traceable. An agent can inspect the
+passage later and see what the author relied on. The publication request
+contains no separate judgment about how much the passage should change
+the belief's probability. A similarity score helps rank passages for
+inspection. It supplies no such judgment.
+
+For example, if the caller submits a belief with probability 0.60 and
+cites a retention policy, Mimir saves the belief at 0.60 with a link to
+that policy. Recalculation reads the weights of source links. A nonzero
+weight here could change the belief later, even though publication
+returned 0.60. The zero weight makes the citation's contribution zero.
+Other evidence can still change the belief.
+
+Agda requires two facts in the publication receipt. The saved
+probability equals the submitted probability, and the link to the
+selected passage has weight zero. The first controls what publication
+saves. The second controls what the citation contributes to future
+calculations. Rust writes both values in the publication transaction.
+
+[Direct publication receipt](ApplicationProtocol.agda#L157) · [Weights read for recalculation](ApplicationStore.agda#L114) · [Rust source write](../../crates/core/src/store.rs#L610)
+
+Review-created beliefs follow the same rule. Their Agda publication
+proof requires the source row with zero weight and shows that attaching
+the prepared materials preserves the proposed belief values. Adding
+weighted evidence is a separate operation that takes an explicit weight
+and recalculates the affected beliefs.
+
+[Review publication proof](ReviewBeliefPreparation.agda#L57) · [Explicit evidence weight](GroundingPublication.agda#L59)
 
 ## What the proof says about asking for input
 
