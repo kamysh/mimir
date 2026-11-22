@@ -20,7 +20,7 @@ import Mimir.Recovery as Recovery
 
 -- The database allocates either a whole experience or an owned learning item.
 data IdentityRequest : Set where
-  experienceIdentity : UUID → Text → IdentityRequest
+  experienceIdentity : Text → IdentityRequest
   itemIdentity : UUID → Text → Text → Text → IdentityRequest
 
 module Over (State Value Failure : Set) (database key : ℕ) where

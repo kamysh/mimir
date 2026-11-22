@@ -470,11 +470,9 @@ The application loop is:
 
 1. `record_experience` records a project, situation, action, observed outcome,
    evidence references, and optionally the beliefs/procedure used. For creation,
-   send a stable `request_key` and `expected_revision: 0`, omitting
-   `experience.id`. PostgreSQL assigns the returned `experience.id`. To correct
-   the record, send that ID with its current revision and omit `request_key`.
-   Replaying the same creation request does
-   not count another observation. Evidence references are supplied by the
+   send `expected_revision: 0` and omit `experience.id`. PostgreSQL assigns the
+   returned `experience.id`. To correct the record, send that ID with its current
+   revision. Evidence references are supplied by the
    caller; Mimir does not independently verify their contents.
 2. `pending_experiences` returns a bounded batch of new or changed experiences,
    oldest first. The runner can run frequently and exit immediately on an empty
@@ -505,8 +503,8 @@ The application loop is:
 `experience_history` exposes previous observations and judgments.
 `explain_belief` returns incoming reasoning edges and paged active reviews,
 linking an inferred probability back to the observations that influenced it.
-Retries are deduplicated by incident UUID, not by semantic similarity: callers
-must reuse the same identity rather than submit the same incident under new IDs.
+After a successful creation, keep the returned UUID. Corrections and reviews
+refer to the existing experience by that UUID and use the applicable revision.
 
 Reviews can explicitly mark `superseded_beliefs`. These leave normal retrieval
 even when their original prior is strong. This is separate from probabilistic

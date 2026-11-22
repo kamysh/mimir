@@ -392,72 +392,54 @@ impl AgeStore {
     }
     /// All learning changes are serialized across MCP processes. Graph writes and
     /// the queue acknowledgement commit together; failures leave work pending.
+    pub async fn create_experience(&self, input: &NewExperience) -> Result<ExperienceState> {
+        input.validate()?;
+        let mut client = self.client.lock().await;
+        let tx = learning_transaction(&mut client).await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        let id = tx
+            .query_one(
+                "INSERT INTO mimir_experiences(project,revision) VALUES($1,1) RETURNING id",
+                &[&input.project],
+            )
+            .await?
+            .get(0);
+        self.save_experience(tx, input.clone().with_identity(id), 0, None)
+            .await
+    }
+
     pub async fn record_experience(
         &self,
         experience: &Experience,
         expected: i64,
     ) -> Result<ExperienceState> {
-        let request_key = (expected == 0).then_some(experience.id);
-        self.record_experience_with_key(experience, expected, request_key)
-            .await
-    }
-
-    pub(crate) async fn record_experience_with_key(
-        &self,
-        experience: &Experience,
-        expected: i64,
-        request_key: Option<Uuid>,
-    ) -> Result<ExperienceState> {
         experience.validate()?;
         ensure!(
-            (0..i64::MAX).contains(&expected),
-            "expected_revision must be nonnegative"
+            (1..i64::MAX).contains(&expected),
+            "A correction requires the current positive revision"
         );
         let mut client = self.client.lock().await;
         let tx = learning_transaction(&mut client).await?;
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
             .await?;
-        let mut allocated = experience.clone();
-        let prior = if let Some(key) = request_key {
-            ensure!(
-                expected == 0,
-                "a creation request key requires expected_revision=0"
-            );
-            let saved = tx
-                .query_opt(
-                    &format!(
-                        "{CURRENT} WHERE e.creation_request_key=$1
-                         OR (e.creation_request_key IS NULL AND e.id=$1)"
-                    ),
-                    &[&key],
-                )
-                .await?;
-            match saved {
-                Some(row) => {
-                    let saved = state(&row)?;
-                    allocated.id = saved.experience.id;
-                    Some(saved)
-                }
-                None => {
-                    // Allocate the row first for the ownership FK. The allocation,
-                    // request key and first version commit or roll back together.
-                    allocated.id = tx.query_one(
-                        "INSERT INTO mimir_experiences(project,revision,creation_request_key) VALUES($1,1,$2) RETURNING id",
-                        &[&experience.project, &key],
-                    ).await?.get(0);
-                    None
-                }
-            }
-        } else {
-            ensure!(expected > 0, "new experience requires a request key");
-            let row = tx
-                .query_opt(&format!("{CURRENT} WHERE e.id=$1"), &[&experience.id])
-                .await?
-                .context(
-                    "Experience not found. Use the experience UUID returned by record_experience.",
-                )?;
-            Some(state(&row)?)
-        };
+        let row = tx
+            .query_opt(&format!("{CURRENT} WHERE e.id=$1"), &[&experience.id])
+            .await?
+            .context(
+                "Experience not found. Use the experience UUID returned by record_experience.",
+            )?;
+        self.save_experience(tx, experience.clone(), expected, Some(state(&row)?))
+            .await
+    }
+
+    async fn save_experience(
+        &self,
+        tx: Transaction<'_>,
+        mut allocated: Experience,
+        expected: i64,
+        prior: Option<ExperienceState>,
+    ) -> Result<ExperienceState> {
         Self::resolve_item_ids(&tx, allocated.id, &mut allocated.learning_items).await?;
         let experience = &allocated;
         let payload = serde_json::to_string(experience)?;
@@ -481,8 +463,6 @@ impl AgeStore {
                 "stale experience revision: current is {}",
                 p.revision
             );
-        } else {
-            ensure!(expected == 0, "new experience requires expected_revision=0");
         }
         let target_ids: HashSet<_> = experience.belief_ids.iter().copied().collect();
         let beliefs = self.learning_beliefs_for_ids(&tx, &target_ids).await?;

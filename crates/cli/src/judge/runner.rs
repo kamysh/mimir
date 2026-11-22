@@ -1560,7 +1560,11 @@ mod tests {
             source_records: vec![],
         };
         let e = make_experience();
-        let e = service.record_experience(&e, 0).await.unwrap().experience;
+        let e = service
+            .create_experience(&e.clone().with_identity(()))
+            .await
+            .unwrap()
+            .experience;
         let mut fake = Fake {
             mode: Mode::Review,
             calls: 0,
@@ -1606,7 +1610,11 @@ mod tests {
 
         for mode in [Mode::FalseDone, Mode::Stale, Mode::Crash, Mode::Correct] {
             let e = make_experience();
-            let e = service.record_experience(&e, 0).await.unwrap().experience;
+            let e = service
+                .create_experience(&e.clone().with_identity(()))
+                .await
+                .unwrap()
+                .experience;
             let mut backend = Fake {
                 mode,
                 calls: 0,
@@ -1643,12 +1651,12 @@ mod tests {
         let first = make_experience();
         let second = make_experience();
         let first = service
-            .record_experience(&first, 0)
+            .create_experience(&first.clone().with_identity(()))
             .await
             .unwrap()
             .experience;
         let second = service
-            .record_experience(&second, 0)
+            .create_experience(&second.clone().with_identity(()))
             .await
             .unwrap()
             .experience;

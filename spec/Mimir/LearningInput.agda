@@ -6,6 +6,7 @@ module Mimir.LearningInput where
 
 open import Data.List using (List; _++_)
 open import Data.Maybe using (Maybe)
+open import Data.Unit using (⊤)
 open import Mimir.UUIDGroups using (UUID)
 open import Data.Integer using (ℤ)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
@@ -39,10 +40,10 @@ canonicalAssessment : Assessment → List UUID → L.Assessment
 canonicalAssessment input resolved = record (Assessment.value input)
   { itemIDs = L.Assessment.itemIDs (Assessment.value input) ++ resolved }
 
-record Experience : Set where
+record ExperienceOf (Identity : Set) : Set where
   constructor experience
   field
-    identity : UUID
+    identity : Identity
     project context action : Text
     outcome : X.Outcome
     provenance : Source.Provenance
@@ -51,6 +52,18 @@ record Experience : Set where
     patternID : Maybe UUID
     items : List Item
     sources : List Source.Source
+
+Experience : Set
+Experience = ExperienceOf UUID
+
+module Experience = ExperienceOf
+
+NewExperience : Set
+NewExperience = ExperienceOf ⊤
+
+assignExperience : UUID → NewExperience → Experience
+assignExperience id (experience _ project context action outcome provenance evidence beliefs patternID items sources) =
+  experience id project context action outcome provenance evidence beliefs patternID items sources
 
 canonicalExperience : Experience → List L.LearningItem → X.Experience
 canonicalExperience input assigned = X.experience (Experience.identity input)

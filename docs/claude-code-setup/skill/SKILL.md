@@ -74,14 +74,11 @@ arrive together, keep the requirement direct and the observed incident in its
 experience; state their different provenance. Do not turn a user report into
 `tool_result` merely because it passed through an MCP tool.
 
-Use a stable `request_key` UUID and `expected_revision: 0` on first submission,
-omitting `experience.id`. Reuse the key for an exact creation retry. Keep the
-returned PostgreSQL UUID and revision with the task's receipt. Retrieve the
-existing experience and correct it using the returned UUID
-with its current revision, and describe what changed. If the earlier ID is lost,
-look for the existing incident before creating another; different UUIDs for one
-real-world event cannot be deduplicated automatically.
-Retries must not create new independent observations. Include relevant belief
+Use `expected_revision: 0` on first submission and omit `experience.id`. Keep
+the returned PostgreSQL UUID and revision with the task's receipt. To correct an
+observation, retrieve it and use its UUID and current revision. Retry creation
+after a reported rollback. After success, use the returned UUID to refer to
+the existing observation. Include relevant belief
 IDs and a pattern ID when an approach actually used them. State provenance honestly:
 `tool_result` for observed tool receipts, `user_feedback` for the user's report,
 `agent_report` for your own assessment. Use `unknown` when success is unverified.
@@ -91,7 +88,7 @@ writing the user's report through an MCP tool does not turn it into tool evidenc
 Never store credentials or sensitive raw logs.
 
 After a retrieved lesson influences a later action, record that later action and
-its *observed* outcome as a new experience with its own incident UUID, the used
+its *observed* outcome as a new experience with the used
 `belief_ids`, and the used `pattern_id` when applicable. Record `unknown` if
 the result was not verified. Correct this later experience under the same UUID
 if the outcome changes. The act of retrieval or choosing an action is not a

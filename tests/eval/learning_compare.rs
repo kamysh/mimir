@@ -300,7 +300,7 @@ impl Scenario {
     }
 }
 
-fn experience(id: Uuid, project: &str, scenario: Scenario, corrected: bool) -> Value {
+fn experience(project: &str, scenario: Scenario, corrected: bool) -> Value {
     let (outcome, source, evidence) = if corrected {
         (
             "failure",
@@ -310,7 +310,7 @@ fn experience(id: Uuid, project: &str, scenario: Scenario, corrected: bool) -> V
     } else {
         scenario.initial()
     };
-    json!({"id":id.to_string(),"project":project,"context":format!("{}: stale keyboard layout indicator over RDP", scenario.name()),
+    json!({"project":project,"context":format!("{}: stale keyboard layout indicator over RDP", scenario.name()),
         "action":"restart keyboard layout process after checking loaded configuration",
         "outcome":outcome,"source":source,"evidence":[evidence],"belief_ids":[]})
 }
@@ -333,7 +333,6 @@ fn run_case(
     arm: &Arm,
     arm_name: &str,
     scenario: Scenario,
-    id: Uuid,
     run: &RunDir,
     mimir: &Path,
     mcp: &Path,
@@ -343,7 +342,7 @@ fn run_case(
     let config = variant(arm, run, &format!("{base}.toml"), &project, mcp)?;
     let state = run.0.join(format!("{base}-state"));
     let work = (|| -> Result<Value> {
-        let initial = experience(id, &project, scenario, false);
+        let initial = experience(&project, scenario, false);
         let recorded = mcp_call(
             mcp,
             &config,
@@ -375,7 +374,8 @@ fn run_case(
         )?;
         let mut second = Value::Null;
         if matches!(scenario, Scenario::Corrected) {
-            let changed = experience(id, &project, scenario, true);
+            let mut changed = experience(&project, scenario, true);
+            changed["id"] = json!(id.to_string());
             let updated = mcp_call(
                 mcp,
                 &config,
@@ -387,17 +387,19 @@ fn run_case(
             second = judge(mimir, &correction, &state)?;
         }
         if matches!(scenario, Scenario::Repeated) {
+            let mut repeated = initial;
+            repeated["id"] = json!(id.to_string());
             let retried = mcp_call(
                 mcp,
                 &config,
                 "record_experience",
-                json!({"experience":initial,"expected_revision":0}),
+                json!({"experience":repeated,"expected_revision":1}),
             )?;
             ensure!(
                 retried["revision"] == 1,
-                "exact retry changed source revision"
+                "resubmitting the unchanged experience changed its revision"
             );
-            // The exact source retry is checked from persisted history below.
+            // Check the unchanged submission against persisted history below.
             // A second judge run cannot add evidence for the same incident.
         }
         let history = mcp_call(
@@ -465,11 +467,10 @@ fn main() -> Result<()> {
         return Ok(());
     }
     let run = RunDir::new()?;
-    let ids: Vec<_> = Scenario::all().iter().map(|_| Uuid::new_v4()).collect();
     let mut results = Vec::new();
     for (arm_name, arm) in [("a", &a), ("b", &b)] {
-        for (scenario, id) in Scenario::all().into_iter().zip(ids.iter().copied()) {
-            let result = run_case(arm, arm_name, scenario, id, &run, &args.mimir, &args.mcp)
+        for scenario in Scenario::all() {
+            let result = run_case(arm, arm_name, scenario, &run, &args.mimir, &args.mcp)
                 .with_context(|| format!("comparison artifacts: {}", run.0.display()))?;
             run.write(
                 &format!("{arm_name}-{}.json", scenario.name()),

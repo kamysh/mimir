@@ -37,16 +37,7 @@ record World : Set where
     reviewTimes : List ReviewTime
     grounding : List (UUID × Float)
     independentOrigins : List (UUID × Independent.Stored)
-    -- Includes the implicit key of each pre-upgrade row whose ID was also
-    -- its original creation key. Existing public IDs are preserved.
-    creationKeys : List (UUID × UUID)
     itemKeys : Allocation.Keys
-
-creationIdentity : UUID → List (UUID × UUID) → Maybe UUID
-creationIdentity key [] = nothing
-creationIdentity key ((known , identity) ∷ rest) with key ≟UUID known
-... | yes same = just identity
-... | no different = creationIdentity key rest
 
 identities : World → List UUID
 identities w = map Read.identity (World.current w)

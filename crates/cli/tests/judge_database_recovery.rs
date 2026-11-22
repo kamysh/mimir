@@ -129,7 +129,7 @@ jq -c 'if (.history | length) > 0 then {calls:[]}
     };
     let first = new_experience();
     let first = service
-        .record_experience(&first, 0)
+        .create_experience(&first.clone().with_identity(()))
         .await
         .unwrap()
         .experience;
@@ -203,7 +203,7 @@ jq -c 'if (.history | length) > 0 then {calls:[]}
     wait_for_state(&status, "block_reason", "database_unavailable").await;
     let second = new_experience();
     let second = service
-        .record_experience(&second, 0)
+        .create_experience(&second.clone().with_identity(()))
         .await
         .unwrap()
         .experience;

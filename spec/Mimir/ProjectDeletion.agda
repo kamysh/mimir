@@ -8,7 +8,7 @@ open import Data.Bool using (Bool; true; false; not)
 open import Data.List using (List; []; _∷_; _++_; filterᵇ; map; length)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; _+_; z≤n)
-open import Data.Product using (Σ; _×_; _,_; proj₁; proj₂)
+open import Data.Product using (Σ; _×_; _,_; proj₁)
 open import Data.String using (toList)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
@@ -50,7 +50,6 @@ forgetLearning project w = record w { learning = record learn
   { current = filterᵇ (λ r → keep (Read.identity r)) (Learning.World.current learn)
   ; sources = filterᵇ (λ r → keep (Experience.Experience.identity (Learning.SourceVersion.payload r))) (Learning.World.sources learn)
   ; reviewTimes = filterᵇ (λ r → keep (Learning.ReviewTime.experience r)) (Learning.World.reviewTimes learn)
-  ; creationKeys = filterᵇ (λ binding → keep (proj₂ binding)) (Learning.World.creationKeys learn)
   ; itemKeys = keys
   ; publication = record pub
     { ledger = Ledger.world cells histories
