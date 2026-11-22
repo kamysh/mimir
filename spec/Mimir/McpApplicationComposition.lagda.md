@@ -38,6 +38,7 @@ import Mimir.ApplicationStore as Store
 import Mimir.PublicEncoding as Encoding
 import Mimir.StandardLibrary as Conversion
 import Mimir.Validation as Validation
+import Mimir.FaultWire as FaultWire
 
 data External : Exchange.Effect → Set where
   deliver : ∀ response → External (Exchange.deliver response)
@@ -77,14 +78,11 @@ gives guidance to resolve the prerequisite and retry after cleanup.
        ("next_action" , JSON.string guidance) ∷
        ("interaction" , JSON.string (toList "ask_user")) ∷ [])
 
-    pathSegment : Validation.Segment → JSON.Value
-    pathSegment (Validation.fieldKey name) = JSON.string name
-    pathSegment (Validation.index index) = JSON.unsigned index
-
     argumentCorrection : Validation.Fault → JSON.Value
     argumentCorrection fault = Encoding.object
       (("status" , JSON.string (toList "needs_correction")) ∷
-       ("path" , JSON.array (map pathSegment (Validation.Fault.path fault))) ∷
+       ("path" , JSON.array (map FaultWire.encodeSegment (Validation.Fault.path fault))) ∷
+       ("fault" , FaultWire.encode fault) ∷
        ("reason" , JSON.string (Validation.Fault.explanation fault)) ∷
        ("next_action" , JSON.string (toList "Correct the request using the reason and path, then retry. Consult the tool schema or ask the user if the intended value is unclear.")) ∷ [])
 
@@ -93,7 +91,7 @@ gives guidance to resolve the prerequisite and retry after cleanup.
       (("status" , JSON.string (toList "needs_correction")) ∷
        ("tool" , JSON.string name) ∷
        ("reason" , JSON.string (toList "This tool name is not available.")) ∷
-       ("next_action" , JSON.string (toList "List available tools and retry with the intended name. Ask the user if the intent is unclear.")) ∷ [])
+       ("next_action" , JSON.string (toList "Call tools/list and retry with the intended name. Ask the user if the intent is unclear.")) ∷ [])
 
     data Materialized : H.Result → Text ⊎ JSON.Value → Set where
       recoveryNeeded : ∀ cause → Materialized (inj₁ (H.operationFailed cause))
@@ -111,7 +109,9 @@ gives guidance to resolve the prerequisite and retry after cleanup.
 
 The proofs pin each diagnostic to its application reply. A required decision
 carries the reason and guidance from the handler. An argument refusal carries
-the field path and correction information. The general result covers every
+the field path at the top level and includes the full fault for clients that
+read its code, message, or path. An unknown-tool reply names the requested
+tool and directs the caller to `tools/list`. The general result covers every
 handler diagnostic that can be materialized. Each travels as an MCP tool
 result with an application status, so the caller can tell correction and
 recovery from ordinary completion.
@@ -183,14 +183,8 @@ exchange trace by forgetting the extra application evidence.
 
 ## Where Rust implements the boundary
 
-The [MCP request loop](../../crates/mcp/src/main.rs#L1182) reads the tool name and
-arguments and passes them to [the handler](../../crates/mcp/src/main.rs#L633).
+The [MCP request loop](../../crates/mcp/src/main.rs#L1197) reads the tool name and
+arguments and passes them to [the handler](../../crates/mcp/src/main.rs#L648).
 The handler checks the arguments before dispatching through the Rust operation
 table. The request loop then returns a value or a structured status through
-the [tool response formatter](../../crates/mcp/src/main.rs#L1233).
-
-The correction payloads currently differ. The Agda encoding puts the field
-path at the top level and gives an unavailable tool its own reply shape. Rust
-uses the same refusal formatter for invalid arguments and unknown tools, with
-the field path inside `fault`. The proofs above establish the Agda reply and
-its recovery behavior. Exact correspondence of those fields remains open.
+the [tool response formatter](../../crates/mcp/src/main.rs#L1254).
