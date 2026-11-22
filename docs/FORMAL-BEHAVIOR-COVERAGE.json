@@ -52,7 +52,7 @@
       "rust_correspondence": "open; separate from behavioral specification",
       "completion_modules": [
         "spec/Mimir/GraphDeletion.agda",
-        "spec/Mimir/ProjectDeletion.agda",
+        "spec/Mimir/ProjectDeletion.lagda.md",
         "spec/Mimir/ApplicationStore.agda",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
@@ -79,7 +79,7 @@
       "rust_correspondence": "open; separate from behavioral specification",
       "completion_modules": [
         "spec/Mimir/GraphDeletion.agda",
-        "spec/Mimir/ProjectDeletion.agda",
+        "spec/Mimir/ProjectDeletion.lagda.md",
         "spec/Mimir/ApplicationStore.agda",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
@@ -106,7 +106,7 @@
       "rust_correspondence": "open; separate from behavioral specification",
       "completion_modules": [
         "spec/Mimir/GraphDeletion.agda",
-        "spec/Mimir/ProjectDeletion.agda",
+        "spec/Mimir/ProjectDeletion.lagda.md",
         "spec/Mimir/ApplicationStore.agda",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
@@ -1127,7 +1127,7 @@
         "Graph"
       ],
       "completion_modules": [
-        "spec/Mimir/ProjectDeletion.agda",
+        "spec/Mimir/ProjectDeletion.lagda.md",
         "spec/Mimir/GraphWrites.agda",
         "spec/Mimir/CLI.agda",
         "spec/Mimir/ApplicationProtocol.agda"

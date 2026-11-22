@@ -1,3 +1,16 @@
+# What project deletion promises
+
+Deleting a project removes its beliefs, patterns, indexed document
+passages, and learning history in one database transaction. It also
+removes vectors and graph links attached to the deleted records. An
+unrelated project keeps its records. A link that crosses the boundary
+is removed if either endpoint is deleted.
+
+The reported count is the number of beliefs and document passages
+deleted. A project with only patterns or learning records can be
+successfully deleted with a count of zero.
+
+```agda
 {-# OPTIONS --safe #-}
 -- Project deletion removes all owned data in one transaction. Its returned
 -- count is the belief count plus the chunk count from the transaction's view;
@@ -40,6 +53,22 @@ import Mimir.DatabaseTransaction as DB
 import Mimir.Effects as Effects
 import Mimir.Recovery as Recovery
 
+```
+
+## Decide what the project owns
+
+The project tag selects beliefs, patterns, document passages and
+experiences. The original belief and passage UUIDs identify the
+vectors to remove. Experience UUIDs identify learning history,
+review records, candidate reservations, assessments and item
+ownership.
+
+For example, deleting a belief must also delete its vector. If
+the belief were deleted in a separate committed step, a retry could
+no longer discover its UUID. This contract takes ownership from the
+original store and treats the entire deletion as one transaction.
+
+```agda
 ownedExperiences : Text → Learning.World → List UUID
 ownedExperiences project w = map Read.identity (filterᵇ (Read.scopeMatches (just project)) (Learning.World.current w))
 
@@ -103,6 +132,16 @@ intended project w = forgetLearning project
 deletedCount : Text → Store.World → ℕ
 deletedCount project w = length (Writes.projectBeliefs project w) + length (projectChunks project w)
 
+```
+
+## Check which records must be gone
+
+The proofs below check the result against the original ownership
+keys. They cover the project records, their vectors, attachments,
+and learning references. Proofs that rows remain absent let the
+retry argument use the original keys throughout.
+
+```agda
 -- Records owned by the project must be absent after deletion.
 data NoRows {A : Set} (key : A → UUID) (ids : List UUID) : List A → Set where
   noRows : NoRows key ids []
@@ -448,6 +487,16 @@ ownerStaysCleared : ∀ project before item → ownerOf before item ≡ nothing 
   ownerOf (intended project before) item ≡ nothing
 ownerStaysCleared project before item cleared rewrite cleared = refl
 
+```
+
+## Read the deletion result
+
+The deletion guarantee lists the records that must be absent from
+the final store. It refers to the project before the request ran.
+An empty lookup on retry cannot stand in for proof that all the
+original records were removed.
+
+```agda
 -- The observable goal is stated against ownership in the original world,
 -- not against whatever keys a retry can still discover.
 record Deleted (project : Text) (before after : Store.World) : Set where
@@ -491,6 +540,23 @@ record Deleted (project : Text) (before after : Store.World) : Set where
 published : Text → Store.World → Store.World
 published = intended
 
+```
+
+## Roll back and restart the original request
+
+The database applies the deletion as a unit. An attempt that fails
+before commit leaves the original store. The caller can restart the
+same request after correcting the cause, without a saved checkpoint.
+The retry theorem says that after any interrupted attempts, a
+completed retry removes the records owned by the original project.
+
+The proof uses the application's transaction contract. A committed
+transaction succeeds and the caller receives its result. PostgreSQL
+provides atomic commit.
+
+[Rust deletion transaction](../../crates/core/src/store.rs#L661) · [PostgreSQL rollback test](../../crates/core/src/store/conformance.rs#L477)
+
+```agda
 module Operation (database : ℕ) where
   module T = Transaction.Over Store.World ℕ Text database 671942183
 
@@ -738,6 +804,26 @@ module Operation (database : ℕ) where
       (∀ world → Property world → Property (published project world)) → Property final
     prove cleared preserves = retryAfterInterruptions project before intermediate final cleared preserves attempts retry
 
+```
+
+## How application dispatch uses the proof
+
+The application uses the recovery contract below for project deletion.
+Its observations ask whether the originally owned records still exist.
+A reported success follows transaction commit.
+
+### Open correspondence issue for surviving beliefs
+
+The Agda transaction describes the structural deletion and preserves
+the stored numerical values of survivors. Rust additionally recalculates
+surviving beliefs grounded in a deleted passage. For example, a weighted
+link from an Alpha passage to a Beta belief disappears when Alpha is
+deleted, and Rust recalculates the Beta belief. The current Agda
+transaction has no rule for that recalculation.
+
+[Agda deletion state](#decide-what-the-project-owns) · [Rust deletes passages and recalculates affected beliefs](../../crates/core/src/store.rs#L1704)
+
+```agda
 -- The operation's outcome is stated against the initial project ownership.
 module Standalone (database : ℕ) (project : Text) where
   module P = Operation database
@@ -1099,3 +1185,4 @@ module Standalone (database : ℕ) (project : Text) where
   module CertifiedDeletion = R.Transactional atomicDeletion
   recovery : R.Recoverable ⊤
   recovery = CertifiedDeletion.transactional
+```

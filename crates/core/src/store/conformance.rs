@@ -488,21 +488,96 @@ mod tests {
         )
         .unwrap();
         store.insert_belief(&belief).await.unwrap();
+        store
+            .insert_belief_embedding(belief.id, &[1.0, 0.0])
+            .await
+            .unwrap();
+        let survivor = Belief::new_in_project(
+            "surviving belief grounded in the deleted project".into(),
+            0.5,
+            0.0,
+            format!("{project}-survivor"),
+        )
+        .unwrap();
+        store.insert_belief(&survivor).await.unwrap();
+        let path = format!("/fixture/{project}.md");
+        let passage = DocumentChunk::new(
+            path.clone(),
+            vec![],
+            "This passage supports the surviving belief.".into(),
+            None,
+            Some(project.clone()),
+        );
+        store
+            .replace_document(&path, std::slice::from_ref(&passage), &[vec![1.0, 0.0]])
+            .await
+            .unwrap();
+        store
+            .insert_evidence(passage.id, survivor.id, Probability::new(1.0).unwrap())
+            .await
+            .unwrap();
+        let with_evidence = store.get_belief(survivor.id).await.unwrap().unwrap();
+        assert!(with_evidence.probability.value() > survivor.probability.value());
+        let vectors_exist = || async {
+            let client = store.client.lock().await;
+            let row = client
+                .query_one(
+                    "SELECT EXISTS (SELECT 1 FROM belief_embeddings WHERE belief_id = $1), \
+                 EXISTS (SELECT 1 FROM chunk_embeddings WHERE chunk_id = $2)",
+                    &[&belief.id, &passage.id],
+                )
+                .await
+                .unwrap();
+            (row.get::<_, bool>(0), row.get::<_, bool>(1))
+        };
         // A statement trigger rejects a later deletion inside the transaction.
-        // Every earlier graph mutation must roll back with it.
+        // The deleted graph, vectors and recalculated posterior must roll back.
         {
             let client = store.client.lock().await;
-            client.batch_execute("CREATE FUNCTION mimir_test_reject_delete() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture deletion rejected'; END $$; CREATE TRIGGER mimir_test_reject_delete BEFORE DELETE ON belief_embeddings FOR EACH STATEMENT EXECUTE FUNCTION mimir_test_reject_delete()").await.unwrap();
+            client.batch_execute("CREATE FUNCTION mimir_test_reject_delete() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture deletion rejected'; END $$; CREATE TRIGGER mimir_test_reject_delete BEFORE DELETE ON mimir_experiences FOR EACH STATEMENT EXECUTE FUNCTION mimir_test_reject_delete()").await.unwrap();
         }
-        let failed = store.delete_project(&project).await;
+        let failed = store.delete_project_complete(&project).await;
         {
             let client = store.client.lock().await;
-            client.batch_execute("DROP TRIGGER mimir_test_reject_delete ON belief_embeddings; DROP FUNCTION mimir_test_reject_delete()").await.unwrap();
+            client.batch_execute("DROP TRIGGER mimir_test_reject_delete ON mimir_experiences; DROP FUNCTION mimir_test_reject_delete()").await.unwrap();
         }
-        assert!(failed.is_err());
+        let error = failed.unwrap_err();
+        assert!(error.chain().any(|cause| cause
+            .downcast_ref::<tokio_postgres::Error>()
+            .and_then(tokio_postgres::Error::as_db_error)
+            .is_some_and(|detail| detail.message() == "fixture deletion rejected")));
         assert!(store.get_belief(belief.id).await.unwrap().is_some());
-        store.delete_project(&project).await.unwrap();
+        assert!(store.get_chunk_by_id(passage.id).await.unwrap().is_some());
+        assert_eq!(vectors_exist().await, (true, true));
+        assert_eq!(
+            store
+                .get_belief(survivor.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .probability,
+            with_evidence.probability
+        );
+        assert_eq!(
+            store.delete_project_complete(&project).await.unwrap(),
+            (1, 1)
+        );
         assert!(store.get_belief(belief.id).await.unwrap().is_none());
+        assert!(store.get_chunk_by_id(passage.id).await.unwrap().is_none());
+        assert_eq!(vectors_exist().await, (false, false));
+        assert_eq!(
+            store
+                .get_belief(survivor.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .probability,
+            survivor.probability
+        );
+        assert_eq!(
+            store.delete_project_complete(&project).await.unwrap(),
+            (0, 0)
+        );
     }
 
     #[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
