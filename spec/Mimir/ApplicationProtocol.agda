@@ -50,7 +50,6 @@ import Mimir.ReviewObservation as Observation
 import Mimir.LearningQueryProtocol as Query
 import Mimir.ExperienceRead as ExperienceRead
 import Mimir.AssessmentRead as AssessmentRead
-import Mimir.LearningHistory as LearningHistory
 import Mimir.IndependentProvenance as Origin
 import Mimir.Validation as Validation
 import Mimir.LearningCandidates as Candidates
@@ -200,7 +199,6 @@ module Run (environment : Environment) where
   querySucceeded (Query.invalidRequest _) = ⊥
   querySucceeded (Query.invalidTarget _) = ⊥
   querySucceeded (Query.pendingResult ExperienceRead.invalidLimit) = ⊥
-  querySucceeded (Query.historyResult LearningHistory.inconsistentHistory) = ⊥
   querySucceeded (Query.scoreResult AssessmentRead.missingScope) = ⊥
   querySucceeded (Query.scoreResult (AssessmentRead.invalidTarget _)) = ⊥
   querySucceeded (Query.assessmentHistoryResult AssessmentRead.invalidPage) = ⊥

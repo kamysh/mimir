@@ -231,17 +231,34 @@ impl AgeStore {
     }
     pub async fn experience_history(&self, id: Uuid) -> Result<serde_json::Value> {
         let client = self.client.lock().await;
-        let mut result = serde_json::json!({"experiences": [], "reviews": []});
-        for (table, key) in [
-            ("mimir_experience_versions", "experiences"),
-            ("mimir_review_versions", "reviews"),
-        ] {
-            let rows = client.query(&format!("SELECT revision,payload::text,created_at FROM {table} WHERE experience_id=$1 ORDER BY revision"), &[&id]).await?;
-            result[key] = serde_json::Value::Array(rows.iter().map(|row| {
-                Ok(serde_json::json!({"revision":row.get::<_,i64>(0), "payload":serde_json::from_str::<serde_json::Value>(row.get::<_,&str>(1))?, "created_at":row.get::<_,chrono::DateTime<chrono::Utc>>(2)}))
-            }).collect::<Result<_>>()?);
+        // Both arms share the same PostgreSQL statement snapshot.
+        let rows = client
+            .query(
+                "SELECT false AS is_review, revision, payload::text, created_at
+             FROM mimir_experience_versions WHERE experience_id=$1
+             UNION ALL
+             SELECT true, revision, payload::text, created_at
+             FROM mimir_review_versions WHERE experience_id=$1
+             ORDER BY is_review, revision",
+                &[&id],
+            )
+            .await?;
+        let mut experiences = Vec::new();
+        let mut reviews = Vec::new();
+        for row in rows {
+            let payload: serde_json::Value = serde_json::from_str(row.get("payload"))?;
+            let entry = serde_json::json!({
+                "revision": row.get::<_, i64>("revision"),
+                "payload": payload,
+                "created_at": row.get::<_, chrono::DateTime<chrono::Utc>>("created_at"),
+            });
+            if row.get("is_review") {
+                reviews.push(entry);
+            } else {
+                experiences.push(entry);
+            }
         }
-        Ok(result)
+        Ok(serde_json::json!({"experiences": experiences, "reviews": reviews}))
     }
     async fn learning_beliefs_for_ids(
         &self,

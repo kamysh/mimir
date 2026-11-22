@@ -662,7 +662,7 @@
         "spec/Mimir/AssessmentHistory.agda",
         "spec/Mimir/ReviewEdges.agda",
         "spec/Mimir/ReviewRecomputeTraversal.agda",
-        "spec/Mimir/LearningHistory.agda",
+        "spec/Mimir/LearningHistory.lagda.md",
         "spec/Mimir/LearningQueryProtocol.agda"
       ],
       "status": "partially-specified",
@@ -839,7 +839,7 @@
       "completion_modules": [
         "spec/Mimir/LearningOperations.agda",
         "spec/Mimir/LearningPublication.agda",
-        "spec/Mimir/LearningHistory.agda",
+        "spec/Mimir/LearningHistory.lagda.md",
         "spec/Mimir/LearningTransaction.agda",
         "spec/Mimir/LearningTransactionReceipt.agda",
         "spec/Mimir/LearningQueryProtocol.agda",
@@ -944,7 +944,7 @@
       "completion_modules": [
         "spec/Mimir/LearningOperations.agda",
         "spec/Mimir/LearningPublication.agda",
-        "spec/Mimir/LearningHistory.agda",
+        "spec/Mimir/LearningHistory.lagda.md",
         "spec/Mimir/LearningTransaction.agda",
         "spec/Mimir/LearningTransactionReceipt.agda",
         "spec/Mimir/LearningQueryProtocol.agda",
@@ -972,7 +972,7 @@
         "spec/Mimir/ItemOwnerBatch.agda",
         "spec/Mimir/LearningTransaction.agda",
         "spec/Mimir/LearningTransactionReceipt.agda",
-        "spec/Mimir/LearningHistory.agda",
+        "spec/Mimir/LearningHistory.lagda.md",
         "spec/Mimir/LearningQueryProtocol.agda"
       ],
       "status": "partially-specified",
@@ -980,7 +980,7 @@
       "completion_modules": [
         "spec/Mimir/LearningOperations.agda",
         "spec/Mimir/LearningPublication.agda",
-        "spec/Mimir/LearningHistory.agda",
+        "spec/Mimir/LearningHistory.lagda.md",
         "spec/Mimir/LearningTransaction.agda",
         "spec/Mimir/LearningTransactionReceipt.agda",
         "spec/Mimir/LearningQueryProtocol.agda",

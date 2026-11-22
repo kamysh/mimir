@@ -265,6 +265,122 @@ mod tests {
         ));
     }
 
+    #[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
+    #[tokio::test]
+    async fn experience_history_observes_both_version_lists_together() -> Result<()> {
+        use serde_json::json;
+
+        let config = isolation::fixture().database_config();
+        let mut writer = crate::db::connect(&config).await?;
+        let reader = crate::db::connect(&config).await?;
+        let reader_pid: i32 = reader
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await?
+            .get(0);
+        let store = AgeStore::new(reader, config.dbname.clone())?;
+        let observer = crate::db::connect(&config).await?;
+        let tx = writer.transaction().await?;
+        let id: Uuid = tx
+            .query_one(
+                "INSERT INTO mimir_experiences(project,revision,review_revision,reviewed_revision)
+             VALUES ('history-fixture',1,1,1) RETURNING id",
+                &[],
+            )
+            .await?
+            .get(0);
+        tx.execute(
+            "INSERT INTO mimir_experience_versions(experience_id,revision,payload)
+                    VALUES($1,1,'{\"legacy_experience\":[1,null,true]}'::jsonb)",
+            &[&id],
+        )
+        .await?;
+        tx.execute("INSERT INTO mimir_review_versions(experience_id,revision,experience_revision,payload)
+                    VALUES($1,1,1,'{\"experience_revision\":1,\"legacy_review\":{\"note\":\"first\"}}'::jsonb)", &[&id]).await?;
+        tx.commit().await?;
+
+        let before = store.experience_history(id).await?;
+        let tx = writer.transaction().await?;
+        tx.batch_execute("LOCK TABLE mimir_review_versions IN ACCESS EXCLUSIVE MODE")
+            .await?;
+        let current_source = json!({
+            "id": id, "project": "history-fixture", "context": "test history concurrency",
+            "action": "correct the observed event", "outcome": "unknown",
+            "source": "agent_report", "evidence": []
+        });
+        let current_review = json!({
+            "experience_id": id, "experience_revision": 2, "reviewer": "fixture",
+            "rationale": "review the corrected observation"
+        });
+        // Leave valid current payloads for subsequent tests that read the
+        // live ledger. The old rows still exercise schema-independent history.
+        tx.execute(
+            "INSERT INTO mimir_experience_versions(experience_id,revision,payload)
+                    VALUES($1,2,$2::text::jsonb)",
+            &[&id, &current_source.to_string()],
+        )
+        .await?;
+        tx.execute(
+            "INSERT INTO mimir_review_versions(experience_id,revision,experience_revision,payload)
+                    VALUES($1,2,2,$2::text::jsonb)",
+            &[&id, &current_review.to_string()],
+        )
+        .await?;
+        tx.execute(
+            "UPDATE mimir_experiences SET revision=2,review_revision=2,reviewed_revision=2
+                    WHERE id=$1",
+            &[&id],
+        )
+        .await?;
+
+        let mut reading = std::pin::pin!(store.experience_history(id));
+        // With two SELECTs, the experience read finishes before the review
+        // SELECT waits on this lock. Commit the new versions at that boundary.
+        tokio::select! {
+            finished = &mut reading => anyhow::bail!("history returned before the writer released its lock: {finished:?}"),
+            blocked = async {
+                loop {
+                    let row = observer.query_one(
+                        "SELECT cardinality(pg_blocking_pids($1)) > 0",
+                        &[&reader_pid],
+                    ).await?;
+                    if row.get::<_, bool>(0) {
+                        return Ok::<(), tokio_postgres::Error>(());
+                    }
+                }
+            } => blocked?,
+        }
+        tx.commit().await?;
+        let during = reading.await?;
+        let after = store.experience_history(id).await?;
+        ensure!(
+            during == before || during == after,
+            "history combined different database views: {during}"
+        );
+        for key in ["experiences", "reviews"] {
+            let entries = after[key].as_array().expect("history array");
+            ensure!(entries.len() == 2);
+            ensure!(entries[0]["revision"] == 1 && entries[1]["revision"] == 2);
+            ensure!(entries.iter().all(|entry| entry["created_at"].is_string()));
+        }
+        ensure!(
+            after["experiences"][0]["payload"] == json!({"legacy_experience": [1, null, true]})
+        );
+        ensure!(
+            after["reviews"][0]["payload"]
+                == json!({"experience_revision": 1, "legacy_review": {"note": "first"}})
+        );
+        ensure!(after["reviews"][1]["payload"] == current_review);
+
+        let unknown: Uuid = observer
+            .query_one("SELECT gen_random_uuid()", &[])
+            .await?
+            .get(0);
+        ensure!(
+            store.experience_history(unknown).await? == json!({"experiences": [], "reviews": []})
+        );
+        Ok(())
+    }
+
     #[test]
     fn document_admission_checks_count_shape_path_and_duplicate_id() {
         let chunk = DocumentChunk::new("document".into(), vec![], "text".into(), None, None);
