@@ -443,7 +443,7 @@
       "status": "partially-specified",
       "rust_correspondence": "open; separate from behavioral specification",
       "completion_modules": [
-        "spec/Mimir/RetrievalProtocol.agda",
+        "spec/Mimir/RetrievalProtocol.lagda.md",
         "spec/Mimir/RetrievalRanking.agda",
         "spec/Mimir/EvidenceRead.lagda.md",
         "spec/Mimir/PublicRequest.agda",
@@ -1013,7 +1013,7 @@
         "spec/Mimir/LearningContextProtocol.agda",
         "spec/Mimir/LearningContext.agda",
         "spec/Mimir/LearningAssessmentQueries.agda",
-        "spec/Mimir/RetrievalProtocol.agda",
+        "spec/Mimir/RetrievalProtocol.lagda.md",
         "spec/Mimir/RetrievalRanking.agda",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
@@ -1109,7 +1109,7 @@
         "Evidence"
       ],
       "completion_modules": [
-        "spec/Mimir/RetrievalProtocol.agda",
+        "spec/Mimir/RetrievalProtocol.lagda.md",
         "spec/Mimir/RetrievalRanking.agda",
         "spec/Mimir/EvidenceRead.lagda.md",
         "spec/Mimir/CLI.agda",

@@ -1942,36 +1942,23 @@ $$) AS (ok ag_catalog.agtype)"#
             .collect()
     }
 
-    /// Like `query_beliefs_by_vector`, but restricted to `filter_ids`: the
-    /// cosine ranking runs only over that id set, so a project-scoped caller's
-    /// top-K window can't be crowded out by other projects' embeddings (which
-    /// `belief_id = ANY($2)` in `query_beliefs_by_vector` alone cannot do,
-    /// since there is no `project` column on `belief_embeddings`).
-    pub async fn query_beliefs_by_vector_filtered(
+    /// Rank every eligible belief whose stored vector has a cosine direction.
+    pub(crate) async fn rank_eligible_belief_vectors(
         &self,
         query_vec: &[f32],
-        limit: usize,
-        filter_ids: &[Uuid],
+        eligible_ids: &[Uuid],
     ) -> Result<Vec<Uuid>> {
-        if filter_ids.is_empty() {
-            return Ok(Vec::new());
-        }
         let vec = Vector::from(query_vec.to_vec());
-        let limit_clause = if limit > 0 {
-            format!("LIMIT {limit}")
-        } else {
-            String::new()
-        };
-        let sql = format!(
-            "SELECT belief_id::text FROM public.belief_embeddings \
-             WHERE belief_id = ANY($2) \
-             ORDER BY embedding <=> $1 {limit_clause}"
-        );
         let client = self.client.lock().await;
-        let rows = client.query(&sql, &[&vec, &filter_ids]).await?;
-        rows.iter()
-            .map(|r| Ok(Uuid::parse_str(r.get::<_, &str>("belief_id"))?))
-            .collect()
+        let rows = client
+            .query(
+                "SELECT belief_id FROM public.belief_embeddings \
+                 WHERE belief_id = ANY($2) AND vector_norm(embedding) > 0.0 \
+                 ORDER BY embedding <=> $1",
+                &[&vec, &eligible_ids],
+            )
+            .await?;
+        Ok(rows.iter().map(|row| row.get("belief_id")).collect())
     }
 
     /// Cosine nearest-neighbour search over chunk_embeddings, returning (chunk_id, similarity).

@@ -23,6 +23,10 @@ use graph::{Belief, EdgeType, MemoryType, Pattern, Probability};
 use inference::InferenceEngine;
 use store::AgeStore;
 
+fn usable_cosine_vector(vector: &[f32]) -> bool {
+    vector.iter().all(|value| value.is_finite()) && vector.iter().any(|value| *value != 0.0)
+}
+
 /// Weighted Reciprocal Rank Fusion. Each ranked list contributes
 /// `weight / (K + rank)` (0-based rank, K = 60) to every id it contains; the
 /// per-id contributions sum. Score-agnostic (ranks only), so lists on
@@ -103,7 +107,7 @@ pub struct GroundedBelief {
 }
 
 /// Why semantic (vector) retrieval did not run for a query. Mirrors
-/// `UnavailableCause` in the specification (Mimir/RetrievalProtocol.agda); the
+/// `UnavailableCause` in the specification (Mimir/RetrievalProtocol.lagda.md); the
 /// cause must survive lexical/graph degradation into the public report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -164,11 +168,21 @@ impl SemanticSearchStatus {
         }
     }
 
-    /// The provider's reply contained no query vector.
+    /// The query contains no content that can be searched semantically.
+    fn unsupported_query() -> Self {
+        Self::NotAvailable {
+            cause: SemanticUnavailableCause::UnsupportedContent,
+            reason: "Semantic search is unavailable for a blank belief-search context.".to_string(),
+            next_action: "Provide text describing the beliefs you want to find and resubmit."
+                .to_string(),
+        }
+    }
+
+    /// The provider's reply cannot be used for cosine search.
     pub fn invalid_provider_reply() -> Self {
         Self::NotAvailable {
             cause: SemanticUnavailableCause::InvalidProviderReply,
-            reason: "Semantic search was not performed because the embedding provider returned no query vector."
+            reason: "Semantic search requires one finite, nonzero vector for the query. The embedding provider did not return one."
                 .to_string(),
             next_action: "These results use lexical and graph retrieval. Resolve the embedding provider response before requesting semantic search again."
                 .to_string(),
@@ -178,7 +192,7 @@ impl SemanticSearchStatus {
 
 /// The retrieval report: the query context, the ranked beliefs, and whether
 /// semantic search ran. Mirrors `Report` in the specification
-/// (Mimir/RetrievalProtocol.agda); serialized to match `retrievalReport` in
+/// (Mimir/RetrievalProtocol.lagda.md); serialized to match `retrievalReport` in
 /// Mimir/ApplicationOutput.agda.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct RetrievalReport<T> {
@@ -701,7 +715,7 @@ impl MimirService {
         }
 
         // ── Token list: beliefs whose lowercased content contains at least one
-        //    query term, ranked by distinct-term match count desc (tiebreak:
+        //    query term, ranked by term match count desc (tiebreak:
         //    probability desc).
         let q_lower = query.to_lowercase();
         let terms: Vec<String> = q_lower
@@ -738,39 +752,28 @@ impl MimirService {
             scored.into_iter().map(|(_, b)| b.id).collect()
         };
 
-        // ── Vector list: cosine top-k over belief_embeddings, when an
-        //    embedding backend is configured. The pool covers the requested
-        //    window; an unlimited query ranks every stored embedding instead of
-        //    a fixed sample. If the embedder itself fails (model unavailable,
-        //    network error, etc.) we degrade to token-only with a warning
-        //    rather than failing the whole query — partial recall beats none —
-        //    and the report records that semantic search was not performed.
-        let (vector_ranked, semantic_search): (Vec<Uuid>, SemanticSearchStatus) = match &self
-            .embeddings
-        {
-            None => (Vec::new(), SemanticSearchStatus::not_configured()),
-            Some(embedder) => {
-                let pool_size = if limit > 0 { (limit * 4).max(20) } else { 0 };
-                match embedder.embed(&[query.to_string()]).await {
-                    Ok(mut vecs) => match vecs.pop() {
-                        Some(qv) => {
-                            let ranked = match project {
-                                Some(_) => {
-                                    let ids: Vec<Uuid> = all.iter().map(|b| b.id).collect();
-                                    self.store
-                                        .query_beliefs_by_vector_filtered(&qv, pool_size, &ids)
-                                        .await?
-                                }
-                                None => self.store.query_beliefs_by_vector(&qv, pool_size).await?,
-                            };
+        // Rank all eligible embeddings before the response limit is applied.
+        // An unusable provider response leaves lexical and graph retrieval available.
+        let (vector_ranked, semantic_search): (Vec<Uuid>, SemanticSearchStatus) =
+            match &self.embeddings {
+                _ if terms.is_empty() => (Vec::new(), SemanticSearchStatus::unsupported_query()),
+                None => (Vec::new(), SemanticSearchStatus::not_configured()),
+                Some(embedder) => match embedder.embed(&[query.to_string()]).await {
+                    Ok(vectors) => match vectors.as_slice() {
+                        [vector] if usable_cosine_vector(vector) => {
+                            let ids: Vec<_> = all.iter().map(|belief| belief.id).collect();
+                            let ranked = self
+                                .store
+                                .rank_eligible_belief_vectors(vector, &ids)
+                                .await?;
                             (ranked, SemanticSearchStatus::Performed)
                         }
-                        None => (Vec::new(), SemanticSearchStatus::invalid_provider_reply()),
+                        _ => (Vec::new(), SemanticSearchStatus::invalid_provider_reply()),
                     },
                     Err(e) => {
                         tracing::warn!(
                             error = %e,
-                            "embedder failed for query — falling back to token-only retrieval. \
+                            "embedder failed for query — using lexical and graph retrieval. \
                              Verify [embeddings] config and that the model is reachable."
                         );
                         (
@@ -778,9 +781,8 @@ impl MimirService {
                             SemanticSearchStatus::provider_failure(&e.to_string()),
                         )
                     }
-                }
-            }
-        };
+                },
+            };
 
         // ── Candidate seed set: the deduplicated union of the token and vector
         //    lists (final order is decided later by weighted RRF, so only
@@ -809,7 +811,7 @@ impl MimirService {
             .filter_map(|id| by_id.get(id).map(|&b| b.clone()))
             .collect();
 
-        // ── Graph expansion: SUPPORTS/CAUSES reachable beliefs (unchanged).
+        // ── Graph expansion: SUPPORTS/CAUSES/DEFEATS reachable beliefs.
         let matched_ids: Vec<Uuid> = matched.iter().map(|b| b.id).collect();
         // The seeds are independent first-hop reads. Prefetch them in one
         // observation, then consume each seed in the original traversal order.
@@ -1050,8 +1052,7 @@ impl MimirService {
                 "Semantic document search is unavailable because the embedding provider failed. Resolve the provider failure and retry."
             ))?;
         let query_vector = match vectors.as_slice() {
-            [vector] if vector.iter().all(|value| value.is_finite())
-                && vector.iter().any(|value| *value != 0.0) => vector,
+            [vector] if usable_cosine_vector(vector) => vector,
             _ => anyhow::bail!("Semantic document search is unavailable. The embedding provider must return one finite, nonzero vector for the query. Correct the provider and retry."),
         };
         self.store

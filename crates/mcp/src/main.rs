@@ -912,7 +912,11 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'context'"))?;
             // Omitted limit selects all matches; admission rejects an explicit zero.
-            let limit = args["limit"].as_u64().unwrap_or(0) as usize;
+            let limit = args["limit"]
+                .as_u64()
+                .map(usize::try_from)
+                .transpose()?
+                .unwrap_or_default();
             let include_evidence = args["include_evidence"].as_bool().unwrap_or(false);
             let project = args["project"].as_str();
             let prefer_type = args["prefer_type"]
