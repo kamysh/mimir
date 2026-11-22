@@ -157,10 +157,18 @@ module For (conversion : Conversion.Contract) (format : Encoding.Formatting) (se
   ... | inj₂ value = require (Numeric.probability value) "invalid intervention value" args
   graphArguments _ args = done (inj₂ args)
 
+  graphScopeMessage : Text
+  graphScopeMessage = toList "Use a belief from the selected project for explanations or interventions. Global beliefs can be read with get_belief."
+
   exactGraph : Tools.Query → V.Value → V.Value → Script (Failure ⊎ V.Value)
   exactGraph kind args value with textIs project (get "project" value)
-  ... | false = done (inj₁ (invalidResponse (toList "cross-project graph explanation is not available to the judge")))
+  ... | false = done (inj₁ (rejected graphScopeMessage))
   ... | true = graphArguments kind args
+
+  graphScopeRefusal : ∀ kind args value →
+    textIs project (get "project" value) ≡ false →
+    exactGraph kind args value ≡ done (inj₁ (rejected graphScopeMessage))
+  graphScopeRefusal kind args value outside rewrite outside = refl
 
   ownedGraph : Tools.Query → Text → V.Value → Script (Failure ⊎ V.Value)
   ownedGraph Tools.belief id args = done (inj₂ args)
