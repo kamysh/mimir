@@ -500,6 +500,26 @@ mod tests {
         )
         .unwrap();
         store.insert_belief(&survivor).await.unwrap();
+        let linked = Belief::new_in_project(
+            "surviving belief supported by a deleted belief".into(),
+            0.5,
+            0.0,
+            format!("{project}-survivor"),
+        )
+        .unwrap();
+        store.insert_belief(&linked).await.unwrap();
+        let unrelated = Belief::new_in_project(
+            "unrelated surviving belief".into(),
+            0.8,
+            0.0,
+            format!("{project}-survivor"),
+        )
+        .unwrap();
+        store.insert_belief(&unrelated).await.unwrap();
+        let edge = Edge::new(belief.id, linked.id, EdgeType::Supports, 1.0).unwrap();
+        store.insert_edge_and_propagate(&edge).await.unwrap();
+        let with_support = store.get_belief(linked.id).await.unwrap().unwrap();
+        assert!(with_support.probability.value() > linked.probability.value());
         let path = format!("/fixture/{project}.md");
         let passage = DocumentChunk::new(
             path.clone(),
@@ -518,6 +538,13 @@ mod tests {
             .unwrap();
         let with_evidence = store.get_belief(survivor.id).await.unwrap().unwrap();
         assert!(with_evidence.probability.value() > survivor.probability.value());
+        let experience = serde_json::from_value(serde_json::json!({
+            "id": Uuid::new_v4(), "project": project, "context": "deletion rollback",
+            "action": "verify evidence", "outcome": "unknown", "source": "agent_report",
+            "evidence": ["isolated fixture"], "pattern_id": null
+        }))
+        .unwrap();
+        store.record_experience(&experience, 0).await.unwrap();
         let vectors_exist = || async {
             let client = store.client.lock().await;
             let row = client
@@ -530,11 +557,10 @@ mod tests {
                 .unwrap();
             (row.get::<_, bool>(0), row.get::<_, bool>(1))
         };
-        // A statement trigger rejects a later deletion inside the transaction.
-        // The deleted graph, vectors and recalculated posterior must roll back.
+        // Reject the commit after both deletion and recalculation ran.
         {
             let client = store.client.lock().await;
-            client.batch_execute("CREATE FUNCTION mimir_test_reject_delete() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture deletion rejected'; END $$; CREATE TRIGGER mimir_test_reject_delete BEFORE DELETE ON mimir_experiences FOR EACH STATEMENT EXECUTE FUNCTION mimir_test_reject_delete()").await.unwrap();
+            client.batch_execute("CREATE FUNCTION mimir_test_reject_delete() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture deletion rejected'; END $$; CREATE CONSTRAINT TRIGGER mimir_test_reject_delete AFTER DELETE ON mimir_experiences DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION mimir_test_reject_delete()").await.unwrap();
         }
         let failed = store.delete_project_complete(&project).await;
         {
@@ -559,6 +585,15 @@ mod tests {
             with_evidence.probability
         );
         assert_eq!(
+            store
+                .get_belief(linked.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .probability,
+            with_support.probability
+        );
+        assert_eq!(
             store.delete_project_complete(&project).await.unwrap(),
             (1, 1)
         );
@@ -573,6 +608,24 @@ mod tests {
                 .unwrap()
                 .probability,
             survivor.probability
+        );
+        assert_eq!(
+            store
+                .get_belief(linked.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .probability,
+            linked.probability
+        );
+        assert_eq!(
+            store
+                .get_belief(unrelated.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .probability,
+            unrelated.probability
         );
         assert_eq!(
             store.delete_project_complete(&project).await.unwrap(),

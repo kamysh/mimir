@@ -88,8 +88,8 @@ module Run (environment : Environment) where
   module RelationRecovery (command : Mutation.Statement) = Mutation.StatementRecovery command
   module DefeatRecovery (from to : UUID) (weight : Number) = Mutation.DefeatRecovery from to weight
   module DeleteRecovery (kind : Deletion.Kind) (id : UUID) = Delete.T.RecoveryPlan (Delete.delete kind id)
-  module Forget = Project.Operation database
-  module Standalone (project : Text) = Project.Standalone database project
+  module Forget = Project.Operation database calculation
+  module Standalone (project : Text) = Project.Standalone database calculation project
   module Grounding = Ground.Operation database calculation
   module GroundRecovery (request : Ground.Request) = Grounding.T.RecoveryPlan (Grounding.plan request)
   module Document = Documents.Operations database dimension
@@ -1464,8 +1464,8 @@ module Run (environment : Environment) where
         (Forget.learning (Forget.T.begin database) , inj₂ tx) ∷
         (Forget.learning (Forget.T.acquire tx 671942183) , inj₂ tt) ∷
         (Forget.learning (Forget.T.read tx) , inj₂ before) ∷
-        (Forget.learning (Forget.T.write tx (Project.published project before)) , inj₂ tt) ∷ [] →
-      DB.Atomic before (Project.published project before) (Forget.T.receipt reply) after →
+        (Forget.learning (Forget.T.write tx (Forget.outcome project before)) , inj₂ tt) ∷ [] →
+      Forget.Commit project before (Forget.T.receipt reply) after →
       RequestStep
         (forgetEffect (Forget.learning (Forget.T.commit tx))) (standaloneForgetState project (Standalone.R.running events
           (Forget.E.ask (Forget.learning (Forget.T.commit tx)) continuation) prefix)) reply before after
@@ -1474,8 +1474,8 @@ module Run (environment : Environment) where
         (Forget.learning (Forget.T.begin database) , inj₂ tx) ∷
         (Forget.learning (Forget.T.acquire tx 671942183) , inj₂ tt) ∷
         (Forget.learning (Forget.T.read tx) , inj₂ before) ∷
-        (Forget.learning (Forget.T.write tx (Project.published project before)) , inj₂ tt) ∷ [] →
-      DB.Atomic before (Project.published project before) (Forget.T.receipt reply) after →
+        (Forget.learning (Forget.T.write tx (Forget.outcome project before)) , inj₂ tt) ∷ [] →
+      Forget.Commit project before (Forget.T.receipt reply) after →
       RequestStep
         (forgetEffect (Forget.learning (Forget.T.commit tx))) (requestState identityValue (standaloneForgetState project (Standalone.R.running events
           (Forget.E.ask (Forget.learning (Forget.T.commit tx)) continuation) prefix))) reply before after

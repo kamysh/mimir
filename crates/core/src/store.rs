@@ -3,7 +3,7 @@ mod learning;
 use anyhow::{bail, ensure, Result};
 use chrono::DateTime;
 use pgvector::Vector;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_postgres::{Client, Row};
@@ -700,6 +700,31 @@ $$) AS (ok ag_catalog.agtype)"#
             })
             .collect();
 
+        let chunks = self.get_chunk_ids_by_project_on(client, project).await?;
+        let mut affected = HashSet::new();
+        if !ids.is_empty() {
+            let deleted = ids
+                .iter()
+                .map(|id| format!("'{id}'"))
+                .collect::<Vec<_>>()
+                .join(",");
+            let rows = client
+                .query(
+                    &format!(
+                        "SELECT id::text FROM ag_catalog.cypher('{g}', $$ \
+                 MATCH (a:Belief)-[r]->(b:Belief) \
+                 WHERE a.id IN [{deleted}] AND NOT (b.id IN [{deleted}]) \
+                   AND type(r) <> 'CONTRADICTS' AND r.weight > 0.0 \
+                 RETURN DISTINCT b.id $$) AS (id ag_catalog.agtype)"
+                    ),
+                    &[],
+                )
+                .await?;
+            for row in rows {
+                affected.insert(Uuid::parse_str(row.get(0))?);
+            }
+        }
+
         let stmt_del = format!("age_delproj_del_{}", Uuid::new_v4().simple());
         let prepare_del = format!(
             "PREPARE {stmt_del}(agtype) AS SELECT * \
@@ -724,8 +749,10 @@ $$) AS (ok ag_catalog.agtype)"#
                 &[&ids],
             )
             .await?;
-        let chunks = self.get_chunk_ids_by_project_on(client, project).await?;
-        self.delete_document_chunks_in(&tx, &chunks).await?;
+        affected.extend(
+            self.detach_document_chunks_on(client, &chunks, true)
+                .await?,
+        );
         self.delete_chunk_embeddings_on(client, &chunks).await?;
         client
             .execute(
@@ -733,6 +760,7 @@ $$) AS (ok ag_catalog.agtype)"#
                 &[&project],
             )
             .await?;
+        self.recompute_learning(&tx, None, affected).await?;
         tx.commit().await?;
         Ok((count, chunks.len()))
     }
@@ -1706,8 +1734,20 @@ $$) AS (ok ag_catalog.agtype)"#
         tx: &tokio_postgres::Transaction<'_>,
         ids: &[Uuid],
     ) -> Result<()> {
+        let affected = self
+            .detach_document_chunks_on(tx.client(), ids, false)
+            .await?;
+        self.recompute_learning(tx, None, affected).await
+    }
+
+    async fn detach_document_chunks_on(
+        &self,
+        client: &Client,
+        ids: &[Uuid],
+        weighted_only: bool,
+    ) -> Result<HashSet<Uuid>> {
         if ids.is_empty() {
-            return Ok(());
+            return Ok(HashSet::new());
         }
         let g = &self.graph_name;
         let id_list = ids
@@ -1722,14 +1762,18 @@ $$) AS (ok ag_catalog.agtype)"#
   RETURN 1
 $$) AS (ok ag_catalog.agtype)"#
         );
-        let grounded = tx.query(&format!("SELECT id::text FROM ag_catalog.cypher('{g}', $$ MATCH (c:DocumentChunk)-[:GROUNDS]->(b:Belief) WHERE c.id IN [{id_list}] RETURN DISTINCT b.id $$) AS (id ag_catalog.agtype)"), &[]).await?;
-        let affected: std::collections::HashSet<Uuid> = grounded
+        let weight_filter = if weighted_only {
+            " AND r.weight > 0.0"
+        } else {
+            ""
+        };
+        let grounded = client.query(&format!("SELECT id::text FROM ag_catalog.cypher('{g}', $$ MATCH (c:DocumentChunk)-[r:GROUNDS]->(b:Belief) WHERE c.id IN [{id_list}]{weight_filter} RETURN DISTINCT b.id $$) AS (id ag_catalog.agtype)"), &[]).await?;
+        let affected = grounded
             .iter()
             .map(|row| Uuid::parse_str(row.get::<_, &str>(0)))
             .collect::<std::result::Result<_, _>>()?;
-        tx.query(&sql, &[]).await?;
-        self.recompute_learning(tx, None, affected).await?;
-        Ok(())
+        client.query(&sql, &[]).await?;
+        Ok(affected)
     }
 
     /// Delete embedding rows for the given chunk IDs.

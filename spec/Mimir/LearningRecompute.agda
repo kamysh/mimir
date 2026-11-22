@@ -270,3 +270,19 @@ runGlobal calculation roots nodes edges reviews ground with prepareNodes (concat
 ... | just prepared | nothing = invalidNumericInput
 ... | just prepared | just incoming = finish nodes
   (Posterior.Calculation.calculate calculation false nothing (external (map Posterior.Node.identity prepared) (beliefs nodes)) incoming prepared)
+
+runGlobalPreservesIdentities : ∀ calculation roots nodes edges reviews ground after warning →
+  runGlobal calculation roots nodes edges reviews ground ≡ recomputed after warning →
+  map Graph.nodeID after ≡ map Graph.nodeID nodes
+runGlobalPreservesIdentities calculation roots nodes edges reviews ground after warning proof
+  with prepareNodes (concatMap Review.Review.feedbacks reviews) ground chosen
+  | prepareEdges (map Graph.BeliefValues.identity chosen) edges
+  where chosen = selected (closureScoped nothing (beliefs nodes) edges roots) (beliefs nodes)
+... | nothing | _ with proof
+...   | ()
+runGlobalPreservesIdentities calculation roots nodes edges reviews ground after warning proof | just prepared | nothing with proof
+... | ()
+runGlobalPreservesIdentities calculation roots nodes edges reviews ground after warning proof | just prepared | just incoming =
+  finishPreservesIdentities nodes
+    (Posterior.Calculation.calculate calculation false nothing
+      (external (map Posterior.Node.identity prepared) (beliefs nodes)) incoming prepared) after warning proof
