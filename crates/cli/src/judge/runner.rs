@@ -1,7 +1,7 @@
 use super::{
     config::RuntimeConfig,
     mcp::{CandidateConflict, Client, McpApplicationError, UndeclaredBeliefCandidate},
-    notification,
+    notification, repair,
     state::{self, DeferredReview, FailureDiagnostic, RepairCase, Report, SourceFailure, State},
 };
 use anyhow::{anyhow, bail, ensure, Result};
@@ -560,6 +560,8 @@ async fn run_inner<B: Backend>(
         let mut last_rejection: Option<(String, String, Option<SourceFailure>)> = None;
         let mut rejected_faults: Vec<(String, Fault)> = Vec::new();
         let mut submission_requested = false;
+        let mut needs_repair = false;
+        let mut corrected_draft = None;
         let mut confirmed_review = false;
         let mut repair_explanation = "The judge ended without saving a review.";
         loop {
@@ -612,9 +614,7 @@ async fn run_inner<B: Backend>(
                             continue;
                         }
                         Ok("pending") => {
-                            report
-                                .block_reason
-                                .get_or_insert_with(|| "review_requires_repair".into());
+                            needs_repair = true;
                             last_rejection.get_or_insert_with(|| (
                                 "review_experience".into(),
                                 "The judge stopped without saving a review after being asked to submit it.".into(),
@@ -639,6 +639,9 @@ async fn run_inner<B: Backend>(
                     break;
                 }
                 Action::RejectedTool { name, source } => {
+                    if name == "review_experience" {
+                        corrected_draft = None;
+                    }
                     attempt.event(
                         "tool_parse_rejection",
                         Some(&name),
@@ -657,6 +660,10 @@ async fn run_inner<B: Backend>(
                     last_rejection = Some((name, source.to_string(), Some(source)));
                 }
                 Action::Tool { name, arguments } => {
+                    let submitted_review = (name == "review_experience").then(|| {
+                        corrected_draft = None;
+                        arguments.clone()
+                    });
                     attempt.event("tool_request", Some(&name), arguments.clone());
                     match scoped_tool(&mut client, selected, &name, arguments).await {
                         Ok(value) => {
@@ -767,6 +774,12 @@ async fn run_inner<B: Backend>(
                                 || error.downcast_ref::<Refusal>().is_some_and(|refusal| {
                                     refusal.kind == RefusalKind::UndeclaredCandidate
                                 });
+                            if let (true, Some(arguments), Some(fault)) =
+                                (is_undeclared, submitted_review.as_ref(), fault)
+                            {
+                                corrected_draft =
+                                    repair::correct_pattern_assessments(arguments, fault);
+                            }
                             let is_graph_scope =
                                 matches!(name.as_str(), "explain_belief" | "query_intervention")
                                     && fault.is_some_and(|fault| {
@@ -783,9 +796,7 @@ async fn run_inner<B: Backend>(
                             if let Some(fault) = fault.filter(|_| is_undeclared || is_graph_scope) {
                                 let rejected = (name, fault.clone());
                                 if rejected_faults.contains(&rejected) {
-                                    report
-                                        .block_reason
-                                        .get_or_insert_with(|| "review_requires_repair".into());
+                                    needs_repair = true;
                                     break;
                                 }
                                 rejected_faults.push(rejected);
@@ -805,6 +816,36 @@ async fn run_inner<B: Backend>(
                         }
                     }
                 }
+            }
+        }
+        if needs_repair {
+            if let Some(arguments) = corrected_draft {
+                attempt.event(
+                    "automatic_review_correction",
+                    Some("review_experience"),
+                    json!("Removed assessments that treated declared procedures as beliefs."),
+                );
+                let result =
+                    scoped_tool(&mut client, selected, "review_experience", arguments).await;
+                match &result {
+                    Ok(value) => {
+                        attempt.event("tool_result", Some("review_experience"), value.clone())
+                    }
+                    Err(error) => attempt.event(
+                        "tool_rejection",
+                        Some("review_experience"),
+                        json!(format!("{error:#}")),
+                    ),
+                }
+                confirmed_review = matches!(
+                    observe(&mut client, selected).await,
+                    Ok("confirmed" | "corrected")
+                );
+            }
+            if !confirmed_review {
+                report
+                    .block_reason
+                    .get_or_insert_with(|| "review_requires_repair".into());
             }
         }
         if confirmed_review {
