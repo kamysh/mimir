@@ -78,6 +78,21 @@ async fn configuration_change(events: &mut Option<ConfigEvents>) -> anyhow::Resu
     }
 }
 
+async fn disconnected(subscription: &mut WorkSubscription) -> anyhow::Error {
+    loop {
+        if let Err(error) = subscription.changed().await {
+            return error;
+        }
+    }
+}
+
+async fn provider_reset(delay: Option<Duration>) {
+    match delay {
+        Some(delay) => tokio::time::sleep(delay).await,
+        None => std::future::pending().await,
+    }
+}
+
 // True when an operator action should also refresh the config and mail worker.
 async fn wait_for_retry(
     retry: &mut Signal,
@@ -202,23 +217,34 @@ pub(super) async fn run(config: Option<PathBuf>, state_dir: Option<PathBuf>) -> 
                 }
             }
             NextBatch::Repair => {
-                subscription = None;
                 match outcome.auto_resume {
                     Some(delay) => {
-                        // The provider declared its own reset; the documented
-                        // explicitRetry event is raised by this timer instead
-                        // of a human SIGHUP.
                         eprintln!("Review attempt stopped by a provider usage limit; resuming automatically in {delay:?}.");
-                        tokio::select! {
-                            _ = retry.recv() => {},
-                            changed = configuration_change(&mut files) => { if let Err(error) = changed { eprintln!("Configuration events: {error:#}"); files = None; } }
-                            _ = tokio::time::sleep(delay) => {},
-                        }
                     }
                     None => {
                         eprintln!("Review attempt stopped; unfinished reviews remain pending. Run `mimir judge diagnose`, correct the prerequisite, then edit configuration or run `kill -HUP {}` for a fresh attempt.", std::process::id());
-                        tokio::select! { _ = retry.recv() => {}, changed = configuration_change(&mut files) => { if let Err(error) = changed { eprintln!("Configuration events: {error:#}"); files = None; } } }
                     }
+                }
+                let database_error = tokio::select! {
+                    error = disconnected(subscription.as_mut().expect("subscribed before querying")) => Some(error),
+                    _ = retry.recv() => None,
+                    changed = configuration_change(&mut files) => {
+                        if let Err(error) = changed {
+                            eprintln!("Configuration events: {error:#}");
+                            files = None;
+                        }
+                        None
+                    },
+                    _ = provider_reset(outcome.auto_resume) => None,
+                };
+                subscription = None;
+                if let Some(error) = database_error {
+                    record_outage(state_dir.as_deref(), &error);
+                    in_outage = true;
+                    if !wait_for_retry(&mut retry, &mut files, true).await {
+                        continue;
+                    }
+                    in_outage = false;
                 }
                 _mail = super::notification::start_worker(config.clone(), state_dir.clone());
             }

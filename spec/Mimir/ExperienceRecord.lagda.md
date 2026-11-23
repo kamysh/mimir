@@ -1,7 +1,27 @@
+# How Mimir records and corrects experiences
+
+`record_experience` saves the caller’s account of an action and its outcome.
+To create an experience, supply `expected_revision = 0` and omit
+`experience.id`. PostgreSQL creates the record UUID and Mimir returns it with
+revision 1. To correct an existing experience, send that UUID and its current
+positive revision. The revision is a version number. The UUID identifies the
+experience throughout its history.
+
+[Request decoding](PublicRequest.agda) selects creation or correction.
+[The transaction](LearningOperations.agda) allocates the new identity and
+publishes the result under the same database lock.
+
+## Explain correctable requests
+
+A stale revision gets a field-specific correction. For example, an agent
+that reads revision 1 and submits a different change after revision 2 has
+already been saved must fetch revision 2, reapply its intended change, and
+send that revision number. This prevents one correction from overwriting
+another. An unknown experience UUID directs the caller to its saved receipt.
+Storage failures and invalid stored state follow operation recovery.
+
+```agda
 {-# OPTIONS --safe #-}
--- Concrete recording/correction plan. Exact retries return the current
--- snapshot; fresh changes retract active review effects and recompute before
--- exposing a proposed transaction state.
 module Mimir.ExperienceRecord where
 
 open import Data.Bool using (Bool; true; false; _∧_; _∨_)
@@ -39,13 +59,48 @@ import Mimir.Validation as Validation
 
 data Failure : Set where
   invalid : Validation.Fault → Failure
-  invalidExpected staleRevision missingPattern foreignPattern incoherentSnapshot : Failure
+  invalidExpected staleRevision missingExperience missingPattern foreignPattern incoherentSnapshot : Failure
   numericFailure : Failure
+
+correctionFault : Failure → Maybe Validation.Fault
+correctionFault (invalid fault) = just fault
+correctionFault invalidExpected = just (Validation.fault
+  (Validation.key "expected_revision" ∷ []) Validation.invalidNumber
+  "A correction requires the current positive revision with room to advance. Read it with get_experience.")
+correctionFault staleRevision = just (Validation.fault
+  (Validation.key "expected_revision" ∷ []) Validation.staleRevision
+  "Call get_experience, reapply only the intended changes to the latest experience, and resubmit with its revision.")
+correctionFault missingExperience = just (Validation.fault
+  (Validation.key "experience" ∷ Validation.key "id" ∷ []) Validation.missingReference
+  "Experience not found. Use the experience UUID returned by record_experience.")
+correctionFault missingPattern = just (Validation.fault
+  (Validation.key "experience" ∷ Validation.key "pattern_id" ∷ []) Validation.missingReference
+  "Pattern not found. Use the UUID of the pattern actually used, or omit pattern_id.")
+correctionFault foreignPattern = just (Validation.fault
+  (Validation.key "experience" ∷ Validation.key "pattern_id" ∷ []) Validation.unsupportedCombination
+  "The pattern belongs to another project. Use the UUID of a pattern in this project or a global pattern you actually used, or omit pattern_id.")
+correctionFault incoherentSnapshot = nothing
+correctionFault numericFailure = nothing
 
 data Decision : Set where
   rejected : Failure → Decision
   replay : Observation.Snapshot → Decision
   fresh : Store.World → Observation.Snapshot → Bool → Decision
+```
+
+## Publish a changed observation atomically
+
+A correction retains the project and all original source records. A new
+source can be appended to explain the change. The selected beliefs and
+procedure must exist and be visible to the experience’s project.
+
+An accepted changed observation advances the source revision, preserves
+prior versions, withdraws the now-stale review’s effects, and updates
+affected beliefs as one transaction. If those changes cannot complete,
+the transaction rolls back. The previous experience remains the current
+revision and can be read before a fresh attempt.
+
+```agda
 
 patternAllowed : Text → UUID → List Graph.Node → Maybe Bool
 patternAllowed project id [] = nothing
@@ -119,13 +174,29 @@ coherent before old =
   does ((+ Ledger.R.Cell.acknowledged cell) Integer.≟ Observation.Snapshot.reviewedRevision old)
   where cell = Ledger.World.cells (Publication.World.ledger (Store.World.publication before))
           (Experience.identity (Observation.Snapshot.experience old))
+```
 
+## A repeated correction has no further effect
+
+When the supplied observation already equals the latest saved observation,
+the caller may supply either that revision or the revision immediately
+before it. Mimir returns the current snapshot without advancing the
+revision or retracting another review. A different observation requires
+the exact current revision.
+
+The two laws below express that a replay or a refusal preserves the
+entire stored state. [Transaction completion in LearningOperations](LearningOperations.agda)
+requires a commit for a fresh result. [The Rust store](../../crates/core/src/store/learning.rs)
+uses PostgreSQL for allocation, commit, and rollback.
+
+```agda
 existing : (calculation : Posterior.Calculation) → Store.World → Experience → ℤ → ℤ → Observation.Snapshot → Decision
 existing calculation before e expected now old with Observation.checkSnapshot old
-... | Validation.rejected failure refutation = rejected (invalid failure)
+... | Validation.rejected failure refutation = rejected incoherentSnapshot
 ... | Validation.accepted valid with coherent before old
 ...   | false = rejected incoherentSnapshot
-...   | true with Corrections.validateExperienceCorrection (Observation.Snapshot.experience old) e
+...   | true with Validation.at (Validation.key "experience")
+  (Corrections.validateExperienceCorrection (Observation.Snapshot.experience old) e)
 ...     | Validation.rejected failure refutation = rejected (invalid failure)
 ...     | Validation.accepted retained with
   does (Key.equal (Keys.experience (Observation.Snapshot.experience old)) (Keys.experience e)) ∧
@@ -137,14 +208,14 @@ existing calculation before e expected now old with Observation.checkSnapshot ol
 ...         | yes same = checkTargets calculation before e ∣ expected ∣ now (just old)
 
 plan : (calculation : Posterior.Calculation) → Store.World → Experience → ℤ → ℤ → Decision
-plan calculation before e expected now with Schema.validate e
+plan calculation before e expected now with Validation.at (Validation.key "experience") (Schema.validate e)
 ... | Validation.rejected failure refutation = rejected (invalid failure)
 ... | Validation.accepted valid with does ((+ 0) Integer.≤? expected) ∧ does (expected Integer.<? (+ Bounds.i64Maximum))
 ...   | false = rejected invalidExpected
 ...   | true with Read.get (Experience.identity e) (Store.World.current before)
 ...     | just old = existing calculation before e expected now old
 ...     | nothing with expected Integer.≟ (+ 0)
-...       | no stale = rejected staleRevision
+...       | no stale = rejected missingExperience
 ...       | yes initial = checkTargets calculation before e 0 now nothing
 
 proposed : Store.World → Decision → Store.World
@@ -157,3 +228,4 @@ retryPreservesAllState before receipt = refl
 
 rejectionPreservesAllState : ∀ before failure → proposed before (rejected failure) ≡ before
 rejectionPreservesAllState before failure = refl
+```

@@ -1,3 +1,24 @@
+# Reading lesson assessments
+
+An assessment identifies a project, belief, scope, and rubric. The current
+score uses contributions from reviews that are current for both the source
+and the review revision. The belief's visibility and its current assessment
+are checked against one database view. An experience correction can make a
+contribution inactive even before a new review is submitted.
+
+History preserves each saved contribution and marks whether it is active
+at the time of the read. For example, correcting a measured outcome can
+leave the original assessment in history while the current score reflects
+the replacement. A history page orders entries by review creation time and
+then review revision. An omitted count selects all entries after the offset.
+The scope and rubric keep unrelated assessments separate.
+
+Score calculation is defined by [AssessmentEvaluation](AssessmentEvaluation.agda).
+The [read protocol](LearningQueryProtocol.agda) connects the current score
+and history to MCP. [The Rust queries](../../crates/core/src/store/learning.rs)
+read revision-owned rows and return the evidence references with history.
+
+```agda
 {-# OPTIONS --safe #-}
 -- Concrete assessment read projections over the immutable review ledger.
 -- Current scores and historical pages deliberately use different selection.
@@ -158,3 +179,4 @@ readScores q beliefs w = w , getAssessment q beliefs w
 
 readPreservesState : ∀ q beliefs w → proj₁ (readScores q beliefs w) ≡ w
 readPreservesState q beliefs w = refl
+```

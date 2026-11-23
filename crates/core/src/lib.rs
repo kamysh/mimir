@@ -23,6 +23,10 @@ use graph::{Belief, EdgeType, MemoryType, Pattern, Probability};
 use inference::InferenceEngine;
 use store::AgeStore;
 
+fn usable_cosine_vector(vector: &[f32]) -> bool {
+    vector.iter().all(|value| value.is_finite()) && vector.iter().any(|value| *value != 0.0)
+}
+
 /// Weighted Reciprocal Rank Fusion. Each ranked list contributes
 /// `weight / (K + rank)` (0-based rank, K = 60) to every id it contains; the
 /// per-id contributions sum. Score-agnostic (ranks only), so lists on
@@ -103,7 +107,7 @@ pub struct GroundedBelief {
 }
 
 /// Why semantic (vector) retrieval did not run for a query. Mirrors
-/// `UnavailableCause` in the specification (Mimir/RetrievalProtocol.agda); the
+/// `UnavailableCause` in the specification (Mimir/RetrievalProtocol.lagda.md); the
 /// cause must survive lexical/graph degradation into the public report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -164,11 +168,21 @@ impl SemanticSearchStatus {
         }
     }
 
-    /// The provider's reply contained no query vector.
+    /// The query contains no content that can be searched semantically.
+    fn unsupported_query() -> Self {
+        Self::NotAvailable {
+            cause: SemanticUnavailableCause::UnsupportedContent,
+            reason: "Semantic search is unavailable for a blank belief-search context.".to_string(),
+            next_action: "Provide text describing the beliefs you want to find and resubmit."
+                .to_string(),
+        }
+    }
+
+    /// The provider's reply cannot be used for cosine search.
     pub fn invalid_provider_reply() -> Self {
         Self::NotAvailable {
             cause: SemanticUnavailableCause::InvalidProviderReply,
-            reason: "Semantic search was not performed because the embedding provider returned no query vector."
+            reason: "Semantic search requires one finite, nonzero vector for the query. The embedding provider did not return one."
                 .to_string(),
             next_action: "These results use lexical and graph retrieval. Resolve the embedding provider response before requesting semantic search again."
                 .to_string(),
@@ -178,7 +192,7 @@ impl SemanticSearchStatus {
 
 /// The retrieval report: the query context, the ranked beliefs, and whether
 /// semantic search ran. Mirrors `Report` in the specification
-/// (Mimir/RetrievalProtocol.agda); serialized to match `retrievalReport` in
+/// (Mimir/RetrievalProtocol.lagda.md); serialized to match `retrievalReport` in
 /// Mimir/ApplicationOutput.agda.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct RetrievalReport<T> {
@@ -627,35 +641,19 @@ impl MimirService {
                  Do not choose it for the user or pass a per-call override."
             )
         })?;
-        let edges = match project {
-            Some(p) => self.store.get_defeats_with_timestamps_by_project(p).await?,
-            None => self.store.get_defeats_with_timestamps().await?,
-        };
-        if edges.is_empty() {
-            return Ok(0);
-        }
-        let beliefs = match project {
-            Some(p) => self.store.list_beliefs_by_project(p).await?,
-            None => self.store.list_beliefs().await?,
-        };
-        let belief_map: std::collections::HashMap<Uuid, Belief> =
-            beliefs.into_iter().map(|b| (b.id, b)).collect();
-        let now = chrono::Utc::now();
-        let grace_period = chrono::Duration::minutes((grace_hours * 60.0).round() as i64);
-        let candidates = self.inference.find_expired_defeated(
-            &edges,
-            &belief_map,
-            now,
-            prob_threshold,
-            grace_period,
+        let threshold = Probability::new(prob_threshold)?;
+        anyhow::ensure!(
+            grace_hours.is_finite() && grace_hours >= 0.0,
+            "Retirement grace must be a finite nonnegative number of hours."
         );
-        let mut deleted = 0usize;
-        for id in candidates {
-            if self.store.delete_belief(id).await? {
-                deleted += 1;
-            }
-        }
-        Ok(deleted)
+        let grace = chrono::Duration::try_minutes((grace_hours * 60.0).round() as i64).ok_or_else(
+            || {
+                anyhow::anyhow!(
+                    "The configured retirement period is outside the supported duration range."
+                )
+            },
+        )?;
+        self.store.sweep_defeated(project, threshold, grace).await
     }
 
     /// Hybrid retrieval ranked by weighted Reciprocal Rank Fusion.
@@ -701,7 +699,7 @@ impl MimirService {
         }
 
         // ── Token list: beliefs whose lowercased content contains at least one
-        //    query term, ranked by distinct-term match count desc (tiebreak:
+        //    query term, ranked by term match count desc (tiebreak:
         //    probability desc).
         let q_lower = query.to_lowercase();
         let terms: Vec<String> = q_lower
@@ -738,39 +736,28 @@ impl MimirService {
             scored.into_iter().map(|(_, b)| b.id).collect()
         };
 
-        // ── Vector list: cosine top-k over belief_embeddings, when an
-        //    embedding backend is configured. The pool covers the requested
-        //    window; an unlimited query ranks every stored embedding instead of
-        //    a fixed sample. If the embedder itself fails (model unavailable,
-        //    network error, etc.) we degrade to token-only with a warning
-        //    rather than failing the whole query — partial recall beats none —
-        //    and the report records that semantic search was not performed.
-        let (vector_ranked, semantic_search): (Vec<Uuid>, SemanticSearchStatus) = match &self
-            .embeddings
-        {
-            None => (Vec::new(), SemanticSearchStatus::not_configured()),
-            Some(embedder) => {
-                let pool_size = if limit > 0 { (limit * 4).max(20) } else { 0 };
-                match embedder.embed(&[query.to_string()]).await {
-                    Ok(mut vecs) => match vecs.pop() {
-                        Some(qv) => {
-                            let ranked = match project {
-                                Some(_) => {
-                                    let ids: Vec<Uuid> = all.iter().map(|b| b.id).collect();
-                                    self.store
-                                        .query_beliefs_by_vector_filtered(&qv, pool_size, &ids)
-                                        .await?
-                                }
-                                None => self.store.query_beliefs_by_vector(&qv, pool_size).await?,
-                            };
+        // Rank all eligible embeddings before the response limit is applied.
+        // An unusable provider response leaves lexical and graph retrieval available.
+        let (vector_ranked, semantic_search): (Vec<Uuid>, SemanticSearchStatus) =
+            match &self.embeddings {
+                _ if terms.is_empty() => (Vec::new(), SemanticSearchStatus::unsupported_query()),
+                None => (Vec::new(), SemanticSearchStatus::not_configured()),
+                Some(embedder) => match embedder.embed(&[query.to_string()]).await {
+                    Ok(vectors) => match vectors.as_slice() {
+                        [vector] if usable_cosine_vector(vector) => {
+                            let ids: Vec<_> = all.iter().map(|belief| belief.id).collect();
+                            let ranked = self
+                                .store
+                                .rank_eligible_belief_vectors(vector, &ids)
+                                .await?;
                             (ranked, SemanticSearchStatus::Performed)
                         }
-                        None => (Vec::new(), SemanticSearchStatus::invalid_provider_reply()),
+                        _ => (Vec::new(), SemanticSearchStatus::invalid_provider_reply()),
                     },
                     Err(e) => {
                         tracing::warn!(
                             error = %e,
-                            "embedder failed for query — falling back to token-only retrieval. \
+                            "embedder failed for query — using lexical and graph retrieval. \
                              Verify [embeddings] config and that the model is reachable."
                         );
                         (
@@ -778,9 +765,8 @@ impl MimirService {
                             SemanticSearchStatus::provider_failure(&e.to_string()),
                         )
                     }
-                }
-            }
-        };
+                },
+            };
 
         // ── Candidate seed set: the deduplicated union of the token and vector
         //    lists (final order is decided later by weighted RRF, so only
@@ -809,7 +795,7 @@ impl MimirService {
             .filter_map(|id| by_id.get(id).map(|&b| b.clone()))
             .collect();
 
-        // ── Graph expansion: SUPPORTS/CAUSES reachable beliefs (unchanged).
+        // ── Graph expansion: SUPPORTS/CAUSES/DEFEATS reachable beliefs.
         let matched_ids: Vec<Uuid> = matched.iter().map(|b| b.id).collect();
         // The seeds are independent first-hop reads. Prefetch them in one
         // observation, then consume each seed in the original traversal order.
@@ -1021,55 +1007,44 @@ impl MimirService {
         self.store.clear_document(path).await
     }
 
-    /// Semantic search over loaded document chunks.
-    /// Embeds `context`, queries chunk_embeddings by cosine distance, fetches
-    /// matching DocumentChunk vertices from AGE, enriches with parent content.
-    /// limit=0 means no limit.
+    /// Search one read-only view of demonstrably indexed document passages.
     pub async fn query_document(
         &self,
         context: &str,
         project: Option<&str>,
-        limit: usize,
+        limit: Option<usize>,
     ) -> Result<Vec<QueryResult>> {
-        let embedder = self.embeddings.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("embeddings not configured — add [embeddings] to config.toml")
-        })?;
-
-        let mut vecs = embedder.embed(&[context.to_string()]).await?;
-        let query_vec = if vecs.is_empty() {
-            anyhow::bail!("empty embedding response");
-        } else {
-            vecs.swap_remove(0)
-        };
-
-        let filter_ids: Option<Vec<Uuid>> = match project {
-            None => None,
-            Some(proj) => Some(self.store.get_chunk_ids_by_project(proj).await?),
-        };
-
-        let chunk_ids = self
-            .store
-            .query_chunks_by_vector(&query_vec, limit, filter_ids.as_deref())
-            .await?;
-
-        let mut results = Vec::with_capacity(chunk_ids.len());
-        for id in chunk_ids {
-            let Some(chunk) = self.store.get_chunk_by_id(id).await? else {
-                continue;
-            };
-            let parent_content = match chunk.parent_id {
-                None => None,
-                Some(pid) => self.store.get_chunk_by_id(pid).await?.map(|p| p.content),
-            };
-            results.push(QueryResult {
-                id: chunk.id.to_string(),
-                document_path: chunk.document_path,
-                section_path: chunk.section_path,
-                content: chunk.content,
-                parent_content,
-            });
+        use crate::validation::{Code, Refusal, Segment};
+        if context.trim().is_empty() {
+            return Err(Refusal::invalid(
+                Code::EmptyText,
+                vec![Segment::Key("context".into())],
+                "Document search requires nonblank context. Supply the text or question to search for, then resubmit.",
+            ).into());
         }
-        Ok(results)
+        anyhow::ensure!(
+            limit != Some(0),
+            "Document search limit must be positive when supplied."
+        );
+        let embedder = self.embeddings.as_ref().ok_or_else(|| anyhow::anyhow!(
+            "Semantic document search is unavailable because no embedding provider is configured. Configure an embedding provider and retry."
+        ))?;
+        let vectors = embedder
+            .embed(&[context.to_string()])
+            .await
+            .map_err(|error| error.context(
+                "Semantic document search is unavailable because the embedding provider failed. Resolve the provider failure and retry."
+            ))?;
+        let query_vector = match vectors.as_slice() {
+            [vector] if usable_cosine_vector(vector) => vector,
+            _ => anyhow::bail!("Semantic document search is unavailable. The embedding provider must return one finite, nonzero vector for the query. Correct the provider and retry."),
+        };
+        self.store
+            .query_document_hits(query_vector, project, limit)
+            .await
+            .map_err(|error| error.context(
+                "Semantic document search is unavailable because the index could not be searched. Resolve the reported database or index problem and retry."
+            ))
     }
 
     // -----------------------------------------------------------------------
@@ -1077,122 +1052,54 @@ impl MimirService {
     // -----------------------------------------------------------------------
 
     /// Attach a document chunk to a belief as grounding evidence (GROUNDS edge).
-    /// Purely additive provenance — does not touch belief↔belief inference.
+    /// Positive weight recalculates the belief and its inference dependents.
+    /// Zero weight records the passage without changing their values.
     pub async fn add_evidence(&self, belief_id: Uuid, chunk_id: Uuid, weight: f64) -> Result<()> {
         self.store
             .insert_evidence(chunk_id, belief_id, Probability::new(weight)?)
             .await
     }
 
-    /// Remove a specific grounding edge.
+    /// Remove all grounding links between this belief and passage.
     pub async fn delete_evidence(&self, belief_id: Uuid, chunk_id: Uuid) -> Result<()> {
         self.store.delete_evidence(chunk_id, belief_id).await
     }
 
     /// The grounding passages for a single belief, strongest first.
-    /// `limit = 0` means no cap.
     pub async fn evidence_for_belief(
         &self,
         belief_id: Uuid,
-        limit: usize,
+        limit: Option<usize>,
     ) -> Result<Vec<EvidenceRef>> {
-        let mut ev = self.store.get_evidence_for_beliefs(&[belief_id]).await?;
-        ev.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
-        if limit > 0 {
-            ev.truncate(limit);
-        }
-        let mut out = Vec::with_capacity(ev.len());
-        for (_belief, chunk_id, weight) in ev {
-            if let Some(c) = self.store.get_chunk_by_id(chunk_id).await? {
-                out.push(EvidenceRef {
-                    chunk_id,
-                    document_path: c.document_path,
-                    section_path: c.section_path,
-                    snippet: c.content.trim().to_string(),
-                    weight,
-                });
-            }
-        }
-        Ok(out)
+        let mut evidence = self.store.read_evidence(&[belief_id], limit).await?;
+        Ok(evidence.remove(&belief_id).unwrap_or_default())
     }
 
-    /// `query_relevant`, enriched with the grounding passages per belief, as a
-    /// retrieval report carrying the query context and semantic-search status.
-    /// `evidence_per_belief = 0` means no cap (all grounding passages per belief).
+    /// Run the ordinary search and attach grounding passages in belief order.
     pub async fn query_relevant_grounded(
         &self,
         query: &str,
         limit: usize,
-        evidence_per_belief: usize,
+        evidence_per_belief: Option<usize>,
         project: Option<&str>,
+        prefer_type: Option<MemoryType>,
     ) -> Result<RetrievalReport<GroundedBelief>> {
-        let report = self.query_relevant(query, limit, project, None).await?;
-        if report.beliefs.is_empty() {
-            return Ok(RetrievalReport {
-                context: report.context,
-                beliefs: Vec::new(),
-                semantic_search: report.semantic_search,
-            });
-        }
-        let beliefs = report.beliefs;
-        let ids: Vec<Uuid> = beliefs.iter().map(|b| b.id).collect();
-        let ev = self.store.get_evidence_for_beliefs(&ids).await?;
-
-        // Group (chunk_id, weight) by belief_id.
-        let mut by_belief: std::collections::HashMap<Uuid, Vec<(Uuid, f64)>> =
-            std::collections::HashMap::new();
-        for (belief_id, chunk_id, weight) in ev {
-            by_belief
-                .entry(belief_id)
-                .or_default()
-                .push((chunk_id, weight));
-        }
-
-        // Cache chunk lookups so a chunk grounding several beliefs is fetched once.
-        let mut chunk_cache: std::collections::HashMap<Uuid, Option<EvidenceRef>> =
-            std::collections::HashMap::new();
-
-        let mut out = Vec::with_capacity(beliefs.len());
-        for belief in beliefs {
-            let mut refs: Vec<EvidenceRef> = Vec::new();
-            if let Some(entries) = by_belief.get(&belief.id) {
-                let mut entries = entries.clone();
-                // Strongest grounding first.
-                entries.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-                if evidence_per_belief > 0 {
-                    entries.truncate(evidence_per_belief);
-                }
-                for (chunk_id, weight) in entries {
-                    if let std::collections::hash_map::Entry::Vacant(e) =
-                        chunk_cache.entry(chunk_id)
-                    {
-                        let r = self
-                            .store
-                            .get_chunk_by_id(chunk_id)
-                            .await?
-                            .map(|c| EvidenceRef {
-                                chunk_id,
-                                document_path: c.document_path,
-                                section_path: c.section_path,
-                                snippet: c.content.trim().to_string(),
-                                weight,
-                            });
-                        e.insert(r);
-                    }
-                    if let Some(base) = chunk_cache.get(&chunk_id).and_then(|o| o.clone()) {
-                        // Reuse the cached chunk metadata but keep this edge's weight.
-                        refs.push(EvidenceRef { weight, ..base });
-                    }
-                }
-            }
-            out.push(GroundedBelief {
+        let report = self
+            .query_relevant(query, limit, project, prefer_type)
+            .await?;
+        let ids: Vec<_> = report.beliefs.iter().map(|belief| belief.id).collect();
+        let mut evidence = self.store.read_evidence(&ids, evidence_per_belief).await?;
+        let beliefs = report
+            .beliefs
+            .into_iter()
+            .map(|belief| GroundedBelief {
+                evidence: evidence.remove(&belief.id).unwrap_or_default(),
                 belief,
-                evidence: refs,
-            });
-        }
+            })
+            .collect();
         Ok(RetrievalReport {
-            context: query.to_string(),
-            beliefs: out,
+            context: report.context,
+            beliefs,
             semantic_search: report.semantic_search,
         })
     }

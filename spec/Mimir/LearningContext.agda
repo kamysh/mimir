@@ -3,7 +3,7 @@
 module Mimir.LearningContext where
 
 open import Data.Bool using (Bool; true; false; _∧_; _∨_)
-open import Data.List using (List; []; _∷_; map)
+open import Data.List using (List; []; _∷_; map; concatMap)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; _≤?_)
 open import Data.Product using (_×_; _,_; proj₁)
@@ -63,7 +63,9 @@ assessmentPage textBefore project ids state = assessments
     ordered) false
   where
   view = View.view state
-  ordered = Ranking.sort (keyBefore textBefore) (keys project ids view (Read.World.contributions view))
+  ordered = concatMap (λ id →
+    Ranking.sort (keyBefore textBefore) (keys project (id ∷ []) view (Read.World.contributions view)))
+    (Ranking.unique ids)
 
 admitted : Text → Maybe ℕ → Bool
 admitted project nothing = nonblank project

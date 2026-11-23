@@ -378,7 +378,7 @@ async fn main() -> Result<()> {
             context,
             project,
             limit,
-        }) => cmd_query_doc(&context, project.as_deref(), limit.unwrap_or(0)).await?,
+        }) => cmd_query_doc(&context, project.as_deref(), limit).await?,
         Command::Doc(DocCmd::Clear { path }) => cmd_clear_doc(&path).await?,
         Command::Reembed => cmd_reembed().await?,
         Command::Intervene { id, value } => cmd_intervene(&id, value).await?,
@@ -594,7 +594,9 @@ async fn cmd_query(
     let svc = connect().await?;
 
     if evidence {
-        let report = svc.query_relevant_grounded(text, limit, 0, project).await?;
+        let report = svc
+            .query_relevant_grounded(text, limit, None, project, None)
+            .await?;
         note_semantic_search(&report.semantic_search);
         if report.beliefs.is_empty() {
             println!("(no results)");
@@ -696,7 +698,7 @@ async fn cmd_evidence(cmd: EvidenceCmd) -> Result<()> {
             let belief = belief_id
                 .parse::<uuid::Uuid>()
                 .map_err(|_| anyhow::anyhow!("invalid belief UUID: {}", belief_id))?;
-            let refs = svc.evidence_for_belief(belief, 0).await?;
+            let refs = svc.evidence_for_belief(belief, None).await?;
             if refs.is_empty() {
                 println!("(no evidence)");
                 return Ok(());
@@ -837,7 +839,7 @@ async fn cmd_load(path: &str, project: Option<&str>) -> Result<()> {
 // mimir query-doc
 // ---------------------------------------------------------------------------
 
-async fn cmd_query_doc(context: &str, project: Option<&str>, limit: usize) -> Result<()> {
+async fn cmd_query_doc(context: &str, project: Option<&str>, limit: Option<usize>) -> Result<()> {
     let svc = connect().await?;
     let results = svc.query_document(context, project, limit).await?;
 

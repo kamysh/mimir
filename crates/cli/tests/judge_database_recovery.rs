@@ -65,6 +65,21 @@ async fn watcher_recovers_at_startup_and_after_listener_loss() {
     let runtime = state.join("judge-runtime.json");
     let config = dir.join("config.toml");
     let model = dir.join("model.sh");
+    let mcp_wrapper = dir.join("mcp-wrapper.sh");
+    let block_batch = dir.join("block-batch");
+    fs::write(
+        &mcp_wrapper,
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+if [[ -e "$1" ]]; then
+    echo "fixture interrupts MCP startup" >&2
+    exit 1
+fi
+exec "$2"
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&mcp_wrapper, fs::Permissions::from_mode(0o700)).unwrap();
     fs::write(
         &model,
         r#"#!/usr/bin/env bash
@@ -106,16 +121,22 @@ jq -c 'if (.history | length) > 0 then {calls:[]}
     let mut settings: toml::Table =
         toml::from_str(&fs::read_to_string(fixture.root.join("config.toml")).unwrap()).unwrap();
     settings.insert("database".into(), toml::Value::try_from(database).unwrap());
-    settings["judge"]
-        .as_table_mut()
-        .unwrap()
-        .insert("project".into(), project.clone().into());
+    let judge = settings["judge"].as_table_mut().unwrap();
+    judge.insert("project".into(), project.clone().into());
+    judge.insert("mcp_command".into(), mcp_wrapper.to_str().unwrap().into());
+    judge.insert(
+        "mcp_args".into(),
+        toml::Value::Array(vec![
+            block_batch.to_str().unwrap().into(),
+            fixture.mcp.clone().into(),
+        ]),
+    );
     settings["llm"]["command"] = toml::Value::String(model.to_str().unwrap().into());
     fs::write(&config, toml::to_string(&settings).unwrap()).unwrap();
     fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
 
     let new_experience = || Experience {
-        id: Uuid::new_v4(),
+        id: (),
         project: project.clone(),
         context: "watcher reconnect fixture".into(),
         action: "record isolated observation".into(),
@@ -127,9 +148,8 @@ jq -c 'if (.history | length) > 0 then {calls:[]}
         learning_items: vec![],
         source_records: vec![],
     };
-    let first = new_experience();
     let first = service
-        .create_experience(&first.clone().with_identity(()))
+        .create_experience(&new_experience())
         .await
         .unwrap()
         .experience;
@@ -201,13 +221,36 @@ jq -c 'if (.history | length) > 0 then {calls:[]}
         .get(0);
     assert!(terminated);
     wait_for_state(&status, "block_reason", "database_unavailable").await;
-    let second = new_experience();
     let second = service
-        .create_experience(&second.clone().with_identity(()))
+        .create_experience(&new_experience())
         .await
         .unwrap()
         .experience;
     assert_reviewed(&service, second.id).await;
+    wait_for_state(&runtime, "phase", "waiting_for_work").await;
+
+    // A blocked batch must keep listening for the database going away.
+    // Removing the marker is deliberately separate from the watched config.
+    fs::write(&block_batch, "").unwrap();
+    let third = service
+        .create_experience(&new_experience())
+        .await
+        .unwrap()
+        .experience;
+    wait_for_state(&runtime, "phase", "awaiting_repair").await;
+    let subscription = control.query_one(
+        "SELECT pid FROM pg_stat_activity WHERE usename = current_user AND datname = current_database() AND query = 'LISTEN mimir_review_work'",
+        &[],
+    ).await.unwrap().get::<_, i32>(0);
+    fs::remove_file(&block_batch).unwrap();
+    let terminated: bool = control
+        .query_one("SELECT pg_terminate_backend($1)", &[&subscription])
+        .await
+        .unwrap()
+        .get(0);
+    assert!(terminated);
+    wait_for_state(&status, "block_reason", "database_unavailable").await;
+    assert_reviewed(&service, third.id).await;
     wait_for_state(&runtime, "phase", "waiting_for_work").await;
 
     let pid = watcher.id().unwrap() as i32;
@@ -219,7 +262,139 @@ jq -c 'if (.history | length) > 0 then {calls:[]}
         stderr
             .matches("PostgreSQL is unavailable; Mimir will retry")
             .count(),
-        2,
+        3,
         "expected one message for each outage"
     );
+}
+
+#[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
+#[tokio::test]
+async fn review_rejection_does_not_stall_watcher() {
+    let fixture = isolation::fixture();
+    let fixture_config = fixture.root.join("config.toml");
+    let core = Config::load_from_path(&fixture_config).unwrap();
+    fixture.assert_database(&core.database);
+    let service = MimirService::connect(&core).await.unwrap();
+
+    let project = "watch-review-rejection";
+    let dir = fixture.root.join(project);
+    fs::create_dir(&dir).unwrap();
+    let state = dir.join("state");
+    let runtime = state.join("judge-runtime.json");
+    let config = dir.join("config.toml");
+    let model = dir.join("model.sh");
+    fs::write(
+        &model,
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+jq -c '
+  if (.history | length) > 0 then {calls:[]}
+  else
+    .experience as $selected |
+    {experience_id:$selected.experience.id,experience_revision:$selected.revision,
+      reviewer:"test",rationale:"Verified fixture observation"} |
+    if $selected.experience.context == "reject this review"
+    then . + {candidate_feedback:[{target:{candidate_key:"missing"},verdict:"support",weight:0.7}]}
+    else . end |
+    {calls:[{name:"review_experience",arguments_json:({
+      expected_review_revision:$selected.review_revision,review:.
+    }|tojson)}]}
+  end'
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&model, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut settings: toml::Table =
+        toml::from_str(&fs::read_to_string(fixture_config).unwrap()).unwrap();
+    settings["judge"]
+        .as_table_mut()
+        .unwrap()
+        .insert("project".into(), project.into());
+    settings["llm"]["command"] = model.to_str().unwrap().into();
+    fs::write(&config, toml::to_string(&settings).unwrap()).unwrap();
+    fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
+
+    let experience = |context: &str| Experience {
+        id: (),
+        project: project.into(),
+        context: context.into(),
+        action: "record isolated observation".into(),
+        outcome: Outcome::Success,
+        source: ObservationSource::ToolResult,
+        evidence: vec!["fixture evidence".into()],
+        belief_ids: vec![],
+        pattern_id: None,
+        learning_items: vec![],
+        source_records: vec![],
+    };
+    let rejected = service
+        .create_experience(&experience("reject this review"))
+        .await
+        .unwrap()
+        .experience
+        .id;
+    let next = service
+        .create_experience(&experience("review already queued"))
+        .await
+        .unwrap()
+        .experience
+        .id;
+
+    let mut watcher = Command::new(&fixture.mimir)
+        .args(["judge", "watch", "--config"])
+        .arg(&config)
+        .arg("--state-dir")
+        .arg(&state)
+        .stdout(Stdio::from(
+            fs::File::create(dir.join("watch.stdout")).unwrap(),
+        ))
+        .stderr(Stdio::from(
+            fs::File::create(dir.join("watch.stderr")).unwrap(),
+        ))
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+
+    assert_reviewed(&service, next).await;
+    wait_for_state(&runtime, "phase", "waiting_for_work").await;
+    let diagnostics: Value =
+        serde_json::from_slice(&fs::read(state.join("judge-diagnostics.json")).unwrap()).unwrap();
+    let attempts = diagnostics["attempts"].as_array().unwrap();
+    assert_eq!(attempts[0]["selected_ids"], serde_json::json!([rejected]));
+    assert_eq!(attempts[0]["block_reason"], "tool_rejected");
+    assert!(attempts[0]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event["kind"] == "tool_rejection"
+                && event["detail"].as_str().is_some_and(|detail| {
+                    detail.contains("candidate belief reference must be declared")
+                })
+        }));
+    assert_eq!(attempts[1]["selected_ids"], serde_json::json!([next]));
+    assert_eq!(
+        service
+            .get_experience(rejected)
+            .await
+            .unwrap()
+            .unwrap()
+            .reviewed_revision,
+        0
+    );
+
+    let later = service
+        .create_experience(&experience("arrives while watcher is waiting"))
+        .await
+        .unwrap()
+        .experience
+        .id;
+    assert_reviewed(&service, later).await;
+    wait_for_state(&runtime, "phase", "waiting_for_work").await;
+
+    assert_eq!(
+        unsafe { libc::kill(watcher.id().unwrap() as i32, libc::SIGTERM) },
+        0
+    );
+    assert!(watcher.wait().await.unwrap().success());
 }

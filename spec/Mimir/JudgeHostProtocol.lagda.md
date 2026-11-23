@@ -1,3 +1,48 @@
+# How the judge watcher completes and resumes work
+
+The watcher subscribes to database work notifications before it checks the
+queue. Each fresh subscription is immediately followed by a batch attempt.
+A successful nonempty batch starts another batch, and an empty queue waits
+for new work. Reconnecting repeats the subscribe-then-check sequence so work
+queued during a database outage is picked up.
+
+## Completion and deferral
+
+The judge confirms a review by reading back the selected experience. The
+experience must still have the selected source revision, that revision must
+be marked reviewed, and the saved review revision must have advanced.
+A model's success message supplies no confirmation. A source that changed
+in the meantime is reported as corrected. A selected revision that remains
+pending can be deferred while other experience revisions continue. A new
+revision or a confirmed review invalidates the old deferral. If final readback
+leaves a rejected review deferred, the watcher immediately checks for other
+eligible work. The report retains the failure reason. If only deferred work
+remains, the watcher waits for a work event.
+
+[JudgeBatchReadback](JudgeBatchReadback.agda) defines confirmation and
+deferral. [JudgeWorkflowComposition](JudgeWorkflowComposition.agda)
+connects the runner's receipts to the batch result.
+
+## Waiting and recovery
+
+When PostgreSQL is temporarily unavailable, the watcher reconnects, including
+when a disconnect happens during the wait after a blocked batch. The
+reconnect wait exists because a disconnected subscriber cannot receive a
+work notification. The watcher reports the outage once and checks the
+queue after it reconnects.
+
+A batch that cannot proceed because of a shared prerequisite leaves unfinished
+work pending. After resolving that prerequisite, the operator can edit the
+configuration or send SIGHUP to start a fresh attempt. If the model provider
+supplies a usable local reset time, that reset can also wake the watcher.
+A truncated or missing reset
+leaves it waiting for an operator event. Email delivery proceeds separately.
+
+[Watcher](../../crates/cli/src/judge/watcher.rs) and
+[batch runner](../../crates/cli/src/judge/runner.rs) implement these rules.
+[Operations](../../docs/operations.md) describes the operator actions.
+
+```agda
 {-# OPTIONS --safe #-}
 -- Run/check-config host control. Configuration, path resolution and lock
 -- outcomes are distinct. Invalid configuration persistence is best effort;
@@ -52,13 +97,16 @@ data Output : Set where
 -- Work notifications wake an idle watcher. A temporary database outage has
 -- its own retry event, which does not depend on an operator or a subscription.
 data WorkWake : Set where workAvailable configurationChanged explicitRetry : WorkWake
-data RepairWake : Set where configurationChanged explicitRetry : RepairWake
 data ReconnectWake : Set where retryDue configurationChanged explicitRetry : ReconnectWake
 data SubscriptionFailure : Set where
   configurationFailure databaseUnavailable databaseSetupFailure : Text → SubscriptionFailure
 record WorkSubscription : Set where
   constructor workSubscription
   field handle : Text
+
+data RepairWake : Maybe WorkSubscription → Set where
+  configurationChanged explicitRetry providerReset : ∀ {subscription} → RepairWake subscription
+  databaseDisconnected : ∀ {subscription} → Text → RepairWake (just subscription)
 
 module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   (display : Revision.Display) (configLibraries : Config.Libraries)
@@ -116,7 +164,8 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     incident status : L.Locked → R.Report → Effect
     stdout : Output → Effect
     reportDiagnostic : Text → Effect
-    subscribeWork waitForRepair waitForReconnect : Effect
+    subscribeWork waitForReconnect : Effect
+    waitForRepair : Maybe WorkSubscription → Effect
     waitForWork dropWorkSubscription : WorkSubscription → Effect
 
   Reply : Effect → Set
@@ -134,7 +183,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   Reply subscribeWork = SubscriptionFailure ⊎ WorkSubscription
   Reply (waitForWork _) = Text ⊎ WorkWake
   Reply (dropWorkSubscription _) = ⊤
-  Reply waitForRepair = RepairWake
+  Reply (waitForRepair subscription) = RepairWake subscription
   Reply waitForReconnect = ReconnectWake
   module P = Effects.Protocol Effect Reply
   open P using (Script; done; ask; _>>=_)
@@ -222,11 +271,6 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     watching : WorkSubscription → Script Host.Outcome → WatchState
     controlling : Script WatchState → WatchState
 
-  awaitRepair : Text → Script WatchState
-  awaitRepair detail = ask (reportDiagnostic (detail ++ toList
-    ". Work remains pending. Resolve the cause, then send SIGHUP to this watcher, or edit its configuration, to resume."))
-    (λ _ → ask waitForRepair (λ _ → done (subscribing false)))
-
   reconnect : Script WatchState
   reconnect = ask waitForReconnect λ where
     retryDue → done (subscribing true)
@@ -238,11 +282,28 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     ask (reportDiagnostic (toList "PostgreSQL is unavailable; Mimir will retry the connection. " ++ detail))
       (λ _ → reconnect)
 
+  resetSubscription : Maybe WorkSubscription → Script WatchState
+  resetSubscription nothing = done (subscribing false)
+  resetSubscription (just subscription) =
+    ask (dropWorkSubscription subscription) (λ _ → done (subscribing false))
+
+  resumeRepair : (subscription : Maybe WorkSubscription) → RepairWake subscription → Script WatchState
+  resumeRepair subscription configurationChanged = resetSubscription subscription
+  resumeRepair subscription explicitRetry = resetSubscription subscription
+  resumeRepair subscription providerReset = resetSubscription subscription
+  resumeRepair (just subscription) (databaseDisconnected detail) =
+    ask (dropWorkSubscription subscription) (λ _ → awaitDatabase detail)
+
+  awaitRepair : Maybe WorkSubscription → Text → Script WatchState
+  awaitRepair subscription detail = ask (reportDiagnostic (detail ++ toList
+    ". Work remains pending. Resolve the cause, then send SIGHUP to this watcher, or edit its configuration, to resume."))
+    (λ _ → ask (waitForRepair subscription) (resumeRepair subscription))
+
   afterSubscription : Bool → SubscriptionFailure ⊎ WorkSubscription → WatchState
   afterSubscription _ (inj₁ (configurationFailure detail)) = controlling
-    (persistBlocked (toList "invalid_config") detail >>= λ _ → awaitRepair detail)
+    (persistBlocked (toList "invalid_config") detail >>= λ _ → awaitRepair nothing detail)
   afterSubscription _ (inj₁ (databaseSetupFailure detail)) = controlling
-    (persistBlocked (toList "database_setup") detail >>= λ _ → awaitRepair detail)
+    (persistBlocked (toList "database_setup") detail >>= λ _ → awaitRepair nothing detail)
   afterSubscription false (inj₁ (databaseUnavailable detail)) = controlling (awaitDatabase detail)
   afterSubscription true (inj₁ (databaseUnavailable _)) = controlling reconnect
   afterSubscription _ (inj₂ subscription) = watching subscription (once true)
@@ -254,18 +315,11 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   afterWork subscription (inj₂ explicitRetry) = ask (dropWorkSubscription subscription) (λ _ → done (subscribing false))
 
   afterWatch : WorkSubscription → Host.Outcome → WatchState
-  afterWatch subscription (Host.outcome Host.success false false) = watching subscription (once true)
-  afterWatch subscription (Host.outcome Host.success false true) =
+  afterWatch subscription (Host.outcome Host.success _ false) = watching subscription (once true)
+  afterWatch subscription (Host.outcome Host.success _ true) =
     controlling (ask (waitForWork subscription) (afterWork subscription))
-  -- A deferred batch is not a failed attempt (Mimir.JudgeHost.outcomeOf maps
-  -- watch ∧ isDeferred to success): its pins are excluded from subsequent
-  -- selections and reconciled against fresh reads, so the next batch can
-  -- select other pending work. Continuing immediately lets one unconfirmable
-  -- experience drain the rest of the queue instead of parking the watcher
-  -- until a repair signal.
-  afterWatch subscription (Host.outcome Host.success true false) = watching subscription (once true)
-  afterWatch subscription problem = controlling (ask (dropWorkSubscription subscription)
-    (λ _ → awaitRepair (toList "The current batch could not complete")))
+  afterWatch subscription problem = controlling
+    (awaitRepair (just subscription) (toList "The current batch could not complete"))
 
   data WatchStep : Set where
     internal : WatchState → WatchStep
@@ -305,7 +359,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     subscribed : ∀ result → Receipt subscribeWork result
     subscriptionDropped : ∀ subscription → Receipt (dropWorkSubscription subscription) tt
     workEvent : ∀ subscription event → Receipt (waitForWork subscription) event
-    repairEvent : ∀ event → Receipt waitForRepair event
+    repairEvent : ∀ subscription event → Receipt (waitForRepair subscription) event
     reconnectEvent : ∀ event → Receipt waitForReconnect event
 
   data WatchTransition : WatchState → Maybe P.Event → WatchState → Set where
@@ -343,3 +397,4 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     returned : ∀ result → Runs (done result) [] result
     replied : ∀ effect continuation reply events result → Receipt effect reply → Runs (continuation reply) events result →
       Runs (ask effect continuation) ((effect , reply) ∷ events) result
+```

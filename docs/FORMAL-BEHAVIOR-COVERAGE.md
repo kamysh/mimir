@@ -5,7 +5,7 @@ does not prescribe statistics, wire formatting, database query text, or other
 implementation details.
 
 [Recovery](../spec/Mimir/Recovery.agda) defines the shared recovery contract.
-[ProjectDeletion](../spec/Mimir/ProjectDeletion.agda) gives a project-deletion
+[ProjectDeletion](../spec/Mimir/ProjectDeletion.lagda.md) gives a project-deletion
 instance, and the MCP path uses that instance. The transaction contract assumes
 that a committed transaction succeeds and its client receives the result.
 

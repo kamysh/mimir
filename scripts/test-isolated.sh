@@ -192,5 +192,5 @@ fi
 if [[ $selected == all || $selected == formal ]]; then
     run formal-source-regressions cargo test --manifest-path "$repo/tools/qa/Cargo.toml" --locked --offline
     run formal-inventory bash "$repo/scripts/formal/check-coverage.sh"
-    run_cwd=$repo/spec run aggregate-formal-specification agda Mimir.agda
+    run aggregate-formal-specification bash "$repo/scripts/formal/check-readers.sh"
 fi

@@ -14,7 +14,7 @@ open import Data.Product using (_×_; _,_; proj₁)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.String using (toList)
 open import Relation.Nullary using (yes; no)
-open import Mimir.Text using (Text)
+open import Mimir.Text using (Text; nonblank)
 open import Mimir.SourceReview using (_≟Text_)
 open import Mimir.UUIDGroups using (UUID)
 open import Mimir.Validation using (Fault)
@@ -133,6 +133,15 @@ module Decode (conversion : Conversion.Contract) where
   project : V.Object.View → Fault ⊎ Maybe Text
   project = present "project" V.asString
 
+  explicitProject : V.Value → Fault ⊎ Text
+  explicitProject raw = V.asString raw >>= validate
+    where
+    validate : Text → Fault ⊎ Text
+    validate name with nonblank name
+    ... | true = inj₂ name
+    ... | false = inj₁ (Validation.fault [] Validation.emptyText
+      "Choose a nonblank project for the experiences to search and resubmit.")
+
   integer : V.Value → Fault ⊎ ℕ
   integer = unsigned sizeMaximum
 
@@ -245,7 +254,7 @@ module Decode (conversion : Conversion.Contract) where
   decode Tools.getExperience fields = mapResult (λ id → learningQuery (Query.experience id)) (required "id" uuid fields)
   decode Tools.experienceHistory fields = mapResult (λ id → learningQuery (Query.history id)) (required "id" uuid fields)
   decode Tools.queryLearningContext fields = required "context" V.asString fields >>= λ context →
-    required "project" V.asString fields >>= λ project → optional "limit" positive fields >>= λ limit →
+    required "project" explicitProject fields >>= λ project → optional "limit" positive fields >>= λ limit →
     inj₂ (learningContext context project limit)
 
   readTool : Tools.Tool → V.Value → Fault ⊎ Request

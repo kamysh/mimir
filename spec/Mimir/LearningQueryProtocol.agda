@@ -15,7 +15,6 @@ open import Relation.Nullary using (does)
 import Mimir.Effects as Effects
 import Mimir.LearningStore as Store
 import Mimir.ReviewPreparationPublication as Publication
-import Mimir.ReviewLedger as Ledger
 import Mimir.ReviewObservation as Observation
 import Mimir.ExperienceRead as Experiences
 import Mimir.LearningHistory as History
@@ -36,22 +35,22 @@ data Request : Set where
   assessmentHistory : Selection.Query → ℕ → Maybe ℕ → Request
 
 data Statement : Set where
-  currentOf reviewOf sourceVersions reviewVersions : UUID → Statement
+  currentOf reviewOf : UUID → Statement
   pendingRows : Maybe Text → Maybe ℕ → List UUID → Statement
-  scoreTarget scoreRows : Selection.Query → Statement
+  scoreSnapshot : Selection.Query → Statement
   historicalScores : Selection.Query → ℕ → Maybe ℕ → Statement
 
 data Effect : Set where
   beginRead : Effect
   readReviewHeader : UUID → Effect
-  readHistoryRows : RawHistory.Kind → UUID → Effect
+  readHistory : UUID → Effect
   select : Maybe ℕ → Statement → Effect
   dropTransaction : ℕ → Effect
 
 Reply : Effect → Set
 Reply beginRead = Text ⊎ ℕ
 Reply (readReviewHeader _) = Text ⊎ Maybe RawHistory.Current
-Reply (readHistoryRows _ _) = Text ⊎ List RawHistory.Entry
+Reply (readHistory _) = Text ⊎ History.Rows
 Reply (select handle statement) = Text ⊎ Store.World
 Reply (dropTransaction tx) = ⊤
 
@@ -64,7 +63,6 @@ data Result : Set where
   experienceResult : Maybe Observation.Snapshot → Result
   reviewResult : Maybe History.CurrentReview → Result
   rawReviewResult : UUID → Maybe RawHistory.Current → Result
-  rawHistoryResult : List RawHistory.Entry → List RawHistory.Entry → Result
   historyResult : History.Result → Result
   pendingResult : Experiences.Result → Result
   scoreResult : Assessment.ScoreResult → Result
@@ -81,36 +79,15 @@ read handle statement next = ask (select handle statement) receive
   receive (inj₁ failure) = close handle (failed failure)
   receive (inj₂ observed) = next observed
 
-scoreAfterTarget : ℕ → Selection.Query → Store.World → Script Result
-scoreAfterTarget tx q first with Targets.validate (Selection.Query.project q)
-  (map Recompute.target (Recompute.beliefs (Publication.World.nodes (Store.World.publication first))))
-  (Selection.Query.belief q ∷ [])
-... | Validation.rejected failure refutation = close (just tx) (invalidTarget failure)
-... | Validation.accepted valid = read (just tx) (scoreRows q) (λ second →
-  close (just tx) (scoreResult (Assessment.assessed q (Assessment.scores q (AssessmentView.view second)))))
-
-scoreAfterBegin : Selection.Query → Text ⊎ ℕ → Script Result
-scoreAfterBegin q (inj₁ failure) = done (failed failure)
-scoreAfterBegin q (inj₂ tx) = read (just tx) (scoreTarget q) (scoreAfterTarget tx q)
-
-historyAfterSources : UUID → Store.World → Store.World → Script Result
-historyAfterSources id first second with History.reviewHistory id (Store.World.reviewTimes second)
-  (Ledger.World.histories (Publication.World.ledger (Store.World.publication second)) id)
-... | nothing = done (historyResult History.inconsistentHistory)
-... | just reviews = done (historyResult (History.history
-  (History.sourceHistory id (Store.World.sources first)) reviews))
-
 start : Request → Script Result
 start (experience id) = read nothing (currentOf id) (λ observed →
   done (experienceResult (Experiences.get id (Store.World.current observed))))
 start (currentReview id) = ask (readReviewHeader id) λ where
   (inj₁ error) → done (failed error)
   (inj₂ current) → done (rawReviewResult id current)
-start (history id) = ask (readHistoryRows RawHistory.sources id) λ where
+start (history id) = ask (readHistory id) λ where
   (inj₁ error) → done (failed error)
-  (inj₂ sources) → ask (readHistoryRows RawHistory.reviews id) λ where
-    (inj₁ error) → done (failed error)
-    (inj₂ reviews) → done (rawHistoryResult sources reviews)
+  (inj₂ observed) → done (historyResult (History.getHistory id observed))
 start (pending project limit excluded) with validSelection limit
 ... | false = done (pendingResult Experiences.invalidLimit)
 ... | true = read nothing (pendingRows project limit excluded) (λ observed →
@@ -118,7 +95,14 @@ start (pending project limit excluded) with validSelection limit
 start (score q) with nonblank (Selection.Query.project q) ∧
   nonblank (Selection.Query.scope q) ∧ nonblank (Selection.Query.rubric q)
 ... | false = done (scoreResult Assessment.missingScope)
-... | true = ask beginRead (scoreAfterBegin q)
+... | true = read nothing (scoreSnapshot q) λ observed →
+  finish (Assessment.getAssessment q
+    (map Recompute.target (Recompute.beliefs (Publication.World.nodes (Store.World.publication observed))))
+    (AssessmentView.view observed))
+  where
+  finish : Assessment.ScoreResult → Script Result
+  finish (Assessment.invalidTarget fault) = done (invalidTarget fault)
+  finish result = done (scoreResult result)
 start (assessmentHistory q offset limit) with validSelection limit ∧ does (offset ≤? Bounds.i64Maximum)
 ... | false = done (assessmentHistoryResult Assessment.invalidPage)
 ... | true with nonblank (Selection.Query.project q)

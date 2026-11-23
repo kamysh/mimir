@@ -21,7 +21,9 @@ import Mimir.PublicRequest as Request
 import Mimir.ApplicationProtocol as Application
 import Mimir.ApplicationStore as Store
 import Mimir.GraphMutationProtocol as Mutation
+import Mimir.GraphReadProtocol as GraphRead
 import Mimir.BeliefEmbedding as BeliefEmbedding
+import Mimir.DocumentQuery as DocumentQuery
 import Mimir.Reembedding as Reembedding
 import Mimir.InferenceProtocol as Inference
 open import Mimir.UUIDGroups using (UUID)
@@ -69,7 +71,7 @@ module Run (environment : Application.Environment) (format : Encoding.Formatting
   -- Only proved input refusals are correctable. Storage/provider failures
   -- retain their recovery path and cannot acquire this classification.
   learningValidation : Learning.Failure → Maybe Fault
-  learningValidation (Learning.recordFailure (Experience.invalid fault)) = just fault
+  learningValidation (Learning.recordFailure failure) = Experience.correctionFault failure
   learningValidation (Learning.reviewFailure (Review.invalid fault)) = just fault
   learningValidation (Learning.allocationFailure fault) = just fault
   learningValidation _ = nothing
@@ -94,7 +96,13 @@ module Run (environment : Application.Environment) (format : Encoding.Formatting
   finish (A.mutated Mutation.invalidOrigin) = inj₁ (invalidArguments
     (Validation.fault (Validation.key "provenance" ∷ []) Validation.unsupportedCombination
       "Cite an independent user instruction or document. Use record_experience for claims derived from an incident."))
+  finish (A.documentQueryResult DocumentQuery.invalidContext) = inj₁ (invalidArguments
+    (Validation.fault (Validation.key "context" ∷ []) Validation.emptyText
+      "Document search requires nonblank context. Supply the text or question to search for, then resubmit."))
   finish (A.learningQueryResult (Query.invalidTarget fault)) = inj₁ (invalidArguments fault)
+  finish (A.readResult GraphRead.missingBelief) = inj₁ (invalidArguments
+    (Validation.fault (Validation.key "id" ∷ []) Validation.missingReference
+      "Belief not found. Look up the desired belief and use its stored UUID."))
   finish original@(A.learned q (A.Learn.invalidRequest failure)) with learningValidation failure
   ... | just fault = inj₁ (invalidArguments fault)
   ... | nothing = inj₁ (operationFailed original)

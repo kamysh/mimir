@@ -7,7 +7,7 @@ module Mimir.ApplicationProtocol where
 open import Data.Bool using (Bool; true; false)
 open import Data.Float.Base using (Float)
 open import Data.Integer using (ℤ)
-open import Data.List using (List; []; _∷_; map)
+open import Data.List using (List; []; _∷_; map; filterᵇ)
 open import Data.List.Membership.Propositional using (_∈_)
 open import Data.List.Relation.Unary.Any using (here)
 open import Data.Maybe using (Maybe; just; nothing)
@@ -17,7 +17,7 @@ open import Data.Product using (Σ; _×_; _,_; proj₁)
 import Data.String
 open import Data.Unit using (⊤; tt)
 open import Data.Empty using (⊥; ⊥-elim)
-open import Relation.Nullary using (yes; no; ¬_)
+open import Relation.Nullary using (does; yes; no; ¬_)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; sym; trans; cong; subst)
 open import Mimir.Text using (Text)
 open import Mimir.UUIDGroups using (UUID; _≟UUID_)
@@ -50,7 +50,6 @@ import Mimir.ReviewObservation as Observation
 import Mimir.LearningQueryProtocol as Query
 import Mimir.ExperienceRead as ExperienceRead
 import Mimir.AssessmentRead as AssessmentRead
-import Mimir.LearningHistory as LearningHistory
 import Mimir.IndependentProvenance as Origin
 import Mimir.Validation as Validation
 import Mimir.LearningCandidates as Candidates
@@ -71,6 +70,7 @@ record Environment : Set₁ where
     embeddingsEnabled : Bool
     retirementGraceHours : Maybe Float
     f32 : Ranking.F32
+    documentDistance : DocumentQuery.Distance
     unicode : Ranking.Unicode
     databaseTextBefore : Text → Text → Bool
     now : ℤ
@@ -88,11 +88,11 @@ module Run (environment : Environment) where
   module RelationRecovery (command : Mutation.Statement) = Mutation.StatementRecovery command
   module DefeatRecovery (from to : UUID) (weight : Number) = Mutation.DefeatRecovery from to weight
   module DeleteRecovery (kind : Deletion.Kind) (id : UUID) = Delete.T.RecoveryPlan (Delete.delete kind id)
-  module Forget = Project.Operation database
-  module Standalone (project : Text) = Project.Standalone database project
+  module Forget = Project.Operation database calculation
+  module Standalone (project : Text) = Project.Standalone database calculation project
   module Grounding = Ground.Operation database calculation
   module GroundRecovery (request : Ground.Request) = Grounding.T.RecoveryPlan (Grounding.plan request)
-  module Document = Documents.Operations database dimension
+  module Document = Documents.Operations database dimension calculation
   module DocumentClearRecovery (path : Text) = Document.ClearRecovery path
   module DocumentReplaceRecovery (path : Text) (chunks : List DocumentStore.Chunk) (vectors : List Store.Vector) =
     Document.ReplaceRecovery path chunks vectors
@@ -153,9 +153,12 @@ module Run (environment : Environment) where
       beliefWasAbsent : Ranking.lookup (Graph.BeliefValues.identity belief) (Store.beliefs before) ≡ nothing
       beliefStored : Ranking.lookup (Graph.BeliefValues.identity belief) (Store.beliefs after) ≡ just belief
       vectorStored : (Graph.BeliefValues.identity belief , BeliefEmbedding.vector material) ∈ Store.World.beliefVectors after
-      sourceStored : Σ Store.Ground (λ source → source ∈ Store.World.grounds after ×
-        Store.Ground.belief source ≡ Graph.BeliefValues.identity belief ×
-        Store.Ground.chunk source ≡ DocumentStore.Chunk.identity (BeliefEmbedding.Prepared.supportingPassage material))
+      -- The new belief starts with exactly one source link and no evidence mass.
+      sourceStored :
+        filterᵇ (λ source → does (Graph.BeliefValues.identity belief ≟UUID Store.Ground.belief source))
+          (Store.World.grounds after) ≡
+        (Store.ground (BeliefEmbedding.Draft.supportingPassageID proposal)
+          (Graph.BeliefValues.identity belief) 0.0 ∷ [])
       contentMatches : Graph.BeliefValues.content belief ≡ BeliefEmbedding.Draft.content proposal
       projectMatches : Graph.BeliefValues.project belief ≡ BeliefEmbedding.Draft.project proposal
       memoryMatches : Graph.BeliefValues.memory belief ≡ BeliefEmbedding.Draft.memory proposal
@@ -196,7 +199,6 @@ module Run (environment : Environment) where
   querySucceeded (Query.invalidRequest _) = ⊥
   querySucceeded (Query.invalidTarget _) = ⊥
   querySucceeded (Query.pendingResult ExperienceRead.invalidLimit) = ⊥
-  querySucceeded (Query.historyResult LearningHistory.inconsistentHistory) = ⊥
   querySucceeded (Query.scoreResult AssessmentRead.missingScope) = ⊥
   querySucceeded (Query.scoreResult (AssessmentRead.invalidTarget _)) = ⊥
   querySucceeded (Query.assessmentHistoryResult AssessmentRead.invalidPage) = ⊥
@@ -390,11 +392,11 @@ module Run (environment : Environment) where
   evidenceSucceeded (evidenceResult (inj₂ _)) = ⊤
   evidenceSucceeded _ = ⊥
   module EvidenceRecovery = Recovery Store.World Evidence.Effect Result (λ _ → ⊤) Evidence.Reply
-    (λ before effect reply after → after ≡ before)
+    (λ before effect reply after → (after ≡ before) × Evidence.Observed before effect reply)
     (λ before after → after ≡ before)
     (λ _ _ → Store.World) (λ _ _ world → world)
     (λ _ world → world) evidenceSucceeded (λ _ → ⊤)
-  module EvidenceProof = EvidenceRecovery.ReadOnly (λ _ _ _ _ same → same)
+  module EvidenceProof = EvidenceRecovery.ReadOnly (λ _ _ _ _ observed → proj₁ observed)
     (λ _ _ same → same) (λ _ _ → refl)
   evidenceOperation : EvidenceRecovery.Recoverable EvidenceRequest
   evidenceOperation = EvidenceProof.readOnly evidenceProgram
@@ -402,13 +404,17 @@ module Run (environment : Environment) where
   documentSearchSucceeded : DocumentQuery.Result → Set
   documentSearchSucceeded (DocumentQuery.found _) = ⊤
   documentSearchSucceeded _ = ⊥
+  documentSearchReadOnly : Store.World → (effect : DocumentQuery.Effect) →
+    DocumentQuery.Reply effect → Store.World → Set
+  documentSearchReadOnly before effect reply after =
+    (after ≡ before) × DocumentQuery.Observed documentDistance before effect reply
   module DocumentSearchRecovery = Recovery Store.World DocumentQuery.Effect DocumentQuery.Result
     (λ _ → ⊤) DocumentQuery.Reply
-    (λ before effect reply after → after ≡ before)
+    documentSearchReadOnly
     (λ before after → after ≡ before)
     (λ _ _ → Store.World) (λ _ _ world → world)
     (λ _ world → world) documentSearchSucceeded (λ _ → ⊤)
-  module DocumentSearchProof = DocumentSearchRecovery.ReadOnly (λ _ _ _ _ same → same)
+  module DocumentSearchProof = DocumentSearchRecovery.ReadOnly (λ _ _ _ _ observed → proj₁ observed)
     (λ _ _ same → same) (λ _ _ → refl)
   DocumentSearch = Text × Maybe Text × Maybe ℕ
   documentSearchOperation : DocumentSearchRecovery.Recoverable DocumentSearch
@@ -584,13 +590,18 @@ module Run (environment : Environment) where
   SearchReply (retrieval state) = Retrieval.Reply state
   SearchReply (evidence effect) = Evidence.Reply effect
 
+  searchObserved : Store.World → (effect : SearchEffect) → SearchReply effect → Set
+  searchObserved before (retrieval state) reply = ⊤
+  searchObserved before (evidence effect) reply = Evidence.Observed before effect reply
+
   searchSucceeded : Result → Set
   searchSucceeded (relevantResult _) = ⊤
   searchSucceeded (groundedResult (inj₂ _)) = ⊤
   searchSucceeded _ = ⊥
 
   module SearchRecovery = Recovery Store.World SearchEffect Result (λ _ → ⊤) SearchReply
-    (λ before effect reply after → after ≡ before) (λ before after → after ≡ before)
+    (λ before effect reply after → (after ≡ before) × searchObserved before effect reply)
+    (λ before after → after ≡ before)
     (λ _ _ → Store.World) (λ _ _ world → world) (λ _ world → world) searchSucceeded (λ _ → ⊤)
 
   evidenceSearchNext : Text → Retrieval.SemanticStatus →
@@ -624,18 +635,14 @@ module Run (environment : Environment) where
 
   searchMachine : SearchRecovery.Machine
   searchMachine = record { State = SearchPhase ; next = searchNext }
-  module SearchProof = SearchRecovery.ReadOnlyMachine searchMachine (λ _ _ _ _ same → same)
+  module SearchProof = SearchRecovery.ReadOnlyMachine searchMachine (λ _ _ _ _ observed → proj₁ observed)
     (λ _ _ same → same) (λ _ _ → refl)
-
-  preference : Bool → Maybe Candidates.Memory → Maybe Candidates.Memory
-  preference false requested = requested
-  preference true requested = nothing
 
   searchOperation : SearchRecovery.Recoverable SearchRequest
   searchOperation = SearchProof.readOnly (λ request → retrieving
     (SearchRequest.includeEvidence request) (SearchRequest.evidencePerBelief request)
     (Retrieval.overlay (Retrieval.request (SearchRequest.query request) (SearchRequest.limit request)
-      (SearchRequest.project request) (preference (SearchRequest.includeEvidence request) (SearchRequest.prefer request)) embeddingsEnabled)))
+      (SearchRequest.project request) (SearchRequest.prefer request) embeddingsEnabled)))
 
   contextSucceeded : Result → Set
   contextSucceeded (contextResult _) = ⊤
@@ -1407,10 +1414,13 @@ module Run (environment : Environment) where
     learningRead : ∀ {state effect reply before} →
       RequestStep (queryEffect effect) state reply before before
     evidenceRead : ∀ {state effect reply before} →
+      Evidence.Observed before effect reply →
       RequestStep (evidenceEffect effect) state reply before before
     documentSearchRead : ∀ {state effect reply before} →
+      DocumentQuery.Observed documentDistance before effect reply →
       RequestStep (documentQueryEffect effect) state reply before before
     searchRead : ∀ {state effect reply before} →
+      searchObserved before effect reply →
       RequestStep (searchEffect effect) state reply before before
     contextRead : ∀ {state effect reply before} →
       RequestStep (contextEffect effect) state reply before before
@@ -1461,8 +1471,8 @@ module Run (environment : Environment) where
         (Forget.learning (Forget.T.begin database) , inj₂ tx) ∷
         (Forget.learning (Forget.T.acquire tx 671942183) , inj₂ tt) ∷
         (Forget.learning (Forget.T.read tx) , inj₂ before) ∷
-        (Forget.learning (Forget.T.write tx (Project.published project before)) , inj₂ tt) ∷ [] →
-      DB.Atomic before (Project.published project before) (Forget.T.receipt reply) after →
+        (Forget.learning (Forget.T.write tx (Forget.outcome project before)) , inj₂ tt) ∷ [] →
+      Forget.Commit project before (Forget.T.receipt reply) after →
       RequestStep
         (forgetEffect (Forget.learning (Forget.T.commit tx))) (standaloneForgetState project (Standalone.R.running events
           (Forget.E.ask (Forget.learning (Forget.T.commit tx)) continuation) prefix)) reply before after
@@ -1471,8 +1481,8 @@ module Run (environment : Environment) where
         (Forget.learning (Forget.T.begin database) , inj₂ tx) ∷
         (Forget.learning (Forget.T.acquire tx 671942183) , inj₂ tt) ∷
         (Forget.learning (Forget.T.read tx) , inj₂ before) ∷
-        (Forget.learning (Forget.T.write tx (Project.published project before)) , inj₂ tt) ∷ [] →
-      DB.Atomic before (Project.published project before) (Forget.T.receipt reply) after →
+        (Forget.learning (Forget.T.write tx (Forget.outcome project before)) , inj₂ tt) ∷ [] →
+      Forget.Commit project before (Forget.T.receipt reply) after →
       RequestStep
         (forgetEffect (Forget.learning (Forget.T.commit tx))) (requestState identityValue (standaloneForgetState project (Standalone.R.running events
           (Forget.E.ask (Forget.learning (Forget.T.commit tx)) continuation) prefix))) reply before after

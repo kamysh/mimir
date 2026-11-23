@@ -1,11 +1,26 @@
+# What project deletion promises
+
+Deleting a project removes its beliefs, patterns, indexed document
+passages, and learning history in one database transaction. It also
+removes vectors and graph links attached to the deleted records. An
+unrelated project keeps its records. A link that crosses the boundary
+is removed if either endpoint is deleted.
+
+The reported count is the number of beliefs and document passages
+deleted. A project with only patterns or learning records can be
+successfully deleted with a count of zero.
+
+```agda
 {-# OPTIONS --safe #-}
 -- Project deletion removes all owned data in one transaction. Its returned
 -- count is the belief count plus the chunk count from the transaction's view;
 -- patterns are removed but do not contribute to that count.
 module Mimir.ProjectDeletion where
 
-open import Data.Bool using (Bool; true; false; not)
+open import Data.Bool using (Bool; true; false; not; _∧_)
+open import Data.Float.Base using (_<ᵇ_)
 open import Data.List using (List; []; _∷_; _++_; filterᵇ; map; length)
+open import Data.List.Properties using (∷-injectiveˡ; ∷-injectiveʳ)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; _+_; z≤n)
 open import Data.Product using (Σ; _×_; _,_; proj₁)
@@ -14,7 +29,7 @@ open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
 open import Data.Empty using (⊥; ⊥-elim)
 open import Relation.Nullary using (yes; no)
-open import Relation.Binary.PropositionalEquality using (_≡_; refl; sym; trans)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl; sym; trans; subst)
 open import Mimir.Text using (Text)
 open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Mimir.SourceReview using (_≟Text_)
@@ -24,6 +39,10 @@ import Mimir.CandidateGraph as Graph
 import Mimir.IndependentProvenance as Origin
 import Mimir.StructuredValue as JSON
 import Mimir.ReviewEdges as Edges
+import Mimir.ReviewSchema as Review
+import Mimir.ApplicationFloat as Numeric
+import Mimir.LearningRecompute as Recompute
+import Mimir.PosteriorComputation as Posterior
 import Mimir.LearningStore as Learning
 import Mimir.ReviewPreparationPublication as Publication
 import Mimir.ReviewLedger as Ledger
@@ -40,6 +59,22 @@ import Mimir.DatabaseTransaction as DB
 import Mimir.Effects as Effects
 import Mimir.Recovery as Recovery
 
+```
+
+## Decide what the project owns
+
+The project tag selects beliefs, patterns, document passages and
+experiences. The original belief and passage UUIDs identify the
+vectors to remove. Experience UUIDs identify learning history,
+review records, candidate reservations, assessments and item
+ownership.
+
+For example, deleting a belief must also delete its vector. If
+the belief were deleted in a separate committed step, a retry could
+no longer discover its UUID. This contract takes ownership from the
+original store and treats the entire deletion as one transaction.
+
+```agda
 ownedExperiences : Text → Learning.World → List UUID
 ownedExperiences project w = map Read.identity (filterᵇ (Read.scopeMatches (just project)) (Learning.World.current w))
 
@@ -103,6 +138,16 @@ intended project w = forgetLearning project
 deletedCount : Text → Store.World → ℕ
 deletedCount project w = length (Writes.projectBeliefs project w) + length (projectChunks project w)
 
+```
+
+## Check which records must be gone
+
+The proofs below check the result against the original ownership
+keys. They cover the project records, their vectors, attachments,
+and learning references. Proofs that rows remain absent let the
+retry argument use the original keys throughout.
+
+```agda
 -- Records owned by the project must be absent after deletion.
 data NoRows {A : Set} (key : A → UUID) (ids : List UUID) : List A → Set where
   noRows : NoRows key ids []
@@ -448,6 +493,16 @@ ownerStaysCleared : ∀ project before item → ownerOf before item ≡ nothing 
   ownerOf (intended project before) item ≡ nothing
 ownerStaysCleared project before item cleared rewrite cleared = refl
 
+```
+
+## Read the deletion result
+
+The deletion guarantee lists the records that must be absent from
+the final store. It refers to the project before the request ran.
+An empty lookup on retry cannot stand in for proof that all the
+original records were removed.
+
+```agda
 -- The observable goal is stated against ownership in the original world,
 -- not against whatever keys a retry can still discover.
 record Deleted (project : Text) (before after : Store.World) : Set where
@@ -488,14 +543,100 @@ record Deleted (project : Text) (before after : Store.World) : Set where
     owners : ∀ item experience provenance → ownerOf before item ≡ just (experience , provenance) →
       Ranking.member experience experienceIDs ≡ true → ownerOf after item ≡ nothing
 
-published : Text → Store.World → Store.World
-published = intended
+weightedDependency : Edges.Edge → Bool
+weightedDependency relation with Edges.Edge.relation relation | Numeric.number (Edges.Edge.weight relation)
+... | Review.contradicts | _ = false
+... | _ | nothing = false
+... | _ | just weight = 0.0 <ᵇ weight
 
-module Operation (database : ℕ) where
+affectedBeliefs : Text → Store.World → List UUID
+affectedBeliefs project before =
+  map Edges.Edge.to (filterᵇ (λ edge → weightedDependency edge ∧
+    Ranking.member (Edges.Edge.from edge) deleted ∧ survives (Edges.Edge.to edge)) (edgesOf before)) ++
+  map Store.Ground.belief (filterᵇ (λ link → (0.0 <ᵇ Store.Ground.weight link) ∧
+    Ranking.member (Store.Ground.chunk link) passages ∧ survives (Store.Ground.belief link))
+    (Store.World.grounds before))
+  where
+  deleted = Writes.projectBeliefs project before
+  passages = projectChunks project before
+  survivors = map Graph.BeliefValues.identity (Store.beliefs (intended project before))
+  survives : UUID → Bool
+  survives id = Ranking.member id survivors
+
+recalculate : Posterior.Calculation → List UUID → Store.World → Recompute.Result
+recalculate calculation [] deleted = Recompute.recomputed (Store.nodes deleted) false
+recalculate calculation roots@(_ ∷ _) deleted =
+  Recompute.runGlobal (Recompute.scopedCalculation calculation) roots (Store.nodes deleted)
+    (edgesOf deleted) (Recompute.activeReviewsScoped nothing (Learning.identities learn)
+      (Publication.World.ledger (Learning.World.publication learn))) (Store.groundingMasses deleted)
+  where learn = Store.World.learning deleted
+
+nodeValues : List Graph.Node → Recompute.Result → List Graph.Node
+nodeValues unchanged (Recompute.recomputed nodes _) = nodes
+nodeValues unchanged _ = unchanged
+
+recalculationSucceeded : Recompute.Result → Set
+recalculationSucceeded (Recompute.recomputed _ _) = ⊤
+recalculationSucceeded _ = ⊥
+
+published : Posterior.Calculation → Text → Store.World → Store.World
+published calculation project before = Store.setNodes
+  (nodeValues (Store.nodes deleted) (recalculate calculation (affectedBeliefs project before) deleted)) deleted
+  where deleted = intended project before
+
+recalculatedIDs : ∀ calculation roots deleted →
+  map Graph.nodeID (nodeValues (Store.nodes deleted) (recalculate calculation roots deleted)) ≡
+  map Graph.nodeID (Store.nodes deleted)
+recalculatedIDs calculation [] deleted = refl
+recalculatedIDs calculation roots@(_ ∷ _) deleted with recalculate calculation roots deleted in outcome
+... | Recompute.recomputed after warning = Recompute.runGlobalPreservesIdentities (Recompute.scopedCalculation calculation)
+  roots (Store.nodes deleted) (edgesOf deleted)
+  (Recompute.activeReviewsScoped nothing (Learning.identities (Store.World.learning deleted))
+    (Publication.World.ledger (Learning.World.publication (Store.World.learning deleted))))
+  (Store.groundingMasses deleted) after warning outcome
+... | Recompute.foreignTarget = refl
+... | Recompute.invalidNumericInput = refl
+... | Recompute.invalidNumericWrite = refl
+
+nodeAbsencePreserved : ∀ ids before after → map Graph.nodeID after ≡ map Graph.nodeID before →
+  NoNodes ids before → NoNodes ids after
+nodeAbsencePreserved ids [] [] equality noRows = noRows
+nodeAbsencePreserved ids [] (_ ∷ _) () noRows
+nodeAbsencePreserved ids (_ ∷ _) [] () (keptRow absent tail)
+nodeAbsencePreserved ids (old ∷ before) (new ∷ after) equality (keptRow absent tail) =
+  keptRow (subst (λ id → Ranking.member id ids ≡ false) (sym (∷-injectiveˡ equality)) absent)
+    (nodeAbsencePreserved ids before after (∷-injectiveʳ equality) tail)
+
+publishedNodesCleared : ∀ calculation project before ids → NoNodes ids (Store.nodes (intended project before)) →
+  NoNodes ids (Store.nodes (published calculation project before))
+publishedNodesCleared calculation project before ids =
+  nodeAbsencePreserved ids _ _ (recalculatedIDs calculation (affectedBeliefs project before) (intended project before))
+
+```
+
+## Roll back and restart the original request
+
+The database applies the deletion as a unit. An attempt that fails
+before commit leaves the original store. The caller can restart the
+same request after correcting the cause, without a saved checkpoint.
+The retry theorem says that after any interrupted attempts, a
+completed retry removes the records owned by the original project.
+
+The proof uses the application's transaction contract. A committed
+transaction succeeds and the caller receives its result. PostgreSQL
+provides atomic commit.
+
+[Rust deletion transaction](../../crates/core/src/store.rs#L661) · [PostgreSQL rollback test](../../crates/core/src/store/conformance.rs#L477)
+
+```agda
+module Operation (database : ℕ) (calculation : Posterior.Calculation) where
   module T = Transaction.Over Store.World ℕ Text database 671942183
 
+  outcome : Text → Store.World → Store.World
+  outcome = published calculation
+
   plan : Text → Store.World → T.Decision
-  plan project w = T.replace (published project w) (deletedCount project w)
+  plan project w = T.replace (outcome project w) (deletedCount project w)
 
   data Effect : Set where
     learning : T.Effect → Effect
@@ -530,7 +671,7 @@ module Operation (database : ℕ) where
         (learning (T.begin database) , inj₂ tx) ∷
         (learning (T.acquire tx 671942183) , inj₂ tt) ∷
         (learning (T.read tx) , inj₂ before) ∷
-        (learning (T.write tx (published project before)) , inj₂ tt) ∷
+        (learning (T.write tx (outcome project before)) , inj₂ tt) ∷
         (learning (T.commit tx) , T.committed) ∷ [] ×
       count ≡ deletedCount project before))
   successfulTrace project events count (replied _ _ (inj₁ failure) ())
@@ -555,7 +696,7 @@ module Operation (database : ℕ) where
       ((learning (T.begin database) , inj₂ tx) ∷
        (learning (T.acquire tx 671942183) , inj₂ tt) ∷
        (learning (T.read tx) , inj₂ before) ∷
-       (learning (T.write tx (published project before)) , inj₂ tt) ∷
+       (learning (T.write tx (outcome project before)) , inj₂ tt) ∷
        (learning (T.commit tx) , T.committed) ∷ [])
       (deleted (deletedCount project before))
   possibleSuccess project tx before =
@@ -563,7 +704,16 @@ module Operation (database : ℕ) where
       (replied _ _ (inj₂ tt) (replied _ _ T.committed (returned _)))))
 
   TransactionPublication : Text → Store.World → DB.Receipt → Store.World → Set
-  TransactionPublication project before receipt after = DB.Atomic before (published project before) receipt after
+  TransactionPublication project before receipt after = DB.Atomic before (outcome project before) receipt after
+
+  CommitAllowed : Text → Store.World → DB.Receipt → Set
+  CommitAllowed project before DB.aborted = ⊤
+  CommitAllowed project before DB.committed = recalculationSucceeded
+    (recalculate calculation (affectedBeliefs project before) (intended project before))
+
+  Commit : Text → Store.World → DB.Receipt → Store.World → Set
+  Commit project before receipt after =
+    TransactionPublication project before receipt after × CommitAllowed project before receipt
 
   -- Each interrupted attempt can have published or the entire
   -- transaction. There is no intermediate publication to strand a vector.
@@ -582,14 +732,14 @@ module Operation (database : ℕ) where
         ((learning (T.begin database) , inj₂ tx) ∷
          (learning (T.acquire tx 671942183) , inj₂ tt) ∷
          (learning (T.read tx) , inj₂ before) ∷
-         (learning (T.write tx (published project before)) , inj₂ tt) ∷
+         (learning (T.write tx (outcome project before)) , inj₂ tt) ∷
          (learning (T.commit tx) , T.committed) ∷ [])
         (deleted (deletedCount project before)) →
       TransactionPublication project before DB.committed after → Completed project before after
 
   retryAfterInterruptions : ∀ {Property : Store.World → Set} project before intermediate final →
-    Property (published project before) →
-    (∀ world → Property world → Property (published project world)) →
+    Property (outcome project before) →
+    (∀ world → Property world → Property (outcome project world)) →
     Interruptions project before intermediate →
     TransactionPublication project intermediate DB.committed final → Property final
   retryAfterInterruptions {Property} project before intermediate final cleared preserves interruptions DB.committedAll
@@ -698,10 +848,10 @@ module Operation (database : ℕ) where
     Interruptions project before intermediate →
     Completed project intermediate final → Deleted project before final
   deletionConverges project before intermediate final attempts (completed tx run retry) = record
-    { beliefs = prove (beliefNodesCleared project before)
-        (λ world → nodesStayCleared project world (Writes.projectBeliefs project before))
-    ; patterns = prove (patternNodesCleared project before)
-        (λ world → nodesStayCleared project world (Writes.projectPatterns project before))
+    { beliefs = prove (publishedNodesCleared calculation project before _ (beliefNodesCleared project before))
+        (λ world old → publishedNodesCleared calculation project world _ (nodesStayCleared project world _ old))
+    ; patterns = prove (publishedNodesCleared calculation project before _ (patternNodesCleared project before))
+        (λ world old → publishedNodesCleared calculation project world _ (nodesStayCleared project world _ old))
     ; beliefVectors = prove (beliefVectorsCleared project before)
         (λ world → beliefVectorsRemainCleared project world (Writes.projectBeliefs project before))
     ; chunks = prove (projectChunksCleared project before)
@@ -734,13 +884,40 @@ module Operation (database : ℕ) where
         retriesClearOwner project before intermediate final item experience provenance original selected attempts retry
     }
     where
-    prove : ∀ {Property : Store.World → Set} → Property (published project before) →
-      (∀ world → Property world → Property (published project world)) → Property final
+    prove : ∀ {Property : Store.World → Set} → Property (outcome project before) →
+      (∀ world → Property world → Property (outcome project world)) → Property final
     prove cleared preserves = retryAfterInterruptions project before intermediate final cleared preserves attempts retry
 
+```
+
+## How application dispatch uses the proof
+
+The application uses the recovery contract below for project deletion.
+Its observations ask whether the originally owned records still exist.
+A reported success follows transaction commit.
+
+### What changes in surviving beliefs
+
+When deletion removes a positive-weight supporting passage or an
+inference link from a deleted belief, Mimir recalculates the surviving
+belief that used it and its dependent beliefs. A zero-weight citation
+or a contradiction alone contributes no inference weight. Unrelated
+beliefs keep their stored values. For example, if a Beta belief relied
+on a weighted passage or belief in Alpha, deleting Alpha keeps the
+Beta belief and recalculates it from the remaining evidence.
+
+The specification restricts the calculation to the affected beliefs
+and requires success before commit. If recalculation or commit fails,
+neither the deletion nor the new belief values can survive the abort.
+The retry proof still uses the original ownership keys because
+recalculation changes values without changing record identities.
+
+[Rust transaction](../../crates/core/src/store.rs#L661) · [PostgreSQL rollback and retry test](../../crates/core/src/store/conformance.rs#L477)
+
+```agda
 -- The operation's outcome is stated against the initial project ownership.
-module Standalone (database : ℕ) (project : Text) where
-  module P = Operation database
+module Standalone (database : ℕ) (calculation : Posterior.Calculation) (project : Text) where
+  module P = Operation database calculation
 
   data Category : Set where
     beliefNode patternNode beliefVector chunk chunkVector : Category
@@ -832,10 +1009,10 @@ module Standalone (database : ℕ) (project : Text) where
   Atomic before (P.learning (P.T.read tx)) (inj₂ observed) after = (after ≡ before) × (observed ≡ before)
   Atomic before (P.learning (P.T.write tx proposed)) (inj₁ failure) after = after ≡ before
   Atomic before (P.learning (P.T.write tx proposed)) (inj₂ tt) after =
-    (after ≡ before) × (proposed ≡ published project before)
+    (after ≡ before) × (proposed ≡ P.outcome project before)
   Atomic before (P.learning (P.T.allocateIdentity tx target)) reply after = after ≡ before
   Atomic before (P.learning (P.T.commit tx)) reply after =
-    DB.Atomic before (published project before) (P.T.receipt reply) after
+    P.Commit project before (P.T.receipt reply) after
   Atomic before (P.learning (P.T.rollback tx)) reply after = after ≡ before
 
   Successful : P.Result → Set
@@ -869,7 +1046,7 @@ module Standalone (database : ℕ) (project : Text) where
   classify before (P.learning (P.T.write tx proposed)) (inj₁ failure) after same = inj₁ same
   classify before (P.learning (P.T.write tx proposed)) (inj₂ tt) after (same , staged) = inj₁ same
   classify before (P.learning (P.T.allocateIdentity tx target)) reply after same = inj₁ same
-  classify before (P.learning (P.T.commit tx)) reply after commit = inj₂ (P.T.receipt reply , commit)
+  classify before (P.learning (P.T.commit tx)) reply after commit = inj₂ (P.T.receipt reply , proj₁ commit)
   classify before (P.learning (P.T.rollback tx)) reply after same = inj₁ same
 
   afterChange : ∀ {before middle after} → Change before middle →
@@ -909,20 +1086,20 @@ module Standalone (database : ℕ) (project : Text) where
       ((P.learning (P.T.begin database) , inj₂ tx) ∷
        (P.learning (P.T.acquire tx 671942183) , inj₂ tt) ∷
        (P.learning (P.T.read tx) , inj₂ snapshot) ∷
-       (P.learning (P.T.write tx (published project snapshot)) , inj₂ tt) ∷
+       (P.learning (P.T.write tx (P.outcome project snapshot)) , inj₂ tt) ∷
        (P.learning (P.T.commit tx) , P.T.committed) ∷ []) before after →
     P.TransactionPublication project before DB.committed after
   committedEvents before after tx snapshot
     (R.appliedEffect begin (R.appliedEffect lock (R.appliedEffect (read , observed)
       (R.appliedEffect (write , staged) (R.appliedEffect commit R.noEffects)))))
-    rewrite begin | lock | read | write = commit
+    rewrite begin | lock | read | write = proj₁ commit
 
   committedSnapshot : ∀ before after tx snapshot →
     R.Applied
       ((P.learning (P.T.begin database) , inj₂ tx) ∷
        (P.learning (P.T.acquire tx 671942183) , inj₂ tt) ∷
        (P.learning (P.T.read tx) , inj₂ snapshot) ∷
-       (P.learning (P.T.write tx (published project snapshot)) , inj₂ tt) ∷
+       (P.learning (P.T.write tx (P.outcome project snapshot)) , inj₂ tt) ∷
        (P.learning (P.T.commit tx) , P.T.committed) ∷ []) before after →
     snapshot ≡ before
   committedSnapshot before after tx snapshot
@@ -935,13 +1112,13 @@ module Standalone (database : ℕ) (project : Text) where
       ((P.learning (P.T.begin database) , inj₂ tx) ∷
        (P.learning (P.T.acquire tx 671942183) , inj₂ tt) ∷
        (P.learning (P.T.read tx) , inj₂ snapshot) ∷
-       (P.learning (P.T.write tx (published project snapshot)) , inj₂ tt) ∷
+       (P.learning (P.T.write tx (P.outcome project snapshot)) , inj₂ tt) ∷
        (P.learning (P.T.commit tx) , P.T.committed) ∷ []) (P.deleted count) →
     R.Applied
       ((P.learning (P.T.begin database) , inj₂ tx) ∷
        (P.learning (P.T.acquire tx 671942183) , inj₂ tt) ∷
        (P.learning (P.T.read tx) , inj₂ snapshot) ∷
-       (P.learning (P.T.write tx (published project snapshot)) , inj₂ tt) ∷
+       (P.learning (P.T.write tx (P.outcome project snapshot)) , inj₂ tt) ∷
        (P.learning (P.T.commit tx) , P.T.committed) ∷ []) before after →
     P.Completed project before after
   actualCompletion before after tx snapshot count countMatches execution effects
@@ -965,9 +1142,9 @@ module Standalone (database : ℕ) (project : Text) where
     P.deletionConverges project before middle after (interruptions attempts) (originalCompletion middle after completed)
 
   intendedDeleted : ∀ before {middle after} → P.Completed project middle after →
-    Deleted project before (published project before)
+    Deleted project before (P.outcome project before)
   intendedDeleted before (P.completed tx execution publication) =
-    P.deletionConverges project before before (published project before) P.none
+    P.deletionConverges project before before (P.outcome project before) P.none
       (P.completed tx (P.possibleSuccess project tx before) DB.committedAll)
 
   cleared : ∀ before after → Deleted project before after →
@@ -1020,10 +1197,10 @@ module Standalone (database : ℕ) (project : Text) where
 
   converges : ∀ (input : ⊤) before middle after →
     R.Attempts* (P.start project) before middle → R.Completed (P.start project) middle after →
-    ∀ index → observe before index after ≡ observe before index (published project before)
+    ∀ index → observe before index after ≡ observe before index (P.outcome project before)
   converges input before middle after attempts completed index =
     trans (cleared before after (deletionConverges before middle after attempts completed) index)
-      (sym (cleared before (published project before)
+      (sym (cleared before (P.outcome project before)
         (intendedDeleted before (originalCompletion middle after completed)) index))
 
   interruptedUnchanged : ∀ {before after} → R.Interrupted (P.start project) before after → after ≡ before
@@ -1086,11 +1263,11 @@ module Standalone (database : ℕ) (project : Text) where
     (R.failedReply {reply = inj₂ tt} refl
     (R.failedReply {reply = inj₂ snapshot} (refl , refl)
     (R.failedReply {reply = inj₂ tt} (refl , staged)
-    (R.failedReply {reply = P.T.aborted detail} DB.abortedNone (R.failedReturn failed)))))) = refl
+    (R.failedReply {reply = P.T.aborted detail} (DB.abortedNone , _) (R.failedReturn failed)))))) = refl
 
   atomicDeletion : R.AllOrNothing ⊤
   atomicDeletion = record
-    { expected = λ _ before index → observe before index (published project before)
+    { expected = λ _ before index → observe before index (P.outcome project before)
     ; script = λ _ → P.start project
     ; interruptedUnchanged = λ _ _ _ attempt → interruptedUnchanged attempt
     ; failedUnchanged = λ _ _ _ attempt → failedUnchanged attempt
@@ -1099,3 +1276,4 @@ module Standalone (database : ℕ) (project : Text) where
   module CertifiedDeletion = R.Transactional atomicDeletion
   recovery : R.Recoverable ⊤
   recovery = CertifiedDeletion.transactional
+```

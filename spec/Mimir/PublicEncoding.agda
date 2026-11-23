@@ -233,6 +233,6 @@ module Encode (format : Formatting) where
     ("active" , V.boolean (Assessment.Entry.active e)) ∷ [])
     where c = Assessment.Entry.contribution e
 
-  historyEntry : ∀ {A : Set} → (A → V.Value) → History.Entry A → V.Value
-  historyEntry encode e = object (("revision" , V.unsigned (History.Entry.revision e)) ∷
-    ("payload" , encode (History.Entry.payload e)) ∷ ("created_at" , timestamp (History.Entry.createdAt e)) ∷ [])
+  historyEntry : History.Entry → V.Value
+  historyEntry e = object (("revision" , V.signed (History.Entry.revision e)) ∷
+    ("payload" , History.Entry.payload e) ∷ ("created_at" , timestamp (History.Entry.createdAt e)) ∷ [])

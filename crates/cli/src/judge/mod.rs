@@ -249,33 +249,24 @@ struct RunOutcome {
 
 /// Delay until the next occurrence of the local time a provider message
 /// declares as its limit reset ("resets 6:50am"). `now_minutes` is the
-/// current local time in minutes since midnight; returned minutes are added
-/// to it modulo 1440. Falls back to 60 minutes when the message does not
-/// carry a parseable reset time, keeping outage attempts bounded to one per
-/// hour.
-fn provider_resume_delay(detail: &str, now_minutes: u32) -> u32 {
-    let Some(idx) = detail.find("resets") else {
-        return 60;
-    };
-    let rest = detail[idx + "resets".len()..].trim_start();
-    let Some(colon) = rest.find(':') else {
-        return 60;
-    };
-    let Ok(hour) = rest[..colon].trim().parse::<u32>() else {
-        return 60;
-    };
-    let Ok(minute) = rest[colon + 1..colon + 3].trim().parse::<u32>() else {
-        return 60;
-    };
-    let suffix = rest[colon + 3..].trim_start();
-    let is_pm = suffix.starts_with('p') || suffix.starts_with('P');
+/// current local time in minutes since midnight. A message without a usable
+/// reset leaves the watcher waiting for a configuration edit or SIGHUP.
+fn provider_resume_delay(detail: &str, now_minutes: u32) -> Option<u32> {
+    let (_, reset) = detail.split_once("resets")?;
+    let (hour, rest) = reset.trim_start().split_once(':')?;
+    let hour = hour.parse::<u32>().ok()?;
+    let minute = rest.get(..2)?.parse::<u32>().ok()?;
+    let suffix = rest.get(2..)?.trim_start().get(..2)?;
+    if !(1..=12).contains(&hour) || minute >= 60 {
+        return None;
+    }
+    let is_pm = suffix.eq_ignore_ascii_case("pm");
+    if !is_pm && !suffix.eq_ignore_ascii_case("am") {
+        return None;
+    }
     let target = ((hour % 12) + if is_pm { 12 } else { 0 }) * 60 + minute;
     let delta = (target + 1440 - now_minutes) % 1440;
-    if delta == 0 {
-        1440
-    } else {
-        delta
-    }
+    Some(if delta == 0 { 1440 } else { delta })
 }
 
 fn record_invalid_configuration(state_dir: Option<&std::path::Path>, error: &anyhow::Error) {
@@ -435,19 +426,34 @@ async fn run_once(
                 .unwrap_or_else(|_| "{\"status\":\"unavailable\"}".into())
         );
     }
-    let deferred = report.block_reason.as_deref() == Some("review_deferred");
-    let auto_resume = (report.block_reason.as_deref() == Some("provider_usage_limit")).then(|| {
+    // Keep the diagnostic reason intact. Once readback has deferred a
+    // selected review, its refusal need not stop unrelated reviews.
+    let reason = report.block_reason.as_deref();
+    let deferred_only = reason == Some("review_deferred");
+    let local_refusal = reason == Some("tool_rejected")
+        && report
+            .deferred_reviews
+            .iter()
+            .any(|held| report.selected_ids.contains(&held.id));
+    let auto_resume = if report.block_reason.as_deref() == Some("provider_usage_limit") {
         let now = chrono::Local::now();
         let minutes = provider_resume_delay(
             report.failure_detail.as_deref().unwrap_or(""),
             now.hour() * 60 + now.minute(),
         );
-        Duration::from_secs(u64::from(minutes) * 60)
-    });
+        minutes.map(|delay| Duration::from_secs(u64::from(delay) * 60))
+    } else {
+        None
+    };
     RunOutcome {
-        code: if watch_mode && deferred { 0 } else { code },
+        code: if watch_mode && (deferred_only || local_refusal) {
+            0
+        } else {
+            code
+        },
         degraded: matches!(report.status.as_str(), "blocked" | "partial"),
-        idle: report.status == "idle",
+        idle: report.status == "idle"
+            || (watch_mode && deferred_only && report.selected_ids.is_empty()),
         auto_resume,
     }
 }
@@ -460,15 +466,24 @@ mod watch_tests {
     #[test]
     fn provider_reset_delay_targets_the_declared_local_time() {
         let message = "You've hit your 5-hour limit · resets 6:50am (America/Los_Angeles)";
-        assert_eq!(provider_resume_delay(message, 120), 290); // 02:00 -> 06:50
-        assert_eq!(provider_resume_delay(message, 420), 1430); // 07:00 -> next 06:50
-        assert_eq!(provider_resume_delay(message, 410), 1440); // exactly 06:50 -> next day
+        assert_eq!(provider_resume_delay(message, 120), Some(290));
+        assert_eq!(provider_resume_delay(message, 420), Some(1430));
+        assert_eq!(provider_resume_delay(message, 410), Some(1440));
     }
 
     #[test]
     fn provider_reset_delay_handles_pm_and_unparseable_messages() {
-        assert_eq!(provider_resume_delay("resets 11:30pm", 0), 1410);
-        assert_eq!(provider_resume_delay("some unrelated failure", 0), 60);
+        assert_eq!(provider_resume_delay("resets 11:30pm", 0), Some(1410));
+        for message in [
+            "some unrelated failure",
+            "resets 6:",
+            "resets 6:é",
+            "resets 6:99am",
+            "resets 13:20pm",
+            "resets 6:50",
+        ] {
+            assert_eq!(provider_resume_delay(message, 0), None);
+        }
     }
 
     #[tokio::test]

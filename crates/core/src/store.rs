@@ -3,13 +3,13 @@ mod learning;
 use anyhow::{bail, ensure, Result};
 use chrono::DateTime;
 use pgvector::Vector;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_postgres::{Client, Row};
 use uuid::Uuid;
 
-use crate::documents::DocumentChunk;
+use crate::documents::{DocumentChunk, QueryResult};
 use crate::graph::{Belief, Edge, EdgeType, MemoryType, Pattern, Probability};
 
 // The approved READ COMMITTED contract requires the application to select
@@ -616,12 +616,22 @@ impl AgeStore {
 
     /// Delete a belief and all its edges by ID. Returns true if found and deleted.
     pub async fn delete_belief(&self, id: Uuid) -> Result<bool> {
-        let g = &self.graph_name;
-        let id_str = id.to_string();
         let mut client = self.client.lock().await;
         let tx = learning_transaction(&mut client).await?;
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
             .await?;
+        let deleted = self.delete_belief_in(&tx, id).await?;
+        tx.commit().await?;
+        Ok(deleted)
+    }
+
+    async fn delete_belief_in(
+        &self,
+        tx: &tokio_postgres::Transaction<'_>,
+        id: Uuid,
+    ) -> Result<bool> {
+        let g = &self.graph_name;
+        let id_str = id.to_string();
         let exists = tx.query(&format!("SELECT id::text FROM ag_catalog.cypher('{g}', $$ MATCH (n:Belief {{id:'{id_str}'}}) RETURN n.id $$) AS (id ag_catalog.agtype)"), &[]).await?;
         if exists.is_empty() {
             return Ok(false);
@@ -649,9 +659,54 @@ $$) AS (ok ag_catalog.agtype)"#
             &[&id],
         )
         .await?;
-        self.recompute_learning(&tx, None, affected).await?;
-        tx.commit().await?;
+        self.recompute_learning(tx, None, affected).await?;
         Ok(true)
+    }
+
+    pub(crate) async fn sweep_defeated(
+        &self,
+        project: Option<&str>,
+        threshold: Probability,
+        grace: chrono::Duration,
+    ) -> Result<usize> {
+        let mut client = self.client.lock().await;
+        let tx = learning_transaction(&mut client).await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        let edges = match project {
+            Some(project) => {
+                self.get_defeats_with_timestamps_by_project_on(tx.client(), project)
+                    .await?
+            }
+            None => self.get_defeats_with_timestamps_on(tx.client()).await?,
+        };
+        if edges.is_empty() {
+            return Ok(0);
+        }
+        let beliefs = match project {
+            Some(project) => {
+                self.list_beliefs_by_project_on(tx.client(), project)
+                    .await?
+            }
+            None => self.list_beliefs_on(tx.client()).await?,
+        };
+        let beliefs = beliefs
+            .into_iter()
+            .map(|belief| (belief.id, belief))
+            .collect();
+        let candidates = crate::inference::InferenceEngine::new().find_expired_defeated(
+            &edges,
+            &beliefs,
+            chrono::Utc::now(),
+            threshold.value(),
+            grace,
+        );
+        let mut deleted = 0;
+        for id in candidates {
+            deleted += usize::from(self.delete_belief_in(&tx, id).await?);
+        }
+        tx.commit().await?;
+        Ok(deleted)
     }
 
     /// Delete all beliefs (and their edges) tagged with the given project.
@@ -702,6 +757,31 @@ $$) AS (ok ag_catalog.agtype)"#
             })
             .collect();
 
+        let chunks = self.get_chunk_ids_by_project_on(client, project).await?;
+        let mut affected = HashSet::new();
+        if !ids.is_empty() {
+            let deleted = ids
+                .iter()
+                .map(|id| format!("'{id}'"))
+                .collect::<Vec<_>>()
+                .join(",");
+            let rows = client
+                .query(
+                    &format!(
+                        "SELECT id::text FROM ag_catalog.cypher('{g}', $$ \
+                 MATCH (a:Belief)-[r]->(b:Belief) \
+                 WHERE a.id IN [{deleted}] AND NOT (b.id IN [{deleted}]) \
+                   AND type(r) <> 'CONTRADICTS' AND r.weight > 0.0 \
+                 RETURN DISTINCT b.id $$) AS (id ag_catalog.agtype)"
+                    ),
+                    &[],
+                )
+                .await?;
+            for row in rows {
+                affected.insert(Uuid::parse_str(row.get(0))?);
+            }
+        }
+
         let stmt_del = format!("age_delproj_del_{}", Uuid::new_v4().simple());
         let prepare_del = format!(
             "PREPARE {stmt_del}(agtype) AS SELECT * \
@@ -726,8 +806,10 @@ $$) AS (ok ag_catalog.agtype)"#
                 &[&ids],
             )
             .await?;
-        let chunks = self.get_chunk_ids_by_project_on(client, project).await?;
-        self.delete_document_chunks_in(&tx, &chunks).await?;
+        affected.extend(
+            self.detach_document_chunks_on(client, &chunks, true)
+                .await?,
+        );
         self.delete_chunk_embeddings_on(client, &chunks).await?;
         client
             .execute(
@@ -735,6 +817,7 @@ $$) AS (ok ag_catalog.agtype)"#
                 &[&project],
             )
             .await?;
+        self.recompute_learning(&tx, None, affected).await?;
         tx.commit().await?;
         Ok((count, chunks.len()))
     }
@@ -980,32 +1063,35 @@ $$) AS (n ag_catalog.agtype)"#
         Ok(s.parse()?)
     }
 
-    /// Returns every (defeater_id, defeated_id, defeater_created_at) triple for
-    /// DEFEATS relationships in the graph. Used by the attenuated-deletion sweep
-    /// to find defeated beliefs whose grace period has elapsed. DEFEATS edges carry no
-    /// timestamp of their own, so the defeater's `created_at` is returned as the
-    /// proxy for when the defeat happened — see `InferenceEngine::find_expired_defeated`.
+    /// Returns each defeat and when its link was recorded. Legacy links use the epoch.
     pub async fn get_defeats_with_timestamps(
         &self,
     ) -> Result<Vec<(Uuid, Uuid, chrono::DateTime<chrono::Utc>)>> {
+        let client = self.client.lock().await;
+        self.get_defeats_with_timestamps_on(&client).await
+    }
+
+    async fn get_defeats_with_timestamps_on(
+        &self,
+        client: &Client,
+    ) -> Result<Vec<(Uuid, Uuid, chrono::DateTime<chrono::Utc>)>> {
         let g = &self.graph_name;
         let sql = format!(
-            r#"SELECT defeater_id::text, defeated_id::text, defeater_created_at::text
+            r#"SELECT defeater_id::text, defeated_id::text, defeat_recorded_at::text
 FROM ag_catalog.cypher('{g}', $$
-  MATCH (a:Belief)-[:DEFEATS]->(b:Belief)
-  RETURN a.id, b.id, a.created_at
-$$) AS (defeater_id ag_catalog.agtype, defeated_id ag_catalog.agtype, defeater_created_at ag_catalog.agtype)"#
+  MATCH (a:Belief)-[r:DEFEATS]->(b:Belief)
+  RETURN a.id, b.id, coalesce(r.recorded_at, '1970-01-01T00:00:00Z')
+$$) AS (defeater_id ag_catalog.agtype, defeated_id ag_catalog.agtype, defeat_recorded_at ag_catalog.agtype)"#
         );
-        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         let mut triples = Vec::with_capacity(rows.len());
         for row in &rows {
             let defeater_id = Uuid::parse_str(row.get::<_, &str>("defeater_id"))?;
             let defeated_id = Uuid::parse_str(row.get::<_, &str>("defeated_id"))?;
-            let created_at_str: &str = row.get("defeater_created_at");
-            let defeater_created_at =
+            let created_at_str: &str = row.get("defeat_recorded_at");
+            let defeat_recorded_at =
                 DateTime::parse_from_rfc3339(created_at_str)?.with_timezone(&chrono::Utc);
-            triples.push((defeater_id, defeated_id, defeater_created_at));
+            triples.push((defeater_id, defeated_id, defeat_recorded_at));
         }
         Ok(triples)
     }
@@ -1017,21 +1103,30 @@ $$) AS (defeater_id ag_catalog.agtype, defeated_id ag_catalog.agtype, defeater_c
         &self,
         project: &str,
     ) -> Result<Vec<(Uuid, Uuid, chrono::DateTime<chrono::Utc>)>> {
+        let client = self.client.lock().await;
+        self.get_defeats_with_timestamps_by_project_on(&client, project)
+            .await
+    }
+
+    async fn get_defeats_with_timestamps_by_project_on(
+        &self,
+        client: &Client,
+        project: &str,
+    ) -> Result<Vec<(Uuid, Uuid, chrono::DateTime<chrono::Utc>)>> {
         let g = &self.graph_name;
         let agtype_json = format!(r#"{{"project": "{}"}}"#, json_esc(project));
         let stmt = format!("age_defeats_ts_proj_{}", Uuid::new_v4().simple());
         let prepare = format!(
-            "PREPARE {stmt}(agtype) AS SELECT defeater_id::text, defeated_id::text, defeater_created_at::text \
+            "PREPARE {stmt}(agtype) AS SELECT defeater_id::text, defeated_id::text, defeat_recorded_at::text \
              FROM ag_catalog.cypher('{g}', $$ \
-             MATCH (a:Belief)-[:DEFEATS]->(b:Belief) \
+             MATCH (a:Belief)-[r:DEFEATS]->(b:Belief) \
              WHERE (a.project = $project OR a.project IS NULL) \
                AND (b.project = $project OR b.project IS NULL) \
-             RETURN a.id, b.id, a.created_at \
-             $$, $1) AS (defeater_id agtype, defeated_id agtype, defeater_created_at agtype)"
+             RETURN a.id, b.id, coalesce(r.recorded_at, '1970-01-01T00:00:00Z') \
+             $$, $1) AS (defeater_id agtype, defeated_id agtype, defeat_recorded_at agtype)"
         );
 
-        let client = self.client.lock().await;
-        let rows = age_query_rows(&client, &stmt, &prepare, &agtype_json).await?;
+        let rows = age_query_rows(client, &stmt, &prepare, &agtype_json).await?;
         let mut triples = Vec::with_capacity(rows.len());
         for row in &rows {
             let defeater_id_raw = row
@@ -1041,13 +1136,13 @@ $$) AS (defeater_id ag_catalog.agtype, defeated_id ag_catalog.agtype, defeater_c
                 .get("defeated_id")
                 .ok_or_else(|| anyhow::anyhow!("missing column defeated_id"))?;
             let created_at_raw = row
-                .get("defeater_created_at")
-                .ok_or_else(|| anyhow::anyhow!("missing column defeater_created_at"))?;
+                .get("defeat_recorded_at")
+                .ok_or_else(|| anyhow::anyhow!("missing column defeat_recorded_at"))?;
             let defeater_id = Uuid::parse_str(defeater_id_raw)?;
             let defeated_id = Uuid::parse_str(defeated_id_raw)?;
-            let defeater_created_at =
+            let defeat_recorded_at =
                 DateTime::parse_from_rfc3339(created_at_raw)?.with_timezone(&chrono::Utc);
-            triples.push((defeater_id, defeated_id, defeater_created_at));
+            triples.push((defeater_id, defeated_id, defeat_recorded_at));
         }
         Ok(triples)
     }
@@ -1236,12 +1331,17 @@ $$) {PATTERN_RETURN_COLUMNS}"#
         let to_id = edge.to_id.to_string();
         let label = edge.edge_type.as_str();
         let weight = edge.weight.value();
+        let timestamp = if edge.edge_type == EdgeType::Defeats {
+            format!(", recorded_at: '{}'", chrono::Utc::now().to_rfc3339())
+        } else {
+            String::new()
+        };
 
         // Dynamic label in Cypher requires string interpolation.
         let sql = format!(
             r#"SELECT * FROM ag_catalog.cypher('{g}', $$
   MATCH (a:Belief {{id: '{from_id}'}}), (b:Belief {{id: '{to_id}'}})
-  CREATE (a)-[r:{label} {{weight: {weight}}}]->(b)
+  CREATE (a)-[r:{label} {{weight: {weight}{timestamp}}}]->(b)
   RETURN r.weight
 $$) AS (weight ag_catalog.agtype)"#
         );
@@ -1712,8 +1812,20 @@ $$) AS (ok ag_catalog.agtype)"#
         tx: &tokio_postgres::Transaction<'_>,
         ids: &[Uuid],
     ) -> Result<()> {
+        let affected = self
+            .detach_document_chunks_on(tx.client(), ids, false)
+            .await?;
+        self.recompute_learning(tx, None, affected).await
+    }
+
+    async fn detach_document_chunks_on(
+        &self,
+        client: &Client,
+        ids: &[Uuid],
+        weighted_only: bool,
+    ) -> Result<HashSet<Uuid>> {
         if ids.is_empty() {
-            return Ok(());
+            return Ok(HashSet::new());
         }
         let g = &self.graph_name;
         let id_list = ids
@@ -1728,14 +1840,18 @@ $$) AS (ok ag_catalog.agtype)"#
   RETURN 1
 $$) AS (ok ag_catalog.agtype)"#
         );
-        let grounded = tx.query(&format!("SELECT id::text FROM ag_catalog.cypher('{g}', $$ MATCH (c:DocumentChunk)-[:GROUNDS]->(b:Belief) WHERE c.id IN [{id_list}] RETURN DISTINCT b.id $$) AS (id ag_catalog.agtype)"), &[]).await?;
-        let affected: std::collections::HashSet<Uuid> = grounded
+        let weight_filter = if weighted_only {
+            " AND r.weight > 0.0"
+        } else {
+            ""
+        };
+        let grounded = client.query(&format!("SELECT id::text FROM ag_catalog.cypher('{g}', $$ MATCH (c:DocumentChunk)-[r:GROUNDS]->(b:Belief) WHERE c.id IN [{id_list}]{weight_filter} RETURN DISTINCT b.id $$) AS (id ag_catalog.agtype)"), &[]).await?;
+        let affected = grounded
             .iter()
             .map(|row| Uuid::parse_str(row.get::<_, &str>(0)))
             .collect::<std::result::Result<_, _>>()?;
-        tx.query(&sql, &[]).await?;
-        self.recompute_learning(tx, None, affected).await?;
-        Ok(())
+        client.query(&sql, &[]).await?;
+        Ok(affected)
     }
 
     /// Delete embedding rows for the given chunk IDs.
@@ -1765,43 +1881,78 @@ $$) AS (ok ag_catalog.agtype)"#
         Ok(())
     }
 
-    /// Cosine nearest-neighbour search over chunk_embeddings.
-    /// If filter_ids is Some, only those chunk IDs are considered.
-    /// limit=0 means no limit.
-    pub async fn query_chunks_by_vector(
+    pub(crate) async fn query_document_hits(
         &self,
-        query_vec: &[f32],
-        limit: usize,
-        filter_ids: Option<&[Uuid]>,
-    ) -> Result<Vec<Uuid>> {
-        let vec = Vector::from(query_vec.to_vec());
-        let limit_clause = if limit > 0 {
-            format!("LIMIT {limit}")
-        } else {
-            String::new()
-        };
-
-        let client = self.client.lock().await;
-        let rows = match filter_ids {
+        query: &[f32],
+        project: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Vec<QueryResult>> {
+        let mut client = self.client.lock().await;
+        let tx = client
+            .build_transaction()
+            .read_only(true)
+            .isolation_level(tokio_postgres::IsolationLevel::RepeatableRead)
+            .start()
+            .await?;
+        let ids = match project {
+            Some(project) => {
+                self.get_chunk_ids_by_project_on(tx.client(), project)
+                    .await?
+            }
             None => {
-                let sql = format!(
-                    "SELECT chunk_id::text FROM public.chunk_embeddings \
-                     ORDER BY embedding <=> $1 {limit_clause}"
-                );
-                client.query(&sql, &[&vec]).await?
-            }
-            Some(ids) => {
-                let sql = format!(
-                    "SELECT chunk_id::text FROM public.chunk_embeddings \
-                     WHERE chunk_id = ANY($2) \
-                     ORDER BY embedding <=> $1 {limit_clause}"
-                );
-                client.query(&sql, &[&vec, &ids]).await?
+                let graph = &self.graph_name;
+                tx.query(
+                    &format!("SELECT id::text FROM ag_catalog.cypher('{graph}', $$ MATCH (c:DocumentChunk) RETURN c.id $$) AS (id ag_catalog.agtype)"),
+                    &[],
+                )
+                .await?
+                .iter()
+                .map(|row| Uuid::parse_str(row.get(0)))
+                .collect::<std::result::Result<Vec<_>, _>>()?
             }
         };
-        rows.iter()
-            .map(|r| Ok(Uuid::parse_str(r.get::<_, &str>("chunk_id"))?))
-            .collect()
+        let query = Vector::from(query.to_vec());
+        let limit_clause = limit
+            .map(|count| format!("LIMIT {count}"))
+            .unwrap_or_default();
+        let sql = format!(
+            "SELECT chunk_id FROM public.chunk_embeddings \
+             WHERE chunk_id = ANY($2) AND vector_norm(embedding) > 0.0 \
+             ORDER BY embedding <=> $1 {limit_clause}"
+        );
+        let rows = tx.query(&sql, &[&query, &ids]).await?;
+        let mut hits = Vec::with_capacity(rows.len());
+        for row in rows {
+            let id: Uuid = row.get("chunk_id");
+            let chunk = self
+                .get_chunk_by_id_on(tx.client(), id)
+                .await?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Indexed passage {id} could not be read in the search snapshot."
+                    )
+                })?;
+            let parent_content = match chunk.parent_id {
+                Some(parent_id) => self
+                    .get_chunk_by_id_on(tx.client(), parent_id)
+                    .await?
+                    .filter(|parent| {
+                        parent.project == chunk.project
+                            && parent.document_path == chunk.document_path
+                    })
+                    .map(|parent| parent.content),
+                None => None,
+            };
+            hits.push(QueryResult {
+                id: chunk.id.to_string(),
+                document_path: chunk.document_path,
+                section_path: chunk.section_path,
+                content: chunk.content,
+                parent_content,
+            });
+        }
+        tx.commit().await?;
+        Ok(hits)
     }
 
     // -----------------------------------------------------------------------
@@ -1863,36 +2014,23 @@ $$) AS (ok ag_catalog.agtype)"#
             .collect()
     }
 
-    /// Like `query_beliefs_by_vector`, but restricted to `filter_ids`: the
-    /// cosine ranking runs only over that id set, so a project-scoped caller's
-    /// top-K window can't be crowded out by other projects' embeddings (which
-    /// `belief_id = ANY($2)` in `query_beliefs_by_vector` alone cannot do,
-    /// since there is no `project` column on `belief_embeddings`).
-    pub async fn query_beliefs_by_vector_filtered(
+    /// Rank every eligible belief whose stored vector has a cosine direction.
+    pub(crate) async fn rank_eligible_belief_vectors(
         &self,
         query_vec: &[f32],
-        limit: usize,
-        filter_ids: &[Uuid],
+        eligible_ids: &[Uuid],
     ) -> Result<Vec<Uuid>> {
-        if filter_ids.is_empty() {
-            return Ok(Vec::new());
-        }
         let vec = Vector::from(query_vec.to_vec());
-        let limit_clause = if limit > 0 {
-            format!("LIMIT {limit}")
-        } else {
-            String::new()
-        };
-        let sql = format!(
-            "SELECT belief_id::text FROM public.belief_embeddings \
-             WHERE belief_id = ANY($2) \
-             ORDER BY embedding <=> $1 {limit_clause}"
-        );
         let client = self.client.lock().await;
-        let rows = client.query(&sql, &[&vec, &filter_ids]).await?;
-        rows.iter()
-            .map(|r| Ok(Uuid::parse_str(r.get::<_, &str>("belief_id"))?))
-            .collect()
+        let rows = client
+            .query(
+                "SELECT belief_id FROM public.belief_embeddings \
+                 WHERE belief_id = ANY($2) AND vector_norm(embedding) > 0.0 \
+                 ORDER BY embedding <=> $1",
+                &[&vec, &eligible_ids],
+            )
+            .await?;
+        Ok(rows.iter().map(|row| row.get("belief_id")).collect())
     }
 
     /// Cosine nearest-neighbour search over chunk_embeddings, returning (chunk_id, similarity).
@@ -2012,19 +2150,12 @@ $$) {CHUNK_RETURN_COLUMNS}"#
     // -----------------------------------------------------------------------
     // Evidence edges (GROUNDS): DocumentChunk → Belief
     //
-    // GROUNDS originates at a DocumentChunk and is NEVER matched by belief
-    // traversal (get_downstream_beliefs / get_edges_among match (:Belief)->
-    // (:Belief) only), so it cannot affect inference. Non-interference is
-    // structural — see Mimir.Evidence (propagate-evidence-invariant).
+    // GROUNDS adds local evidence to a belief. Dependency traversal follows
+    // belief-to-belief links, then recalculates their targets from all evidence.
     // -----------------------------------------------------------------------
 
-    /// Create a GROUNDS edge from a DocumentChunk to a Belief, then apply
-    /// C-coupling: bump α += EVIDENCE_MASS_K * weight (spec: Mimir.Beta
-    /// CCoupling.coupleOne). β is unchanged; the updated (α,β) is written back.
-    /// Errors if either endpoint is missing (the MATCH yields no rows).
-    ///
-    /// Both the CREATE GROUNDS and the α update run inside a single transaction
-    /// so concurrent calls cannot lose an increment (no TOCTOU window).
+    /// Record evidence and atomically recalculate the target and its dependents
+    /// for a positive weight. A zero-weight link records the source only.
     pub async fn insert_evidence(
         &self,
         chunk_id: Uuid,
@@ -2058,10 +2189,10 @@ $$) AS (weight ag_catalog.agtype)"#
             );
         }
 
-        // Recompute from the fixed prior and every current evidence source.
-        // This also updates descendants within the same transaction.
-        self.recompute_learning(&tx, None, [belief_id].into())
-            .await?;
+        if w > 0.0 {
+            self.recompute_learning(&tx, None, [belief_id].into())
+                .await?;
+        }
 
         tx.commit().await?;
         Ok(())
@@ -2129,25 +2260,91 @@ $$) AS (belief_id ag_catalog.agtype, chunk_id ag_catalog.agtype, weight ag_catal
         Ok(out)
     }
 
-    /// Remove a specific GROUNDS edge. (Edges are also GC'd automatically by the
-    /// DETACH DELETE on either endpoint; this is for explicit unlink.)
+    /// Read each grounding link together with its passage in one database view.
+    pub(crate) async fn read_evidence(
+        &self,
+        belief_ids: &[Uuid],
+        limit: Option<usize>,
+    ) -> Result<HashMap<Uuid, Vec<crate::EvidenceRef>>> {
+        let mut by_belief = HashMap::<_, Vec<_>>::new();
+        if belief_ids.is_empty() {
+            return Ok(by_belief);
+        }
+        let g = &self.graph_name;
+        let ids = belief_ids
+            .iter()
+            .map(|id| format!("'{id}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            r#"SELECT belief_id, chunk_id, document_path, section_path, content, weight
+FROM ag_catalog.cypher('{g}', $$
+  MATCH (c:DocumentChunk)-[r:GROUNDS]->(b:Belief)
+  WHERE b.id IN [{ids}]
+  RETURN b.id, c.id, c.documentPath, c.sectionPath, c.content, r.weight
+$$) AS (
+  belief_id text, chunk_id text, document_path text,
+  section_path text, content text, weight text
+)"#
+        );
+        let rows = {
+            let client = self.client.lock().await;
+            client.query(&sql, &[]).await?
+        };
+        for row in rows {
+            let belief_id = Uuid::parse_str(row.get("belief_id"))?;
+            let content: &str = row.get("content");
+            by_belief
+                .entry(belief_id)
+                .or_default()
+                .push(crate::EvidenceRef {
+                    chunk_id: Uuid::parse_str(row.get("chunk_id"))?,
+                    document_path: row.get("document_path"),
+                    section_path: serde_json::from_str(row.get("section_path")).unwrap_or_default(),
+                    snippet: content.trim().to_owned(),
+                    weight: row.get::<_, &str>("weight").parse()?,
+                });
+        }
+        for references in by_belief.values_mut() {
+            references.sort_by(|a, b| {
+                b.weight
+                    .partial_cmp(&a.weight)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            if let Some(limit) = limit {
+                references.truncate(limit);
+            }
+        }
+        Ok(by_belief)
+    }
+
+    /// Remove every GROUNDS edge for the pair, recalculating in the same
+    /// transaction if the removal changes the evidence weight.
     pub async fn delete_evidence(&self, chunk_id: Uuid, belief_id: Uuid) -> Result<()> {
         let g = &self.graph_name;
         let c = chunk_id.to_string();
         let b = belief_id.to_string();
         let sql = format!(
-            r#"SELECT * FROM ag_catalog.cypher('{g}', $$
+            r#"SELECT weight::text FROM ag_catalog.cypher('{g}', $$
   MATCH (c:DocumentChunk {{id: '{c}'}})-[r:GROUNDS]->(b:Belief {{id: '{b}'}})
+  WITH r, r.weight AS weight
   DELETE r
-$$) AS (v ag_catalog.agtype)"#
+  RETURN weight
+$$) AS (weight ag_catalog.agtype)"#
         );
         let mut client = self.client.lock().await;
         let tx = learning_transaction(&mut client).await?;
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
             .await?;
-        tx.execute(&sql, &[]).await?;
-        self.recompute_learning(&tx, None, [belief_id].into())
-            .await?;
+        let mut removed_positive_weight = false;
+        for row in tx.query(&sql, &[]).await? {
+            let weight = row.get::<_, &str>(0).parse::<f64>()?;
+            removed_positive_weight |= weight > 0.0;
+        }
+        if removed_positive_weight {
+            self.recompute_learning(&tx, None, [belief_id].into())
+                .await?;
+        }
         tx.commit().await?;
         Ok(())
     }

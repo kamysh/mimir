@@ -26,13 +26,13 @@
         "spec/Mimir/GraphRecords.agda",
         "spec/Mimir/GraphWrites.agda",
         "spec/Mimir/GraphMutationProtocol.agda",
-        "spec/Mimir/BeliefEmbedding.agda",
+        "spec/Mimir/BeliefEmbedding.lagda.md",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.lagda.md"
       ],
       "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external.",
       "baseline_gap": "Current public belief/pattern record, independent provenance, numeric admission, defaults and complete insert/embed/auto-ground success and failure sequences."
@@ -52,14 +52,14 @@
       "rust_correspondence": "open; separate from behavioral specification",
       "completion_modules": [
         "spec/Mimir/GraphDeletion.agda",
-        "spec/Mimir/ProjectDeletion.agda",
+        "spec/Mimir/ProjectDeletion.lagda.md",
         "spec/Mimir/ApplicationStore.agda",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.lagda.md"
       ],
       "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external.",
       "baseline_gap": "Identity-based deletion, graph/embedding/ownership/reference cleanup, missing-ID results, project deletion counts and failures across stores."
@@ -79,14 +79,14 @@
       "rust_correspondence": "open; separate from behavioral specification",
       "completion_modules": [
         "spec/Mimir/GraphDeletion.agda",
-        "spec/Mimir/ProjectDeletion.agda",
+        "spec/Mimir/ProjectDeletion.lagda.md",
         "spec/Mimir/ApplicationStore.agda",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.lagda.md"
       ],
       "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external.",
       "baseline_gap": "Identity-based deletion, graph/embedding/ownership/reference cleanup, missing-ID results, project deletion counts and failures across stores."
@@ -106,14 +106,14 @@
       "rust_correspondence": "open; separate from behavioral specification",
       "completion_modules": [
         "spec/Mimir/GraphDeletion.agda",
-        "spec/Mimir/ProjectDeletion.agda",
+        "spec/Mimir/ProjectDeletion.lagda.md",
         "spec/Mimir/ApplicationStore.agda",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.lagda.md"
       ],
       "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external.",
       "baseline_gap": "Identity-based deletion, graph/embedding/ownership/reference cleanup, missing-ID results, project deletion counts and failures across stores."
@@ -137,13 +137,13 @@
         "spec/Mimir/GraphRecords.agda",
         "spec/Mimir/GraphWrites.agda",
         "spec/Mimir/GraphMutationProtocol.agda",
-        "spec/Mimir/BeliefEmbedding.agda",
+        "spec/Mimir/BeliefEmbedding.lagda.md",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.lagda.md"
       ],
       "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external.",
       "baseline_gap": "Current public belief/pattern record, independent provenance, numeric admission, defaults and complete insert/embed/auto-ground success and failure sequences."
@@ -165,14 +165,14 @@
       "completion_modules": [
         "spec/Mimir/GraphMutationProtocol.agda",
         "spec/Mimir/GraphWrites.agda",
-        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceProtocol.lagda.md",
         "spec/Mimir/PosteriorComputation.agda",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.lagda.md"
       ],
       "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external.",
       "baseline_gap": "Public edge validation and writes, contradiction pair creation, defeat timestamps and recomputation, with ordered failure effects."
@@ -194,14 +194,14 @@
       "completion_modules": [
         "spec/Mimir/GraphMutationProtocol.agda",
         "spec/Mimir/GraphWrites.agda",
-        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceProtocol.lagda.md",
         "spec/Mimir/PosteriorComputation.agda",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.lagda.md"
       ],
       "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external.",
       "baseline_gap": "Public edge validation and writes, contradiction pair creation, defeat timestamps and recomputation, with ordered failure effects."
@@ -223,14 +223,14 @@
       "completion_modules": [
         "spec/Mimir/GraphMutationProtocol.agda",
         "spec/Mimir/GraphWrites.agda",
-        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceProtocol.lagda.md",
         "spec/Mimir/PosteriorComputation.agda",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.lagda.md"
       ],
       "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external.",
       "baseline_gap": "Public edge validation and writes, contradiction pair creation, defeat timestamps and recomputation, with ordered failure effects."
@@ -252,14 +252,14 @@
       "completion_modules": [
         "spec/Mimir/GraphMutationProtocol.agda",
         "spec/Mimir/GraphWrites.agda",
-        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceProtocol.lagda.md",
         "spec/Mimir/PosteriorComputation.agda",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.lagda.md"
       ],
       "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external.",
       "baseline_gap": "Public edge validation and writes, contradiction pair creation, defeat timestamps and recomputation, with ordered failure effects."
@@ -285,7 +285,7 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.lagda.md"
       ],
       "remaining": "Recovery and public-entry coverage are checked by the registered controllers and structural coverage check. Rust conformance and installed-application verification remain pending; statistics, library algorithms and formatting are outside this recovery task.",
       "baseline_gap": "Modern record projection, exact project-plus-global visibility, memory filters, stable page order, offset/limit and missing-record outcomes."
@@ -311,7 +311,7 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.lagda.md"
       ],
       "remaining": "Recovery and public-entry coverage are checked by the registered controllers and structural coverage check. Rust conformance and installed-application verification remain pending; statistics, library algorithms and formatting are outside this recovery task.",
       "baseline_gap": "Modern record projection, exact project-plus-global visibility, memory filters, stable page order, offset/limit and missing-record outcomes."
@@ -337,7 +337,7 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.lagda.md"
       ],
       "remaining": "Recovery and public-entry coverage are checked by the registered controllers and structural coverage check. Rust conformance and installed-application verification remain pending; statistics, library algorithms and formatting are outside this recovery task.",
       "baseline_gap": "Modern record projection, exact project-plus-global visibility, memory filters, stable page order, offset/limit and missing-record outcomes."
@@ -357,7 +357,7 @@
       "status": "partially-specified",
       "rust_correspondence": "open; separate from behavioral specification",
       "completion_modules": [
-        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceProtocol.lagda.md",
         "spec/Mimir/GraphNumerics.agda",
         "spec/Mimir/PosteriorComputation.agda",
         "spec/Mimir/GraphPaths.agda",
@@ -366,7 +366,7 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.lagda.md"
       ],
       "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external.",
       "baseline_gap": "Calculation is external. The specification covers input selection, result validation, atomic publication, rollback and cleanup; it does not prescribe a solver, iteration count or stopping threshold."
@@ -386,7 +386,7 @@
       "status": "partially-specified",
       "rust_correspondence": "open; separate from behavioral specification",
       "completion_modules": [
-        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceProtocol.lagda.md",
         "spec/Mimir/GraphNumerics.agda",
         "spec/Mimir/PosteriorComputation.agda",
         "spec/Mimir/GraphPaths.agda",
@@ -395,7 +395,7 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.lagda.md"
       ],
       "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external.",
       "baseline_gap": "Calculation is external. The specification covers input selection, result validation, atomic publication, rollback and cleanup; it does not prescribe a solver, iteration count or stopping threshold."
@@ -415,7 +415,7 @@
       "status": "partially-specified",
       "rust_correspondence": "open; separate from behavioral specification",
       "completion_modules": [
-        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceProtocol.lagda.md",
         "spec/Mimir/GraphNumerics.agda",
         "spec/Mimir/PosteriorComputation.agda",
         "spec/Mimir/GraphPaths.agda",
@@ -424,7 +424,7 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.lagda.md"
       ],
       "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external.",
       "baseline_gap": "Calculation is external. The specification covers input selection, result validation, atomic publication, rollback and cleanup; it does not prescribe a solver, iteration count or stopping threshold."
@@ -443,15 +443,15 @@
       "status": "partially-specified",
       "rust_correspondence": "open; separate from behavioral specification",
       "completion_modules": [
-        "spec/Mimir/RetrievalProtocol.agda",
+        "spec/Mimir/RetrievalProtocol.lagda.md",
         "spec/Mimir/RetrievalRanking.agda",
-        "spec/Mimir/EvidenceRead.agda",
+        "spec/Mimir/EvidenceRead.lagda.md",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.lagda.md"
       ],
       "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external.",
       "baseline_gap": "Executable candidate selection, weighted RRF (k=60), memory preference, deterministic ordering/limits, project scope and evidence joins; comments and percentage sorting are insufficient."
@@ -470,14 +470,14 @@
       "status": "partially-specified",
       "rust_correspondence": "open; separate from behavioral specification",
       "completion_modules": [
-        "spec/Mimir/EvidenceRead.agda",
-        "spec/Mimir/GroundingPublication.agda",
+        "spec/Mimir/EvidenceRead.lagda.md",
+        "spec/Mimir/GroundingPublication.lagda.md",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.lagda.md"
       ],
       "baseline_gap": "Concrete evidence lookup/add admission, result fields, grounding association and numerical recomputation/failure composition.",
       "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external."
@@ -496,14 +496,14 @@
       "status": "partially-specified",
       "rust_correspondence": "open; separate from behavioral specification",
       "completion_modules": [
-        "spec/Mimir/EvidenceRead.agda",
-        "spec/Mimir/GroundingPublication.agda",
+        "spec/Mimir/EvidenceRead.lagda.md",
+        "spec/Mimir/GroundingPublication.lagda.md",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.lagda.md"
       ],
       "baseline_gap": "Concrete evidence lookup/add admission, result fields, grounding association and numerical recomputation/failure composition.",
       "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external."
@@ -523,7 +523,7 @@
       "status": "partially-specified",
       "rust_correspondence": "open; separate from behavioral specification",
       "completion_modules": [
-        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceProtocol.lagda.md",
         "spec/Mimir/GraphNumerics.agda",
         "spec/Mimir/PosteriorComputation.agda",
         "spec/Mimir/GraphPaths.agda",
@@ -532,7 +532,7 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.lagda.md"
       ],
       "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external.",
       "baseline_gap": "Calculation is external. The specification covers input selection, result validation, atomic publication, rollback and cleanup; it does not prescribe a solver, iteration count or stopping threshold."
@@ -552,7 +552,7 @@
       "status": "partially-specified",
       "rust_correspondence": "open; separate from behavioral specification",
       "completion_modules": [
-        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceProtocol.lagda.md",
         "spec/Mimir/GraphNumerics.agda",
         "spec/Mimir/PosteriorComputation.agda",
         "spec/Mimir/GraphPaths.agda",
@@ -561,7 +561,7 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.lagda.md"
       ],
       "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external.",
       "baseline_gap": "Calculation is external. The specification covers input selection, result validation, atomic publication, rollback and cleanup; it does not prescribe a solver, iteration count or stopping threshold."
@@ -580,15 +580,15 @@
       "status": "partially-specified",
       "rust_correspondence": "open; separate from behavioral specification",
       "completion_modules": [
-        "spec/Mimir/DocumentLoading.agda",
+        "spec/Mimir/DocumentLoading.lagda.md",
         "spec/Mimir/DocumentPublication.agda",
-        "spec/Mimir/DocumentQuery.agda",
+        "spec/Mimir/DocumentQuery.lagda.md",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.lagda.md"
       ],
       "baseline_gap": "Compose path read/chunk/embed/paired replacement/auto-ground protocol, ambiguous commit outcomes and semantic query scoring into full operations.",
       "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external."
@@ -607,15 +607,15 @@
       "status": "partially-specified",
       "rust_correspondence": "open; separate from behavioral specification",
       "completion_modules": [
-        "spec/Mimir/DocumentLoading.agda",
+        "spec/Mimir/DocumentLoading.lagda.md",
         "spec/Mimir/DocumentPublication.agda",
-        "spec/Mimir/DocumentQuery.agda",
+        "spec/Mimir/DocumentQuery.lagda.md",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.lagda.md"
       ],
       "baseline_gap": "Compose path read/chunk/embed/paired replacement/auto-ground protocol, ambiguous commit outcomes and semantic query scoring into full operations.",
       "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external."
@@ -634,15 +634,15 @@
       "status": "partially-specified",
       "rust_correspondence": "open; separate from behavioral specification",
       "completion_modules": [
-        "spec/Mimir/DocumentLoading.agda",
+        "spec/Mimir/DocumentLoading.lagda.md",
         "spec/Mimir/DocumentPublication.agda",
-        "spec/Mimir/DocumentQuery.agda",
+        "spec/Mimir/DocumentQuery.lagda.md",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.lagda.md"
       ],
       "baseline_gap": "Compose path read/chunk/embed/paired replacement/auto-ground protocol, ambiguous commit outcomes and semantic query scoring into full operations.",
       "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external."
@@ -662,7 +662,7 @@
         "spec/Mimir/AssessmentHistory.agda",
         "spec/Mimir/ReviewEdges.agda",
         "spec/Mimir/ReviewRecomputeTraversal.agda",
-        "spec/Mimir/LearningHistory.agda",
+        "spec/Mimir/LearningHistory.lagda.md",
         "spec/Mimir/LearningQueryProtocol.agda"
       ],
       "status": "partially-specified",
@@ -679,7 +679,7 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda",
+        "spec/Mimir/McpApplicationComposition.lagda.md",
         "spec/Mimir/LearningInput.agda",
         "spec/Mimir/LearningNormalization.agda",
         "spec/Mimir/ItemAllocation.agda"
@@ -707,7 +707,7 @@
         "spec/Mimir/ApplicationProtocol.agda",
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.lagda.md"
       ],
       "baseline_gap": "Bind the server result to the exact current capability document and catalog, with complete wire argument/result semantics.",
       "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
@@ -727,7 +727,7 @@
         "spec/Mimir/ApplicationFloat.agda",
         "spec/Mimir/AssessmentEvaluation.agda",
         "spec/Mimir/AssessmentScores.agda",
-        "spec/Mimir/AssessmentRead.agda",
+        "spec/Mimir/AssessmentRead.lagda.md",
         "spec/Mimir/LearningAssessmentQueries.agda",
         "spec/Mimir/LearningQueryProtocol.agda"
       ],
@@ -744,7 +744,7 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda",
+        "spec/Mimir/McpApplicationComposition.lagda.md",
         "spec/Mimir/LearningInput.agda",
         "spec/Mimir/LearningNormalization.agda",
         "spec/Mimir/ItemAllocation.agda"
@@ -764,7 +764,7 @@
         "spec/Mimir/AssessmentWrites.agda",
         "spec/Mimir/AssessmentHistory.agda",
         "spec/Mimir/LearningSchema.agda",
-        "spec/Mimir/AssessmentRead.agda",
+        "spec/Mimir/AssessmentRead.lagda.md",
         "spec/Mimir/LearningAssessmentQueries.agda",
         "spec/Mimir/LearningQueryProtocol.agda"
       ],
@@ -781,7 +781,7 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.lagda.md"
       ],
       "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
       "remaining": "Recovery and public-entry coverage are checked by the registered controllers and structural coverage check. Rust conformance and installed-application verification remain pending; statistics, library algorithms and formatting are outside this recovery task."
@@ -796,7 +796,7 @@
         "spec/Mimir/ReviewLedger.agda",
         "spec/Mimir/CandidateRegistry.agda",
         "spec/Mimir/AssessmentSelection.agda",
-        "spec/Mimir/BeliefExplanation.agda",
+        "spec/Mimir/BeliefExplanation.lagda.md",
         "spec/Mimir/CandidateProvenance.agda",
         "spec/Mimir/IndependentProvenance.agda"
       ],
@@ -812,7 +812,7 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.lagda.md"
       ],
       "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
       "remaining": "Recovery and public-entry coverage are checked by the registered controllers and structural coverage check. Rust conformance and installed-application verification remain pending; statistics, library algorithms and formatting are outside this recovery task."
@@ -830,7 +830,7 @@
         "spec/Mimir/ItemOwnerBatch.agda",
         "spec/Mimir/LearningTransaction.agda",
         "spec/Mimir/LearningTransactionReceipt.agda",
-        "spec/Mimir/ExperienceRecord.agda",
+        "spec/Mimir/ExperienceRecord.lagda.md",
         "spec/Mimir/LearningStore.agda",
         "spec/Mimir/LearningOperations.agda"
       ],
@@ -839,7 +839,7 @@
       "completion_modules": [
         "spec/Mimir/LearningOperations.agda",
         "spec/Mimir/LearningPublication.agda",
-        "spec/Mimir/LearningHistory.agda",
+        "spec/Mimir/LearningHistory.lagda.md",
         "spec/Mimir/LearningTransaction.agda",
         "spec/Mimir/LearningTransactionReceipt.agda",
         "spec/Mimir/LearningQueryProtocol.agda",
@@ -849,7 +849,7 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.lagda.md"
       ],
       "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
       "remaining": "Recovery and public-entry coverage are checked by the registered controllers and structural coverage check. Rust conformance and installed-application verification remain pending; statistics, library algorithms and formatting are outside this recovery task."
@@ -877,7 +877,7 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.lagda.md"
       ],
       "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
       "remaining": "Recovery and public-entry coverage are checked by the registered controllers and structural coverage check. Rust conformance and installed-application verification remain pending; statistics, library algorithms and formatting are outside this recovery task."
@@ -897,7 +897,7 @@
         "spec/Mimir/AssessmentHistory.agda",
         "spec/Mimir/ReviewEdges.agda",
         "spec/Mimir/ReviewRecomputeTraversal.agda",
-        "spec/Mimir/ReviewRecord.agda",
+        "spec/Mimir/ReviewRecord.lagda.md",
         "spec/Mimir/ReviewNumericalPublication.agda",
         "spec/Mimir/LearningRecompute.agda",
         "spec/Mimir/PosteriorComputation.agda",
@@ -917,8 +917,8 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda",
-        "spec/Mimir/ReviewBeliefPreparation.agda"
+        "spec/Mimir/McpApplicationComposition.lagda.md",
+        "spec/Mimir/ReviewBeliefPreparation.lagda.md"
       ],
       "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
       "remaining": "Recovery and public-entry coverage are checked by the registered controllers and structural coverage check. Rust conformance and installed-application verification remain pending; statistics, library algorithms and formatting are outside this recovery task."
@@ -944,7 +944,7 @@
       "completion_modules": [
         "spec/Mimir/LearningOperations.agda",
         "spec/Mimir/LearningPublication.agda",
-        "spec/Mimir/LearningHistory.agda",
+        "spec/Mimir/LearningHistory.lagda.md",
         "spec/Mimir/LearningTransaction.agda",
         "spec/Mimir/LearningTransactionReceipt.agda",
         "spec/Mimir/LearningQueryProtocol.agda",
@@ -954,7 +954,7 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.lagda.md"
       ],
       "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
       "remaining": "Recovery and public-entry coverage are checked by the registered controllers and structural coverage check. Rust conformance and installed-application verification remain pending; statistics, library algorithms and formatting are outside this recovery task."
@@ -972,7 +972,7 @@
         "spec/Mimir/ItemOwnerBatch.agda",
         "spec/Mimir/LearningTransaction.agda",
         "spec/Mimir/LearningTransactionReceipt.agda",
-        "spec/Mimir/LearningHistory.agda",
+        "spec/Mimir/LearningHistory.lagda.md",
         "spec/Mimir/LearningQueryProtocol.agda"
       ],
       "status": "partially-specified",
@@ -980,7 +980,7 @@
       "completion_modules": [
         "spec/Mimir/LearningOperations.agda",
         "spec/Mimir/LearningPublication.agda",
-        "spec/Mimir/LearningHistory.agda",
+        "spec/Mimir/LearningHistory.lagda.md",
         "spec/Mimir/LearningTransaction.agda",
         "spec/Mimir/LearningTransactionReceipt.agda",
         "spec/Mimir/LearningQueryProtocol.agda",
@@ -990,7 +990,7 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.lagda.md"
       ],
       "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
       "remaining": "Recovery and public-entry coverage are checked by the registered controllers and structural coverage check. Rust conformance and installed-application verification remain pending; statistics, library algorithms and formatting are outside this recovery task."
@@ -1005,22 +1005,22 @@
         "spec/Mimir/Graph.agda",
         "spec/Mimir/AssessmentSelection.agda",
         "spec/Mimir/LearningContracts.agda",
-        "spec/Mimir/LearningContextProtocol.agda"
+        "spec/Mimir/LearningContextProtocol.lagda.md"
       ],
       "status": "partially-specified",
       "rust_correspondence": "open; separate from behavioral specification",
       "completion_modules": [
-        "spec/Mimir/LearningContextProtocol.agda",
+        "spec/Mimir/LearningContextProtocol.lagda.md",
         "spec/Mimir/LearningContext.agda",
         "spec/Mimir/LearningAssessmentQueries.agda",
-        "spec/Mimir/RetrievalProtocol.agda",
+        "spec/Mimir/RetrievalProtocol.lagda.md",
         "spec/Mimir/RetrievalRanking.agda",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.lagda.md"
       ],
       "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external.",
       "baseline_gap": "Pattern statistics and provenance defined; ranking and belief/assessment assembly compose in step 3."
@@ -1109,9 +1109,9 @@
         "Evidence"
       ],
       "completion_modules": [
-        "spec/Mimir/RetrievalProtocol.agda",
+        "spec/Mimir/RetrievalProtocol.lagda.md",
         "spec/Mimir/RetrievalRanking.agda",
-        "spec/Mimir/EvidenceRead.agda",
+        "spec/Mimir/EvidenceRead.lagda.md",
         "spec/Mimir/CLI.agda",
         "spec/Mimir/ApplicationProtocol.agda"
       ],
@@ -1127,7 +1127,7 @@
         "Graph"
       ],
       "completion_modules": [
-        "spec/Mimir/ProjectDeletion.agda",
+        "spec/Mimir/ProjectDeletion.lagda.md",
         "spec/Mimir/GraphWrites.agda",
         "spec/Mimir/CLI.agda",
         "spec/Mimir/ApplicationProtocol.agda"
@@ -1145,7 +1145,7 @@
         "Inference"
       ],
       "completion_modules": [
-        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceProtocol.lagda.md",
         "spec/Mimir/GraphNumerics.agda",
         "spec/Mimir/CLI.agda",
         "spec/Mimir/ApplicationProtocol.agda"
@@ -1163,7 +1163,7 @@
         "Inference"
       ],
       "completion_modules": [
-        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceProtocol.lagda.md",
         "spec/Mimir/GraphNumerics.agda",
         "spec/Mimir/CLI.agda",
         "spec/Mimir/ApplicationProtocol.agda"
@@ -1180,7 +1180,7 @@
         "Graph"
       ],
       "completion_modules": [
-        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceProtocol.lagda.md",
         "spec/Mimir/GraphNumerics.agda",
         "spec/Mimir/GraphDeletion.agda",
         "spec/Mimir/CLI.agda",
@@ -1199,7 +1199,7 @@
         "Evidence"
       ],
       "completion_modules": [
-        "spec/Mimir/BeliefEmbedding.agda",
+        "spec/Mimir/BeliefEmbedding.lagda.md",
         "spec/Mimir/CLI.agda",
         "spec/Mimir/ApplicationProtocol.agda",
         "spec/Mimir/Reembedding.agda",
@@ -1218,7 +1218,7 @@
         "Beta"
       ],
       "completion_modules": [
-        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceProtocol.lagda.md",
         "spec/Mimir/GraphNumerics.agda",
         "spec/Mimir/PosteriorComputation.agda",
         "spec/Mimir/CLI.agda",
@@ -1237,7 +1237,7 @@
         "Beta"
       ],
       "completion_modules": [
-        "spec/Mimir/GroundingPublication.agda",
+        "spec/Mimir/GroundingPublication.lagda.md",
         "spec/Mimir/CLI.agda",
         "spec/Mimir/ApplicationProtocol.agda"
       ],
@@ -1254,7 +1254,7 @@
         "Beta"
       ],
       "completion_modules": [
-        "spec/Mimir/EvidenceRead.agda",
+        "spec/Mimir/EvidenceRead.lagda.md",
         "spec/Mimir/CLI.agda",
         "spec/Mimir/ApplicationProtocol.agda"
       ],
@@ -1304,7 +1304,7 @@
         "EmbeddingBatch"
       ],
       "completion_modules": [
-        "spec/Mimir/DocumentLoading.agda",
+        "spec/Mimir/DocumentLoading.lagda.md",
         "spec/Mimir/DocumentPublication.agda",
         "spec/Mimir/CLI.agda",
         "spec/Mimir/ApplicationProtocol.agda"
@@ -1323,7 +1323,7 @@
         "EmbeddingBatch"
       ],
       "completion_modules": [
-        "spec/Mimir/DocumentQuery.agda",
+        "spec/Mimir/DocumentQuery.lagda.md",
         "spec/Mimir/CLI.agda",
         "spec/Mimir/ApplicationProtocol.agda"
       ],
@@ -1341,7 +1341,7 @@
         "EmbeddingBatch"
       ],
       "completion_modules": [
-        "spec/Mimir/DocumentLoading.agda",
+        "spec/Mimir/DocumentLoading.lagda.md",
         "spec/Mimir/DocumentPublication.agda",
         "spec/Mimir/CLI.agda",
         "spec/Mimir/ApplicationProtocol.agda"
@@ -1436,7 +1436,7 @@
         "BatchReport"
       ],
       "completion_modules": [
-        "spec/Mimir/JudgeHostProtocol.agda",
+        "spec/Mimir/JudgeHostProtocol.lagda.md",
         "spec/Mimir/JudgeConfigurationComposition.agda",
         "spec/Mimir/CLI.agda",
         "spec/Mimir/ApplicationProtocol.agda"
@@ -1459,7 +1459,7 @@
         "BatchReport"
       ],
       "completion_modules": [
-        "spec/Mimir/JudgeHostProtocol.agda",
+        "spec/Mimir/JudgeHostProtocol.lagda.md",
         "spec/Mimir/JudgeWorkflowComposition.agda",
         "spec/Mimir/JudgeBackendComposition.agda",
         "spec/Mimir/JudgeFinalizationComposition.agda",
@@ -1484,7 +1484,7 @@
         "BatchReport"
       ],
       "completion_modules": [
-        "spec/Mimir/JudgeHostProtocol.agda",
+        "spec/Mimir/JudgeHostProtocol.lagda.md",
         "spec/Mimir/CLI.agda",
         "spec/Mimir/ApplicationProtocol.agda"
       ],
@@ -1591,7 +1591,7 @@
       ],
       "completion_modules": [
         "spec/Mimir/McpRuntimeComposition.agda",
-        "spec/Mimir/McpApplicationComposition.agda",
+        "spec/Mimir/McpApplicationComposition.lagda.md",
         "spec/Mimir/McpToolExecution.agda",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
@@ -1657,7 +1657,7 @@
         "spec/Mimir/JudgePersistence.agda"
       ],
       "completion_modules": [
-        "spec/Mimir/JudgeHostProtocol.agda",
+        "spec/Mimir/JudgeHostProtocol.lagda.md",
         "spec/Mimir/JudgeWorkflowComposition.agda",
         "spec/Mimir/JudgeBackendComposition.agda",
         "spec/Mimir/JudgeClientStartup.agda",
@@ -1697,7 +1697,7 @@
       ],
       "completion_modules": [
         "spec/Mimir/EmbeddingBatch.agda",
-        "spec/Mimir/DocumentLoading.agda"
+        "spec/Mimir/DocumentLoading.lagda.md"
       ],
       "status": "partially-specified",
       "baseline_gap": "Compose backend readiness, output cardinality/dimension, belief/document association, scope threshold and side effects, including reembed.",
@@ -1757,7 +1757,7 @@
       "modules": [
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
-        "spec/Mimir/GroundingPublication.agda"
+        "spec/Mimir/GroundingPublication.lagda.md"
       ],
       "note": "Existing core API; no new MCP tool."
     },

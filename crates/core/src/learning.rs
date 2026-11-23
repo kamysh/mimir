@@ -92,27 +92,52 @@ impl<Identity> Experience<Identity> {
     }
 
     pub fn validate(&self) -> Result<()> {
+        use crate::validation::{Code, Refusal, Segment};
+        let refuse = |field: &str, code, message| {
+            Refusal::invalid(
+                code,
+                vec![
+                    Segment::Key("experience".into()),
+                    Segment::Key(field.into()),
+                ],
+                message,
+            )
+        };
         crate::assessment::validate_items(&self.learning_items)?;
         crate::learning_sources::validate_sources(&self.source_records)?;
-        ensure!(
-            self.source_records.is_empty()
-                || (self.source_records.len() == self.evidence.len()
-                    && self
-                        .source_records
-                        .iter()
-                        .zip(&self.evidence)
-                        .all(|(s, e)| s.source_ref == *e)),
-            "source evidence indices must correspond to source references"
-        );
-        ensure!(!self.project.trim().is_empty(), "project must be explicit");
-        ensure!(
-            !self.context.trim().is_empty() && !self.action.trim().is_empty(),
-            "context and action are required"
-        );
-        ensure!(
-            self.outcome == Outcome::Unknown || self.evidence.iter().any(|e| !e.trim().is_empty()),
-            "a known outcome requires evidence"
-        );
+        if !self.source_records.is_empty()
+            && (self.source_records.len() != self.evidence.len()
+                || self
+                    .source_records
+                    .iter()
+                    .zip(&self.evidence)
+                    .any(|(s, e)| s.source_ref != *e))
+        {
+            return Err(refuse(
+                "evidence",
+                Code::MissingReference,
+                "List the source references in evidence in the same order as source_records.",
+            )
+            .into());
+        }
+        for (field, value) in [
+            ("project", &self.project),
+            ("context", &self.context),
+            ("action", &self.action),
+        ] {
+            if value.trim().is_empty() {
+                return Err(refuse(
+                    field,
+                    Code::EmptyText,
+                    "Supply nonblank text for this field.",
+                )
+                .into());
+            }
+        }
+        if self.outcome != Outcome::Unknown && !self.evidence.iter().any(|e| !e.trim().is_empty()) {
+            return Err(refuse("evidence", Code::MissingEvidence,
+                "Provide the evidence for the observed outcome, or use unknown if it was not observed.").into());
+        }
         Ok(())
     }
 }
@@ -411,6 +436,30 @@ pub struct LearningContext {
     pub assessments_truncated: bool,
 }
 
+pub(crate) fn check_review_source(submitted: i64, current: i64) -> Result<()> {
+    use crate::validation::{Code, Refusal, Segment};
+    if submitted != current {
+        return Err(Refusal::invalid(
+            Code::StaleRevision,
+            vec![Segment::Key("review".into()), Segment::Key("experience_revision".into())],
+            "Stale review: the experience has changed. Read get_experience and reassess the review against the current evidence before resubmitting.",
+        ).into());
+    }
+    Ok(())
+}
+
+pub(crate) fn check_review_revision(expected: i64, current: i64) -> Result<()> {
+    use crate::validation::{Code, Refusal, Segment};
+    if expected != current {
+        return Err(Refusal::invalid(
+            Code::StaleRevision,
+            vec![Segment::Key("expected_review_revision".into())],
+            format!("Stale review revision: current is {current}. Call get_learning_review, reconcile your intended changes with the current review, and resubmit."),
+        ).into());
+    }
+    Ok(())
+}
+
 impl crate::MimirService {
     pub async fn lesson_assessment(
         &self,
@@ -430,7 +479,7 @@ impl crate::MimirService {
         scope: &str,
         rubric: &str,
         offset: usize,
-        limit: usize,
+        limit: Option<usize>,
     ) -> Result<serde_json::Value> {
         self.store
             .lesson_assessment_history(project, belief_id, scope, rubric, offset, limit)
@@ -475,6 +524,7 @@ impl crate::MimirService {
             .ok_or_else(|| {
                 anyhow::anyhow!("Experience not found; check its id before resubmitting.")
             })?;
+        check_review_source(review.experience_revision, current.revision)?;
         let existing = self
             .store
             .existing_belief_candidates(review.experience_id)
@@ -491,6 +541,9 @@ impl crate::MimirService {
                 if existing.contains(key) {
                     continue;
                 }
+                // An already committed review cannot contain a new belief.
+                // Leave replay and final revision validation to the transaction.
+                check_review_revision(expected_review_revision, current.review_revision)?;
                 let passage_id = supporting_passage_id.ok_or_else(|| crate::validation::Refusal::invalid(
                     crate::validation::Code::MissingEvidence,
                     vec![crate::validation::Segment::Key("review".into()), crate::validation::Segment::Key("candidates".into()), crate::validation::Segment::Index(index), crate::validation::Segment::Key("supporting_passage_id".into())],
@@ -562,16 +615,32 @@ impl crate::MimirService {
     /// Retrieve relevant procedures with observed results alongside beliefs.
     /// Relevance comes first; outcome estimates break ties between equally
     /// relevant procedures. A retrieval never counts as a successful use.
-    /// `limit = 0` selects all matching patterns and beliefs (no cap).
+    /// An omitted count selects all matching patterns and beliefs.
     pub async fn query_learning_context(
         &self,
         context: &str,
         project: &str,
-        limit: usize,
+        limit: Option<usize>,
     ) -> Result<LearningContext> {
-        ensure!(!project.trim().is_empty(), "project must be explicit");
+        use crate::validation::{Code, Refusal, Segment};
+        if project.trim().is_empty() {
+            return Err(Refusal::invalid(
+                Code::EmptyText,
+                vec![Segment::Key("project".into())],
+                "Choose a nonblank project for the experiences to search and resubmit.",
+            )
+            .into());
+        }
+        if limit == Some(0) {
+            return Err(Refusal::invalid(
+                Code::InvalidNumber,
+                vec![Segment::Key("limit".into())],
+                "Supply a positive count or omit the field to return all matches.",
+            )
+            .into());
+        }
         let report = self
-            .query_relevant(context, limit, Some(project), None)
+            .query_relevant(context, limit.unwrap_or_default(), Some(project), None)
             .await?;
         let beliefs = report.beliefs;
         let terms: std::collections::HashSet<_> = context
@@ -594,22 +663,19 @@ impl crate::MimirService {
             }
         }
         ranked.sort_by(|(a, x), (b, y)| {
-            b.cmp(a)
-                .then_with(|| {
-                    y.observed_success_probability
-                        .total_cmp(&x.observed_success_probability)
-                })
-                .then_with(|| x.pattern.id.cmp(&y.pattern.id))
+            b.cmp(a).then_with(|| {
+                y.observed_success_probability
+                    .total_cmp(&x.observed_success_probability)
+            })
         });
         let (assessments, assessments_truncated) = self
             .store
             .assessments_for_beliefs(project, &beliefs.iter().map(|b| b.id).collect::<Vec<_>>())
             .await?;
-        let patterns: Vec<PatternResult> = if limit > 0 {
-            ranked.into_iter().take(limit).map(|(_, p)| p).collect()
-        } else {
-            ranked.into_iter().map(|(_, p)| p).collect()
-        };
+        if let Some(limit) = limit {
+            ranked.truncate(limit);
+        }
+        let patterns = ranked.into_iter().map(|(_, result)| result).collect();
         Ok(LearningContext {
             beliefs,
             semantic_search: report.semantic_search,
@@ -627,22 +693,9 @@ impl crate::MimirService {
         &self,
         id: Uuid,
         offset: usize,
-        limit: usize,
+        limit: Option<usize>,
     ) -> Result<serde_json::Value> {
-        let belief = self
-            .get_belief(id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("belief not found"))?;
-        let incoming = self.store.get_incoming_edges(&[id]).await?;
-        let parents: Vec<_> = incoming.iter().map(|(from,to,relation,weight,mean)|serde_json::json!({
-            "from_id":from,"to_id":to,"relation":relation,"weight":weight.value(),"source_probability":mean
-        })).collect();
-        let reviews = self.store.reviews_for_belief(id, offset, limit).await?;
-        let candidate_provenance = self.store.candidate_provenance(id).await?;
-        let independent_provenance = self.store.independent_provenance(id).await?;
-        Ok(
-            serde_json::json!({"belief":belief,"incoming_edges":parents,"learning":reviews,"candidate_provenance":candidate_provenance,"independent_provenance":independent_provenance}),
-        )
+        self.store.belief_explanation(id, offset, limit).await
     }
 }
 

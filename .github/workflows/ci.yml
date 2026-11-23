@@ -19,7 +19,7 @@ jobs:
         # The isolated runner tests need the local bwrap sandbox and run via
         # the repository's isolated harness scripts.
         run: nix develop --command cargo test --workspace --lib --bins
-      - name: Agda aggregate
-        run: nix develop --command sh -c 'cd spec && agda Mimir.agda'
+      - name: Agda aggregate and reader topics
+        run: nix develop --command bash scripts/formal/check-readers.sh
       - name: Formal coverage
         run: bash scripts/formal/check-coverage.sh

@@ -1,7 +1,40 @@
+# Inference and retirement
+
+Propagation starts from a stored belief and follows support, cause, and
+defeat links. Recalculation includes the incoming evidence of each affected
+belief, including fixed inputs from outside the write set. The application
+publishes the resulting belief values together. If calculation or
+publication fails, the proposed values are discarded and a later attempt
+starts from committed state. For example, an unavailable calculation cannot
+leave the first half of a dependency chain updated.
+
+An intervention is a read-only projection that uses the causal part of the
+graph. It does not publish the hypothetical probabilities. Decay changes
+stored belief values through its write operation. Contradiction queries
+inspect the existing graph. The calculation boundary supplies values;
+this contract does not prescribe a numerical solver.
+
+## Retiring a defeated belief
+
+The user chooses the grace period in `[retirement].grace_hours`. When it is
+missing, the operation leaves the graph intact and asks for a configured
+policy. An eligible target must still be below the requested threshold and
+its latest recorded defeat must have aged past that grace period. A newly
+recorded defeat starts the clock when the link is written, even if its
+source belief is old. Legacy links without a timestamp use the start of
+1970. A project sweep considers links whose two endpoints are visible in
+that project, including untagged global beliefs.
+
+The Rust store selects and deletes the eligible set under the learning
+write lock. All deletions, their dependent changes, and the final count
+share one transaction. If the second of two deletions fails, neither
+deletion remains. [GraphNumerics](GraphNumerics.agda) defines the eligibility
+predicate and [the application](ApplicationProtocol.agda) attaches the
+transaction and recovery proof. [The store](../../crates/core/src/store.rs)
+implements the write boundary.
+
+```agda
 {-# OPTIONS --safe #-}
--- Service orchestration for propagation, intervention, decay, contradictions
--- and defeated-belief sweep. Every read is a separate observation. The
--- dependency owns I/O and calculation. Recovery does not prescribe a solver.
 module Mimir.InferenceProtocol where
 
 open import Data.Bool using (Bool; true; false; _∧_; not)
@@ -424,3 +457,4 @@ startHasOnePublication (sweepHours project threshold hours) = readOne (defeatTim
 
 prepareRequest : Request → ReadProtocol.Script Preparation
 prepareRequest request = prepareOne (startHasOnePublication request)
+```

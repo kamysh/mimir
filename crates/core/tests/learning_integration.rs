@@ -279,7 +279,7 @@ async fn typed_assessments_replace_retract_and_preserve_legacy_probability() {
     assert!((score["scores"]["correctness"].as_f64().unwrap() - 2. / 3.).abs() < 1e-12);
     assert_eq!(score["scores"]["usefulness"], 0.5);
     let retrieved = svc
-        .query_learning_context("30 minutes fixed scope", &project, 5)
+        .query_learning_context("30 minutes fixed scope", &project, Some(5))
         .await
         .unwrap();
     assert!(retrieved
@@ -323,13 +323,13 @@ async fn typed_assessments_replace_retract_and_preserve_legacy_probability() {
     assert_eq!(corrected["scores"]["usefulness"], -0.25);
     assert_eq!(corrected["scores"]["incidents"], 1);
     let page = svc
-        .lesson_assessment_history(&project, id, "fixed-scope-v1", "benefit-v1", 0, 1)
+        .lesson_assessment_history(&project, id, "fixed-scope-v1", "benefit-v1", 0, Some(1))
         .await
         .unwrap();
     assert_eq!(page["entries"][0]["active"], false);
     assert_eq!(page["next_offset"], 1);
     let page = svc
-        .lesson_assessment_history(&project, id, "fixed-scope-v1", "benefit-v1", 1, 1)
+        .lesson_assessment_history(&project, id, "fixed-scope-v1", "benefit-v1", 1, Some(1))
         .await
         .unwrap();
     assert_eq!(page["entries"][0]["active"], true);
@@ -511,7 +511,7 @@ async fn offline_learning_scenario_matrix() {
     // review state is handed to the chooser.
     let later_session = service().await;
     let retrieved = later_session
-        .query_learning_context("stale keyboard indicator", &project, 20)
+        .query_learning_context("stale keyboard indicator", &project, Some(20))
         .await
         .unwrap();
     let retrieved_lesson = retrieved.beliefs.iter().any(|b| b.id == success_id);
@@ -531,7 +531,7 @@ async fn offline_learning_scenario_matrix() {
         "restart layout process"
     );
     let unrelated = later_session
-        .query_learning_context("disk quota exceeded", &project, 20)
+        .query_learning_context("disk quota exceeded", &project, Some(20))
         .await
         .unwrap();
     let unrelated_retrieved_lesson = unrelated.beliefs.iter().any(|b| b.id == success_id);
@@ -714,7 +714,7 @@ async fn standalone_foreground_belief_can_still_double_count_one_incident() {
         "review added the same report again"
     );
     assert!(
-        svc.explain_belief(belief.id, 0, 10).await.unwrap()["candidate_provenance"].is_null(),
+        svc.explain_belief(belief.id, 0, Some(10)).await.unwrap()["candidate_provenance"].is_null(),
         "standalone belief unexpectedly gained incident provenance"
     );
     svc.delete_project(&project).await.unwrap();
@@ -860,10 +860,10 @@ async fn atomic_candidates_retry_retraction_and_observed_pattern_use() {
         svc.review_experience(&r, 1).await.unwrap().review_revision,
         1
     );
-    let candidate = svc.explain_belief(belief_id, 0, 10).await.unwrap();
+    let candidate = svc.explain_belief(belief_id, 0, Some(10)).await.unwrap();
     assert_eq!(candidate["candidate_provenance"]["active"], true);
     let before_use = svc
-        .query_learning_context("keyboard session lifecycle", &project, 10)
+        .query_learning_context("keyboard session lifecycle", &project, Some(10))
         .await
         .unwrap();
     let result = before_use
@@ -894,7 +894,7 @@ async fn atomic_candidates_retry_retraction_and_observed_pattern_use() {
         .await
         .unwrap();
     let observed = svc
-        .query_learning_context("keyboard session lifecycle", &project, 10)
+        .query_learning_context("keyboard session lifecycle", &project, Some(10))
         .await
         .unwrap();
     let result = observed
@@ -910,11 +910,11 @@ async fn atomic_candidates_retry_retraction_and_observed_pattern_use() {
     let after = svc.get_belief(belief_id).await.unwrap().unwrap();
     assert!((after.alpha - 1.0).abs() < 1e-9);
     assert_eq!(
-        svc.explain_belief(belief_id, 0, 10).await.unwrap()["candidate_provenance"]["active"],
+        svc.explain_belief(belief_id, 0, Some(10)).await.unwrap()["candidate_provenance"]["active"],
         false
     );
     let after = svc
-        .query_learning_context("keyboard session lifecycle", &project, 10)
+        .query_learning_context("keyboard session lifecycle", &project, Some(10))
         .await
         .unwrap();
     let result = after
@@ -972,7 +972,7 @@ async fn source_correction_deactivates_candidate_support_without_deleting_identi
     );
     assert!((svc.get_belief(id).await.unwrap().unwrap().alpha - 1.0).abs() < 1e-9);
     assert_eq!(
-        svc.explain_belief(id, 0, 10).await.unwrap()["candidate_provenance"]["active"],
+        svc.explain_belief(id, 0, Some(10)).await.unwrap()["candidate_provenance"]["active"],
         false
     );
     assert!(
@@ -1325,7 +1325,7 @@ async fn scoped_pattern_outcomes_replace_instead_of_accumulate() {
         .unwrap()
         .experience;
     let context = svc
-        .query_learning_context("keyboard", &project, 5)
+        .query_learning_context("keyboard", &project, Some(5))
         .await
         .unwrap();
     assert_eq!(context.patterns[0].successes, 1);
@@ -1333,7 +1333,7 @@ async fn scoped_pattern_outcomes_replace_instead_of_accumulate() {
     e.outcome = Outcome::Failure;
     svc.record_experience(&e, 1).await.unwrap();
     let context = svc
-        .query_learning_context("keyboard", &project, 5)
+        .query_learning_context("keyboard", &project, Some(5))
         .await
         .unwrap();
     assert_eq!(context.patterns[0].successes, 0);
@@ -1346,7 +1346,7 @@ async fn scoped_pattern_outcomes_replace_instead_of_accumulate() {
         .await
         .unwrap();
     assert_eq!(
-        svc.query_learning_context("keyboard", &project, 5)
+        svc.query_learning_context("keyboard", &project, Some(5))
             .await
             .unwrap()
             .patterns[0]
