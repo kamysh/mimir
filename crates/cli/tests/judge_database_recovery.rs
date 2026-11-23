@@ -334,6 +334,11 @@ jq -c --rawfile global "$(dirname "$0")/global-id" --rawfile repaired "$(dirname
     elif $reply.error == "review_not_saved" and
       $reply.experience_revision == .experience.revision then review({})
     else error("missing submission instruction") end
+  elif $context == "assessed a procedure as a belief" then
+    if (.history|length) == 0 then
+      review(invalid + {candidates:[{kind:"pattern",key:"missing",
+        situation:"A job is already running",approach:"Check the existing job"}]})
+    else {calls:[]} end
   else
     if (.history|length) == 0 then call("explain_belief"; {id:$global,limit:1,offset:0})
     elif $reply.fault.path == ["id"] and $reply.fault.code == "wrong_identity"
@@ -450,7 +455,7 @@ jq -c --rawfile global "$(dirname "$0")/global-id" --rawfile repaired "$(dirname
     let log_directory = settings["logging"]["directory"].as_str().unwrap();
     let log = fs::read_to_string(Path::new(log_directory).join("mimir.log")).unwrap();
     assert!(log.contains("reason=review_requires_repair"));
-    assert!(log.contains("batch complete; confirmed=1"));
+    assert!(log.contains("confirmed=1; pending=0"));
     assert!(!log.contains("step=model_request"));
     assert_eq!(
         service
@@ -475,10 +480,31 @@ jq -c --rawfile global "$(dirname "$0")/global-id" --rawfile repaired "$(dirname
         .experience
         .id;
     assert_reviewed(&service, later).await;
+    let automatic = service
+        .create_experience(&experience("assessed a procedure as a belief"))
+        .await
+        .unwrap()
+        .experience
+        .id;
+    assert_reviewed(&service, automatic).await;
     wait_for_state(&runtime, "phase", "waiting_for_work").await;
 
+    let history = service.experience_history(automatic).await.unwrap();
+    let review = &history["reviews"][0]["payload"];
+    assert_eq!(review["candidates"][0]["kind"], "pattern");
+    assert_eq!(review["candidates"][0]["key"], "missing");
+    assert!(
+        review["assessments"].is_null()
+            || review["assessments"].as_array().is_some_and(Vec::is_empty)
+    );
     let outbox: Value =
         serde_json::from_slice(&fs::read(state.join("notification-outbox.json")).unwrap()).unwrap();
+    let automatic_key = format!("review/{automatic}/1");
+    assert!(outbox["incidents"]
+        .as_object()
+        .unwrap()
+        .values()
+        .all(|incident| incident["incident_key"] != automatic_key));
     let review_key = format!("review/{rejected}/1");
     let incident = outbox["incidents"]
         .as_object()
@@ -496,7 +522,7 @@ jq -c --rawfile global "$(dirname "$0")/global-id" --rawfile repaired "$(dirname
         .query(
             "SELECT id, experience_id, transcript FROM mimir_failed_review_transcripts
          WHERE experience_id = ANY($1)",
-            &[&vec![rejected, next, corrected, later]],
+            &[&vec![rejected, next, corrected, later, automatic]],
         )
         .await
         .unwrap();

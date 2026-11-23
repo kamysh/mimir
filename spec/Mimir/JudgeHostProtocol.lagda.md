@@ -27,16 +27,22 @@ connects the runner's receipts to the batch result.
 
 | What happened | What Mimir does next |
 | --- | --- |
-| The judge says it is done and there is no confirmed review | Read PostgreSQL before accepting completion. If the selected revision is still pending, tell the judge to submit `review_experience` for that selection. If it again declares completion without a saved review after receiving that instruction, open a repair case for this review and process other eligible work. If the source changed, select its new revision normally. |
+| The judge says it is done and there is no confirmed review | Read PostgreSQL before accepting completion. If the selected revision is still pending, tell the judge to submit `review_experience` for that selection. If it again declares completion without a saved review after receiving that instruction, try the mechanical correction below before opening a repair case. If the source changed, select its new revision normally. |
 | An assessment, feedback entry, or link refers to an undeclared belief candidate | Return the field path, entry index, and missing key to the judge. It can declare a supported belief under that key, reference an existing eligible belief by its database UUID, or remove the unsupported reference. A new declaration still requires an indexed supporting passage and an embedding before publication. |
 | A graph explanation is requested outside the selected project | Give the judge the scope correction and continue. It may explain a belief in the selected project or read an eligible global belief as context. The project boundary applies to the corrected request. |
 
-After a refusal, the next submission must address the reported defect.
-Repeating the same invalid field or ending the attempt without resolving it
-leaves a repair case for that experience and source revision. A refusal
-cannot save a review or advance its revision. A valid continuation uses
-the existing review publication operation and PostgreSQL readback. One
-blocked review does not prevent selection of other eligible work.
+After a refusal, the next submission must address the reported defect. If
+the judge repeats the same invalid field or stops without a saved review,
+Mimir can correct the latest rejected draft when the typed fault points to
+an assessment that uses a declared procedure as a belief. It removes the
+assessments with that type mismatch, keeps the procedures and extracted
+statements, and marks a complete source unresolved if a statement from it
+lost its last assessment. It preserves other entries and never guesses a
+replacement belief. The same source and review revision checks, full review
+validation, transactional publication, and PostgreSQL readback apply to the
+corrected draft. A refusal cannot save a review or advance its revision.
+If the selected revision is still pending and the correction cannot be
+applied, leave a repair case and process other eligible work.
 
 For the deferred reviews carried forward from 3.2.0, the first run with
 the corrected judge rechecks each revision in PostgreSQL. Revisions still

@@ -11,8 +11,9 @@ use mimir_core::{
     graph::MemoryType,
     learning::{BeliefTarget, Candidate, ExperienceState, Review},
     learning_sources::CoverageStatus,
+    validation::{Code, Fault, Segment},
 };
-use serde_json::json;
+use serde_json::{json, Value};
 use std::io::{self, Write};
 use std::path::Path;
 use uuid::Uuid;
@@ -242,11 +243,51 @@ fn remove_assessment(review: &mut Review, index: usize) -> Vec<String> {
             })
         {
             coverage.status = CoverageStatus::Unresolved;
-            coverage.reason.push_str(" The operator removed an assessment with an invalid target. Extracted statements still need assessment.");
+            coverage.reason.push_str(" An assessment with an invalid target was removed. Extracted statements still need assessment.");
             changed.push(coverage.source_ref.clone());
         }
     }
     changed
+}
+
+pub(super) fn correct_pattern_assessments(arguments: &Value, fault: &Fault) -> Option<Value> {
+    let [Segment::Key(review_field), Segment::Key(assessments), Segment::Index(index), Segment::Key(target), Segment::Key(key)] =
+        fault.path.as_slice()
+    else {
+        return None;
+    };
+    if fault.code != Code::MissingReference
+        || review_field != "review"
+        || assessments != "assessments"
+        || target != "target"
+        || key != "candidate_key"
+    {
+        return None;
+    }
+    let mut review: Review = serde_json::from_value(arguments["review"].clone()).ok()?;
+    let uses_pattern = |assessment: &Assessment| {
+        let BeliefTarget::Candidate { candidate_key } = &assessment.target else {
+            return false;
+        };
+        review.candidates.iter().any(
+            |candidate| matches!(candidate, Candidate::Pattern { key, .. } if key == candidate_key),
+        )
+    };
+    if !uses_pattern(review.assessments.get(*index)?) {
+        return None;
+    }
+    let removals: Vec<_> = review
+        .assessments
+        .iter()
+        .enumerate()
+        .filter_map(|(index, assessment)| uses_pattern(assessment).then_some(index))
+        .collect();
+    for index in removals.into_iter().rev() {
+        remove_assessment(&mut review, index);
+    }
+    let mut corrected = arguments.clone();
+    corrected["review"] = serde_json::to_value(review).ok()?;
+    Some(corrected)
 }
 
 async fn choose_belief(client: &mut Client, selected: &ExperienceState) -> Result<Option<Uuid>> {
