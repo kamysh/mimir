@@ -31,8 +31,8 @@ summarize trace = summary (R.Trace.identity trace) (R.Trace.status trace) (R.Tra
 data Output : Set where
   invalidStatePath stateUnavailable : Output
   snapshot : Maybe R.Report → Maybe R.Incident → Output
-  attempts : List Summary → Output
-  traceOutput : Maybe R.Trace → Output
+  attempts : Bool → List Summary → Output
+  traceOutput : Bool → Maybe R.Trace → Output
 
 data Effect : Set where
   resolve readReport readIncident readDiagnostics : Effect
@@ -79,14 +79,14 @@ select (just explicit) _ traces = find explicit traces
 select nothing (just first) traces = find first traces
 select nothing nothing traces = latest traces
 
-afterDiagnostics : Bool → Maybe UUID → Reply readDiagnostics → Script ℕ
-afterDiagnostics list id (inj₁ error) = emit stateUnavailable 5
-afterDiagnostics true id (inj₂ traces) = emit (attempts (map summarize traces)) 0
-afterDiagnostics false id (inj₂ traces) = ask readIncident λ where
+afterDiagnostics : Bool → Maybe UUID → Bool → Reply readDiagnostics → Script ℕ
+afterDiagnostics list id raw (inj₁ error) = emit stateUnavailable 5
+afterDiagnostics true id raw (inj₂ traces) = emit (attempts raw (map summarize traces)) 0
+afterDiagnostics false id raw (inj₂ traces) = ask readIncident λ where
   (inj₁ error) → emit stateUnavailable 5
-  (inj₂ savedIncident) → emit (traceOutput (select id (firstFailure savedIncident) traces)) 0
+  (inj₂ savedIncident) → emit (traceOutput raw (select id (firstFailure savedIncident) traces)) 0
 
-diagnostics : Bool → Maybe UUID → Script ℕ
-diagnostics list id = ask resolve λ where
+diagnostics : Bool → Maybe UUID → Bool → Script ℕ
+diagnostics list id raw = ask resolve λ where
   false → emit invalidStatePath 2
-  true → ask readDiagnostics (afterDiagnostics list id)
+  true → ask readDiagnostics (afterDiagnostics list id raw)

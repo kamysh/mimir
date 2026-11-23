@@ -238,7 +238,7 @@ pub async fn tick(
         Some("database_unavailable") => {} // The shared summary gives the automatic retry instructions.
         _ => body.push_str("A failed attempt is cleaned up. Correct the reported prerequisite and edit configuration or send SIGHUP to restart the original work. A retry is not confirmation that the problem is resolved.\n"),
     }
-    body.push_str("Help: https://github.com/kamysh/mimir/blob/v3.3.0/docs/operations.md\n");
+    body.push_str("Help: https://github.com/kamysh/mimir/blob/v3.3.1/docs/operations.md\n");
     let digest = Digest {
         through_day: through.to_string(),
         body,

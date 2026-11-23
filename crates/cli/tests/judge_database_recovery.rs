@@ -293,6 +293,16 @@ async fn watcher_recovers_review_failures_without_stalling() {
         .await
         .unwrap();
     fs::write(dir.join("global-id"), global.id.to_string()).unwrap();
+    let repair_target = service
+        .add_belief_in_project(
+            "eligible project belief for the repair fixture",
+            0.6,
+            0.5,
+            project,
+            mimir_core::graph::MemoryType::Fact,
+        )
+        .await
+        .unwrap();
     fs::write(
         &model,
         r#"#!/usr/bin/env bash
@@ -508,7 +518,7 @@ jq -c --rawfile global "$(dirname "$0")/global-id" --rawfile repaired "$(dirname
     assert_eq!(result_events[0]["tool"], "get_experience");
     assert!(events.iter().all(|event| event["kind"] != "model_request"));
     let readback = Command::new(&fixture.mimir)
-        .args(["judge", "diagnostics", "--config"])
+        .args(["judge", "diagnostics", "--json", "--config"])
         .arg(&config)
         .arg("--state-dir")
         .arg(&state)
@@ -519,6 +529,20 @@ jq -c --rawfile global "$(dirname "$0")/global-id" --rawfile repaired "$(dirname
     assert!(readback.status.success());
     let output: Value = serde_json::from_slice(&readback.stdout).unwrap();
     assert_eq!(output["trace"]["transcript"], transcript);
+    let readable = Command::new(&fixture.mimir)
+        .args(["judge", "diagnostics", "--config"])
+        .arg(&config)
+        .arg("--state-dir")
+        .arg(&state)
+        .args(["--id", &transcript_id.to_string()])
+        .output()
+        .await
+        .unwrap();
+    assert!(readable.status.success());
+    let explanation = String::from_utf8(readable.stdout).unwrap();
+    assert!(explanation.contains("Why it failed"));
+    assert!(explanation.contains("guided repair"));
+    assert!(!explanation.contains("\"events\""));
 
     let repair = |id: Uuid, revision: &str| {
         let mut command = Command::new(&fixture.mimir);
@@ -541,11 +565,11 @@ jq -c --rawfile global "$(dirname "$0")/global-id" --rawfile repaired "$(dirname
     let guide = repair(rejected, "1").output().await.unwrap();
     fs::write(dir.join("guide.stdout"), &guide.stdout).unwrap();
     fs::write(dir.join("guide.stderr"), &guide.stderr).unwrap();
-    assert!(guide.status.success());
+    assert!(!guide.status.success());
     let instructions = String::from_utf8(guide.stdout).unwrap();
-    assert!(instructions.contains("unsupported reference"));
-    assert!(instructions.contains(r#"["review","assessments",0,"target","candidate_key"]"#));
-    assert!(instructions.contains("--review PATH"));
+    assert!(instructions.contains("Fixture assessment"));
+    assert!(instructions.contains("which the judge never defined as a belief"));
+    assert!(instructions.contains("Repair cancelled"));
 
     let file = dir.join("corrected-review.json");
     fs::write(&file, serde_json::json!({
@@ -571,12 +595,21 @@ jq -c --rawfile global "$(dirname "$0")/global-id" --rawfile repaired "$(dirname
         0
     );
 
-    let applied = repair(rejected, "1")
-        .arg("--review")
-        .arg(&file)
-        .output()
+    use tokio::io::AsyncWriteExt;
+    let mut interactive = repair(rejected, "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    interactive
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"b\neligible project belief for the repair fixture\ny\nyes\n")
         .await
         .unwrap();
+    let applied = interactive.wait_with_output().await.unwrap();
     fs::write(dir.join("repair.stdout"), &applied.stdout).unwrap();
     fs::write(dir.join("repair.stderr"), &applied.stderr).unwrap();
     assert!(
@@ -584,13 +617,16 @@ jq -c --rawfile global "$(dirname "$0")/global-id" --rawfile repaired "$(dirname
         "{}",
         String::from_utf8_lossy(&applied.stderr)
     );
-    let receipt: Value = serde_json::from_slice(&applied.stdout).unwrap();
-    assert_eq!(receipt["status"], "confirmed");
+    assert!(String::from_utf8_lossy(&applied.stdout).contains("PostgreSQL confirmed the review"));
     assert_reviewed(&service, rejected).await;
     let history = service.experience_history(rejected).await.unwrap();
     assert_eq!(
         history["reviews"][0]["payload"]["reviewer"],
         "mimir-operator"
+    );
+    assert_eq!(
+        history["reviews"][0]["payload"]["assessments"][0]["target"]["belief_id"],
+        serde_json::json!(repair_target.id)
     );
     drop(mail_connection);
 

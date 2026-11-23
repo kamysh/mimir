@@ -70,9 +70,12 @@ other reviews.
 mimir judge repair --experience EXPERIENCE_UUID --revision SOURCE_REVISION
 ```
 
-The command displays the repair case and its choices. Add `--retry` for a new
-judge attempt from the stored source, or `--review PATH` to submit a complete
-corrected `review_experience` JSON object. Use the UUID and source revision
+The command opens the rejected review, explains the affected assessment,
+and lets you remove it or choose an existing belief by its text. Review the
+proposed edit and type `yes` to submit it. If removal leaves any extracted
+statement unassessed, Mimir shows the affected sources before saving.
+Add `--retry` to request a new judge attempt or `--review PATH` when a complete
+corrected `review_experience` JSON object is already available. Use the UUID and source revision
 from the alert and include the same configuration and state options when the
 alert supplies them. Inspect the current source if the command reports a newer
 revision. A successful repair reports `confirmed` after PostgreSQL readback.
@@ -133,8 +136,9 @@ cannot accept a transcript, the watcher reports it as pending and retains it
 in memory until it can retry. Pending transcripts are lost if that process exits.
 
 Status, last-failure and runtime reports replace their previous snapshots.
-The diagnostics command can still look up a historical trace by ID in the
-older local transcript file.
+Diagnostics describe the failure in plain language. Add `--json` to retrieve
+the raw transcript or a machine-readable list. Historical trace IDs from
+the old local file still work.
 
 Mimir does not change a supervisor's own journal or files to which a shell
 redirects stdout/stderr. Any external retention policy remains an operator

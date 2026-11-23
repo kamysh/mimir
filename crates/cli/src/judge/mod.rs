@@ -97,6 +97,9 @@ pub enum JudgeCommand {
         list: bool,
         #[arg(long)]
         id: Option<uuid::Uuid>,
+        /// Print the complete machine-readable transcript.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -237,14 +240,21 @@ async fn dispatch_inner(command: JudgeCommand) -> i32 {
             state_dir,
             list,
             id,
+            json,
         } => {
             let path = match state::resolve(state_dir.as_deref()) {
                 Ok(path) => path,
                 Err(_) => {
-                    println!(
-                        "{}",
-                        json!({"status":"invalid_config","reason":"invalid_state_path"})
-                    );
+                    if json {
+                        println!(
+                            "{}",
+                            json!({"status":"invalid_config","reason":"invalid_state_path"})
+                        );
+                    } else {
+                        eprintln!(
+                            "The judge state directory is invalid. Check the --state-dir path."
+                        );
+                    }
                     return INVALID_CONFIG;
                 }
             };
@@ -261,7 +271,7 @@ async fn dispatch_inner(command: JudgeCommand) -> i32 {
                 Err(error) => Err(error),
             };
             if let Ok(Some(value)) = &database {
-                println!("{value}");
+                print_diagnostics(value, json);
                 return 0;
             }
             let result = (|| {
@@ -304,26 +314,84 @@ async fn dispatch_inner(command: JudgeCommand) -> i32 {
             match result {
                 Ok(value) if value["status"] == "no_diagnostics" && database.is_err() => {
                     eprintln!("Cannot read PostgreSQL transcripts. Check the database connection and the selected configuration.");
-                    println!(
-                        "{}",
-                        json!({"status":"unavailable","reason":"database_unavailable"})
-                    );
+                    if json {
+                        println!(
+                            "{}",
+                            json!({"status":"unavailable","reason":"database_unavailable"})
+                        );
+                    }
                     UNAVAILABLE
                 }
                 Ok(value) => {
-                    println!("{value}");
+                    print_diagnostics(&value, json);
                     0
                 }
                 Err(_) => {
-                    println!(
-                        "{}",
-                        json!({"status":"unavailable","reason":"state_unavailable"})
-                    );
+                    if json {
+                        println!(
+                            "{}",
+                            json!({"status":"unavailable","reason":"state_unavailable"})
+                        );
+                    } else {
+                        eprintln!("Cannot read the judge state directory. Check that the directory is accessible.");
+                    }
                     UNAVAILABLE
                 }
             }
         }
     }
+}
+
+fn print_diagnostics(value: &serde_json::Value, raw: bool) {
+    if raw {
+        println!("{value}");
+        return;
+    }
+    if let Some(attempts) = value["attempts"].as_array() {
+        if attempts.is_empty() {
+            println!("No failed-review transcripts are available.");
+        }
+        for attempt in attempts {
+            let id = attempt["id"].as_str().unwrap_or("unknown");
+            let experience = attempt["experience_id"].as_str().unwrap_or("unknown");
+            let revision = attempt["source_revision"]
+                .as_i64()
+                .map_or_else(|| "unknown".into(), |revision| revision.to_string());
+            println!("Transcript {id} for experience {experience}, source revision {revision}.");
+        }
+        return;
+    }
+    let trace = &value["trace"];
+    if trace.is_null() {
+        println!("No matching failed-review transcript is available.");
+        return;
+    }
+    let events = trace["transcript"]["events"]
+        .as_array()
+        .or_else(|| trace["events"].as_array());
+    println!("Saved failed review attempt.");
+    if let Some(events) = events {
+        if let Some(event) = events.iter().rev().find(|event| {
+            matches!(
+                event["kind"].as_str(),
+                Some("tool_rejection" | "tool_parse_rejection" | "tool_error" | "model_error")
+            )
+        }) {
+            if let Some(reason) = event["detail"]["reason"]
+                .as_str()
+                .or_else(|| event["detail"].as_str())
+            {
+                println!("Why it failed: {reason}");
+            }
+        }
+    }
+    if let (Some(id), Some(revision)) = (
+        trace["experience_id"].as_str(),
+        trace["source_revision"].as_i64(),
+    ) {
+        println!("To open the guided repair, run the repair command from the alert for experience {id}, source revision {revision}.");
+    }
+    println!("Add --json to see the raw transcript.");
 }
 
 struct RunOutcome {

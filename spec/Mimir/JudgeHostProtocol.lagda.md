@@ -68,14 +68,23 @@ A running watcher retries a pending transcript on reconnection. Pending
 transcripts exist only in memory and may be lost if that process exits.
 Operational logs record outcomes and actions without per-step debug entries.
 
-For a review needing a decision, the email directs the operator to
-`mimir judge repair --experience <uuid> --revision <revision>`, which
-opens a guided repair for that stored experience. For example, it shows which
-assessment has an unresolved target and lets the operator select the intended
-eligible belief, supply a supported candidate declaration, or explicitly
-remove the reference in a complete corrected review submitted with
-`--review PATH`. For a missing submission, `--retry` starts a fresh guided
-attempt that requires an actual review submission. Before
+For an assessment with an invalid target, the email directs the operator to
+`mimir judge repair --experience <uuid> --revision <revision>`. The command
+opens the rejected submission for that exact revision and explains the
+assessment, its evidence and the invalid target. A proposed procedure is a
+different type from a belief. The operator can choose a durable belief
+owned by this project by its text or remove the assessment. When removal leaves an extracted
+item without an assessment, the preview states which sources will be marked
+unresolved and why; the extracted statements are preserved. Other entries
+remain intact. The command repeats for additional invalid assessments,
+then requires explicit confirmation before submitting the corrected review.
+Cancellation and end of input leave the review pending. Success requires
+both the correction's submission receipt and PostgreSQL readback, so a
+concurrent operator's save is not reported as the current operator's edit.
+
+Diagnostics present the cause and next action in plain language by default.
+Raw transcript JSON requires `--json`. For a missing submission,
+`--retry` starts a fresh attempt that requires an actual review submission. Before
 applying an answer, Mimir rereads the selected source and review revisions.
 If the source changed or somebody already reviewed it, show the current
 state and use that state for the next decision. Otherwise apply the repair

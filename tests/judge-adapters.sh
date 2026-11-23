@@ -190,7 +190,7 @@ jq -e '.phase == "awaiting_repair" and .needs_attention == true' "$base/state-wa
         and (.report.failure_detail | contains("harness exited with status Some(7)"))' >/dev/null
 test ! -e "$base/state-watch/judge-diagnostics.json"
 diagnostic=$("$bin" judge status --state-dir "$base/state-watch" | jq -er '.report.diagnostics_id')
-"$bin" judge diagnostics --id "$diagnostic" --config "$config" --state-dir "$base/state-watch" \
+"$bin" judge diagnostics --json --id "$diagnostic" --config "$config" --state-dir "$base/state-watch" \
     | jq -e '.trace.transcript.events | any(.kind == "model_error")' >/dev/null
 call_tool "$config" pending_experiences "$(jq -nc --arg project "$project" '{project:$project,limit:1}')" | jq -e 'length == 1' >/dev/null
 call_tool "$config" delete_project "$(jq -nc --arg project "$project" '{project:$project}')" >/dev/null
