@@ -1,6 +1,5 @@
 {-# OPTIONS --safe #-}
--- One selected revision. Model replies, database reads and durable diagnostic
--- writes are separate effects; none can stand in for another's receipt.
+-- One selected revision. Database readback confirms a review.
 module Mimir.JudgeRevision where
 
 open import Data.Bool using (Bool; true; false; not)
@@ -33,9 +32,7 @@ import Mimir.ExperienceSchema as Experience
 
 module R = Records.Over UUID
 
--- JSON rendering and error display are standard-library boundaries. The raw
--- value is retained until source capture; only the diagnostic detail is sent
--- back to the model, never the excerpt or MCP application error text.
+-- JSON rendering and error display provide correction details.
 record Display : Set where
   field json : V.Value → Text; bytes : V.Value → List Byte
         fault : Validation.Fault → Text
@@ -78,6 +75,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   record Work : Set where
     constructor work
     field report : R.Report; policy : Policy.State; last : Maybe V.Value; lastRejection : Maybe Rejection
+          submissionRequested : Bool
 
   record Outcome : Set where
     constructor outcome
@@ -89,8 +87,6 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     stopTool : Effect
     observe : Effect
     clock : Effect
-    appendTrace : UUID → Text → Maybe Text → Maybe Text → Effect
-    reportTraceProblem : Text → Effect
 
   Reply : Effect → Set
   Reply (nextModel last) = Answer
@@ -98,9 +94,6 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   Reply stopTool = ⊤
   Reply observe = Error ⊎ Maybe Observation.Snapshot
   Reply clock = Maybe ℕ
-  Reply (appendTrace id kind name detail) = Text ⊎ ⊤
-  -- This acknowledges an attempt to surface the problem, not delivery.
-  Reply (reportTraceProblem failure) = ⊤
   module P = Effects.Protocol Effect Reply
   open P
 
@@ -108,25 +101,6 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     loop : Work → State
     executing : Script State → State
     finished : Outcome → State
-
-  trace : Work → String → Maybe Text → Maybe Text → Script State → Script State
-  trace w kind name detail next with R.Report.diagnosticsId (Work.report w)
-  ... | nothing = next
-  ... | just id = ask (appendTrace id (toList kind) name detail) λ where
-        (inj₁ failure) → ask (reportTraceProblem failure) (λ _ → next)
-        (inj₂ tt) → next
-
-  -- A failed trace write must not discard the review. Reporting that problem
-  -- is attempted, and the original continuation remains available even if
-  -- reporting also fails.
-  traceFailureContinues : ∀ w kind name detail next id failure warning events result →
-    R.Report.diagnosticsId (Work.report w) ≡ just id →
-    Runs next events result →
-    Runs (trace w kind name detail next)
-      ((appendTrace id (toList kind) name detail , inj₁ failure) ∷
-       (reportTraceProblem failure , warning) ∷ events) result
-  traceFailureContinues w kind name detail next id failure warning events result known continuation
-    rewrite known = replied _ _ (inj₁ failure) (replied _ _ warning continuation)
 
   fromScoped : ∀ {A} → Scoped.P.Script A → Script A
   fromScoped (Scoped.P.done value) = done value
@@ -221,22 +195,66 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   ...   | Policy.mkStep next Policy.continueRevision = done (loop (record w { policy = next }))
   ...   | Policy.mkStep next _ = end (record w { policy = next })
 
+  -- An empty model reply can arrive before it submits anything, or after
+  -- another caller has saved a review. Read the selected experience first.
+  -- Once the missing submission has been explained, the same empty reply
+  -- with no saved review requires repair outside this attempt.
+  submissionDetail : Work → Text
+  submissionDetail w with Work.lastRejection w
+  ... | nothing = toList "There is no saved review for the selected experience revision."
+  ... | just rejected = toList "The last submission was rejected. " ++ Rejection.detail rejected
+
+  missingSubmission : Work → Script State
+  missingSubmission w with Work.submissionRequested w
+  ... | false = done (loop (record w
+    { submissionRequested = true
+    ; last = just (feedback "review_not_saved"
+        (submissionDetail w)
+        "Submit review_experience for the selected experience and revisions. Correct any rejected fields before submitting.") }))
+  ... | true = firstDiagnostic w (toList "review_experience")
+    (toList "The judge stopped without saving a review after being asked to submit it.") nothing >>= λ recorded →
+    end (record recorded
+      { report = record (Work.report recorded)
+        { blockReason = just (toList "review_requires_repair") } })
+
+  afterDone : Work → Reply observe → Script State
+  afterDone w (inj₁ failure) = readbackUnavailable w failure
+  afterDone w (inj₂ snapshot) with Observation.observe pin snapshot
+  ... | Observation.unavailable =
+    readbackUnavailable w (error (toList "The selected experience is unavailable for review confirmation.") nothing)
+  ... | Observation.malformed failure =
+    readbackUnavailable w (error (Display.fault display failure) nothing)
+  ... | Observation.found _ _ (Observation.pending _ _ _) = missingSubmission w
+  ... | Observation.found _ _ (Observation.confirmed _) =
+    end (record w { policy = record (Work.policy w) { settled = true } })
+  ... | Observation.found _ _ (Observation.corrected _ _) =
+    end (record w { policy = record (Work.policy w) { settled = true } })
+
+  pendingDoneContinuesWithSubmissionRequest :
+    ∀ w snapshot stored valid identityMatches sameRevision unconfirmed →
+    Observation.observe pin snapshot ≡
+      Observation.found stored valid (Observation.pending identityMatches sameRevision unconfirmed) →
+    Work.submissionRequested w ≡ false →
+    Σ Work (λ next → afterDone w (inj₂ snapshot) ≡ done (loop next) ×
+      Work.submissionRequested next ≡ true)
+  pendingDoneContinuesWithSubmissionRequest w snapshot stored valid match same unconfirmed observed requested
+    rewrite observed | requested = _ , refl , refl
+
 
   infrastructure : Work → Text → Error → Script State
-  infrastructure w name failure = ask stopTool (λ _ → trace w "tool_error" (just name) (just (Error.detail failure))
-    (ask clock (λ observed → end (record w
+  infrastructure w name failure = ask stopTool (λ _ →
+    ask clock (λ observed → end (record w
       { policy = Policy.Step.state (Policy.step (Work.policy w) Policy.toolInfrastructureError)
       ; report = record (R.captureSource (Error.source failure) (Work.report w))
         { blockReason = just (toList "tool_error")
-        ; diagnostic = just (R.newDiagnostic observed identity name (Error.detail failure)) } }))))
+        ; diagnostic = just (R.newDiagnostic observed identity name (Error.detail failure)) } })))
 
   inputRejected : Work → Text → Scoped.Failure → Text → Script State
-  inputRejected w name failure message = trace w "tool_rejection" (just name) (just (Error.detail diagnostic))
-    (done (loop (record w
+  inputRejected w name failure message = done (loop (record w
       { policy = Policy.Step.state (Policy.step (Work.policy w) (Policy.inputRejected message))
       ; last = just (feedback "invalid_tool_arguments" message
           "Correct the indicated arguments and resubmit. If the intended value is unclear, ask the user.")
-      ; lastRejection = just (rejection name (Error.detail diagnostic) (Error.source diagnostic)) })))
+      ; lastRejection = just (rejection name (Error.detail diagnostic) (Error.source diagnostic)) }))
     where diagnostic = scopedError failure
 
   data Continues : State → Set where
@@ -244,13 +262,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   correctionContinues : ∀ w name failure message events result →
     Runs (inputRejected w name failure message) events result → Continues result
-  correctionContinues w name failure message events result execution
-    with R.Report.diagnosticsId (Work.report w)
-  ... | nothing with execution
-  ...   | returned _ = continue _
-  correctionContinues w name failure message events result execution | just id with execution
-  ... | replied _ _ (inj₁ problem) (replied _ _ tt (returned _)) = continue _
-  ... | replied _ _ (inj₂ tt) (returned _) = continue _
+  correctionContinues w name failure message events result (returned _) = continue _
 
   ordinaryFailure : Work → Text → Scoped.Failure → Script State
   ordinaryFailure w name (Scoped.needsUserDecision detail) =
@@ -263,17 +275,16 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   conflict : Work → Text → Text → Script State
   conflict w name detail with Policy.step (Work.policy w) (Policy.candidateConflict detail)
-  ... | Policy.mkStep next Policy.retryCandidate = trace w "candidate_conflict" (just name) (just detail)
-      (done (loop (record w { policy = next ; last = just candidateFeedback })))
-  ... | Policy.mkStep next _ = trace w "candidate_conflict" (just name) (just detail)
-      (end (record w { policy = next }))
+  ... | Policy.mkStep next Policy.retryCandidate =
+    done (loop (record w { policy = next ; last = just candidateFeedback }))
+  ... | Policy.mkStep next _ = end (record w { policy = next })
 
   afterTool : Work → Text → Scoped.Failure ⊎ V.Value → Script State
   afterTool w name (inj₁ (Scoped.candidateConflict detail)) with does (name ≟Text toList "review_experience")
   ... | true = conflict w name detail
   ... | false = ordinaryFailure w name (Scoped.candidateConflict detail)
   afterTool w name (inj₁ failure) = ordinaryFailure w name failure
-  afterTool w name (inj₂ value) = trace w "tool_result" (just name) (just (Display.json display value)) next
+  afterTool w name (inj₂ value) = next
     where
     updated = record w { last = just value }
     next : Script State
@@ -305,14 +316,11 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     ; lastRejection = just (rejection name (Source.display source) (just source)) }))
 
   afterModel : Work → Answer → Script State
-  afterModel w (backendError failure) = trace w "model_error" nothing (just (Error.detail failure))
-    (end (conditional w Policy.modelError "backend_error" (just (Error.detail failure)) (Error.source failure)))
-  afterModel w (action modelDone) = trace w "model_done" nothing nothing
-    (end (record w { policy = Policy.Step.state (Policy.step (Work.policy w) Policy.modelDone) }))
-  afterModel w (action (tool name arguments)) = trace w "tool_request" (just name)
-    (just (Display.json display arguments)) (attempt w name arguments)
-  afterModel w (action (malformedTool name source)) = trace w "tool_parse_rejection" (just name)
-    (just (Source.Failure.excerpt source)) (malformedAttempt w name source)
+  afterModel w (backendError failure) =
+    end (conditional w Policy.modelError "backend_error" (just (Error.detail failure)) (Error.source failure))
+  afterModel w (action modelDone) = ask observe (afterDone w)
+  afterModel w (action (tool name arguments)) = attempt w name arguments
+  afterModel w (action (malformedTool name source)) = malformedAttempt w name source
 
   data Step : Set where
     internal : State → Step
@@ -336,4 +344,4 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
       Trace middle events after → Trace before (event ∷ events) after
 
   start : R.Report → State
-  start report = loop (work report Policy.initial nothing nothing)
+  start report = loop (work report Policy.initial nothing nothing false)

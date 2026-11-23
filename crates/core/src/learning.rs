@@ -312,22 +312,34 @@ impl Review {
                 Candidate::Pattern { .. } => None,
             })
             .collect();
-        let validate_target = |target: &BeliefTarget| -> Result<()> {
-            if let BeliefTarget::Candidate { candidate_key } = target {
-                if !belief_candidates.contains(candidate_key.as_str()) {
-                    return Err(crate::validation::Refusal::undeclared_candidate().into());
+        let validate_target =
+            |target: &BeliefTarget, field: &str, index: usize, target_field: &str| -> Result<()> {
+                use crate::validation::{Refusal, Segment};
+                if let BeliefTarget::Candidate { candidate_key } = target {
+                    if !belief_candidates.contains(candidate_key.as_str()) {
+                        return Err(Refusal::undeclared_candidate(
+                            vec![
+                                Segment::Key("review".into()),
+                                Segment::Key(field.into()),
+                                Segment::Index(index),
+                                Segment::Key(target_field.into()),
+                                Segment::Key("candidate_key".into()),
+                            ],
+                            candidate_key,
+                        )
+                        .into());
+                    }
                 }
-            }
-            Ok(())
-        };
-        for feedback in &self.candidate_feedback {
+                Ok(())
+            };
+        for (index, feedback) in self.candidate_feedback.iter().enumerate() {
             crate::graph::Probability::new(feedback.weight)?;
-            validate_target(&feedback.target)?;
+            validate_target(&feedback.target, "candidate_feedback", index, "target")?;
         }
         let mut assessment_keys = std::collections::HashSet::new();
-        for assessment in &self.assessments {
+        for (index, assessment) in self.assessments.iter().enumerate() {
             assessment.validate()?;
-            validate_target(&assessment.target)?;
+            validate_target(&assessment.target, "assessments", index, "target")?;
             ensure!(
                 assessment_keys.insert((
                     serde_json::to_string(&assessment.target)?,
@@ -361,10 +373,10 @@ impl Review {
                 "typed and legacy evidence overlap"
             );
         }
-        for link in &self.candidate_links {
+        for (index, link) in self.candidate_links.iter().enumerate() {
             crate::graph::Probability::new(link.weight)?;
-            validate_target(&link.from)?;
-            validate_target(&link.to)?;
+            validate_target(&link.from, "candidate_links", index, "from")?;
+            validate_target(&link.to, "candidate_links", index, "to")?;
         }
         let mut link_keys = std::collections::HashSet::new();
         for link in &self.links {

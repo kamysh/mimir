@@ -25,7 +25,6 @@ initial = mkState 0 nothing nothing false false
 data Event : Set where
   candidateConflict inputRejected : Text → Event
   modelError toolInfrastructureError : Event
-  modelDone : Event
   reviewed : Judge.Completion.Receipt → Event
 
 data Action : Set where retryCandidate retryInput continueRevision endRevision failBatch : Action
@@ -45,7 +44,6 @@ step state (candidateConflict detail) = mkStep
 step state (inputRejected detail) = mkStep (record state { lastRejection = just detail }) retryInput
 step state modelError = conditionalFailure state
 step state toolInfrastructureError = mkStep (record state { failed = true }) failBatch
-step state modelDone = mkStep state endRevision
 step state (reviewed Judge.Completion.pending) = mkStep state continueRevision
 step state (reviewed Judge.Completion.confirmed) = mkStep (record state { settled = true }) endRevision
 step state (reviewed Judge.Completion.corrected) = mkStep (record state { settled = true }) endRevision
@@ -66,6 +64,3 @@ finish selectedPin state deferred with shouldDefer state
 inputRejectionNotCandidateConflict : ∀ state detail →
   State.conflicts (Step.state (step state (inputRejected detail))) ≡ State.conflicts state
 inputRejectionNotCandidateConflict state detail = refl
-
-doneDoesNotSettle : ∀ state → State.settled (Step.state (step state modelDone)) ≡ State.settled state
-doneDoesNotSettle state = refl

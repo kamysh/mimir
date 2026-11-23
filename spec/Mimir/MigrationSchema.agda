@@ -21,7 +21,7 @@ open import Mimir.Migrations public
   renaming (name to migrationName; beliefEmbeddings to embeddingTable; learningLedger to learning;
     reviewCandidates to candidates; assessments to assessment; itemOwners to owners;
     postgresItemAllocation to allocation; reviewWorkEvents to workEvents;
-    postgresExperienceIDs to experienceAllocation;
+    postgresExperienceIDs to experienceAllocation; failedReviewTranscripts to reviewTranscripts;
     predecessor to requires; manifest to ordered)
 
 data Type : Set where uuid text bigint timestamp jsonb double boolean vector : Type
@@ -182,6 +182,15 @@ body allocation =
   addCheckConstraint "mimir_learning_item_owners" "mimir_learning_item_key_nonempty" localKeyValid ∷ []
 body workEvents = notifyExperienceChanges "mimir_review_work" ∷ []
 body experienceAllocation = setColumnDefault "mimir_experiences" "id" postgresUUID ∷ []
+body reviewTranscripts =
+  create (table "mimir_failed_review_transcripts"
+    (column "id" uuid false postgresUUID ∷ required "attempt_key" text ∷ required "experience_id" uuid ∷
+     required "source_revision" bigint ∷ required "transcript" jsonb ∷ column "created_at" timestamp false now ∷ [])
+    ("id" ∷ []) (("attempt_key" ∷ []) ∷ [])
+    (references ("experience_id" ∷ "source_revision" ∷ []) "mimir_experience_versions"
+      ("experience_id" ∷ "revision" ∷ []) cascade ∷ []) []) ∷
+  createIndex (index "mimir_failed_review_transcripts_source" "mimir_failed_review_transcripts"
+    ("experience_id" ∷ "source_revision" ∷ []) nothing) ∷ []
 
 -- PostgreSQL supplies the decoded historical rows and execution order. The
 -- application's data rule is insert-missing-only, linked to its general laws.

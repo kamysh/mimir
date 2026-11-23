@@ -2194,6 +2194,30 @@
       "specification_status": "behavior-defined-and-aggregate-checked"
     },
     {
+      "path": "crates/cli/src/judge/repair.rs",
+      "definitions": [],
+      "status": "unmapped",
+      "classification": "production-behavior",
+      "proof_boundary_category": "application_protocol",
+      "behavioral_specification": [
+        "spec/Mimir/JudgeHostProtocol.lagda.md",
+        "spec/Mimir/ReviewObservation.agda"
+      ],
+      "specification_status": "behavior-defined-and-aggregate-checked"
+    },
+    {
+      "path": "crates/cli/src/judge/transcript.rs",
+      "definitions": [],
+      "status": "unmapped",
+      "proof_boundary_category": "database_effects",
+      "classification": "production-behavior",
+      "behavioral_specification": [
+        "spec/Mimir/JudgeBatchReadback.agda",
+        "spec/Mimir/JudgeHostProtocol.lagda.md"
+      ],
+      "specification_status": "behavior-defined"
+    },
+    {
       "path": "crates/cli/src/judge/runner.rs",
       "definitions": [
         {
@@ -4488,6 +4512,19 @@
         "spec/Mimir/MigrationSchema.agda",
         "spec/Mimir/MigrationScriptBinding.agda",
         "spec/Mimir/LearningOperations.agda"
+      ],
+      "specification_status": "behavior-defined"
+    },
+    {
+      "path": "crates/core/migrations/013_failed_review_transcripts.sql",
+      "definitions": [],
+      "status": "unmapped",
+      "proof_boundary_category": "database_effects",
+      "classification": "production-behavior",
+      "behavioral_specification": [
+        "spec/Mimir/MigrationSchema.agda",
+        "spec/Mimir/MigrationScriptBinding.agda",
+        "spec/Mimir/JudgeBatchReadback.agda"
       ],
       "specification_status": "behavior-defined"
     },

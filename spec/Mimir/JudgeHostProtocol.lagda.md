@@ -23,6 +23,73 @@ remains, the watcher waits for a work event.
 deferral. [JudgeWorkflowComposition](JudgeWorkflowComposition.agda)
 connects the runner's receipts to the batch result.
 
+## Recovering a review that did not save
+
+| What happened | What Mimir does next |
+| --- | --- |
+| The judge says it is done and there is no confirmed review | Read PostgreSQL before accepting completion. If the selected revision is still pending, tell the judge to submit `review_experience` for that selection. If it again declares completion without a saved review after receiving that instruction, open a repair case for this review and process other eligible work. If the source changed, select its new revision normally. |
+| An assessment, feedback entry, or link refers to an undeclared belief candidate | Return the field path, entry index, and missing key to the judge. It can declare a supported belief under that key, reference an existing eligible belief by its database UUID, or remove the unsupported reference. A new declaration still requires an indexed supporting passage and an embedding before publication. |
+| A graph explanation is requested outside the selected project | Give the judge the scope correction and continue. It may explain a belief in the selected project or read an eligible global belief as context. The project boundary applies to the corrected request. |
+
+After a refusal, the next submission must address the reported defect.
+Repeating the same invalid field or ending the attempt without resolving it
+leaves a repair case for that experience and source revision. A refusal
+cannot save a review or advance its revision. A valid continuation uses
+the existing review publication operation and PostgreSQL readback. One
+blocked review does not prevent selection of other eligible work.
+
+For the deferred reviews carried forward from 3.2.0, the first run with
+the corrected judge rechecks each revision in PostgreSQL. Revisions still
+pending are eligible for a fresh attempt using the applicable correction
+above. Keep the stored experience and the diagnostic. Restart review
+preparation from the stored source. The review's ordinary transactional
+publication applies when it is ready.
+
+## Action required
+
+When automatic correction cannot proceed, Mimir immediately makes an alert
+eligible for delivery, independent of the daily statistics schedule. It
+identifies the affected experience and revision when there is one, explains
+the specific obstacle, and gives a concrete action the recipient can take.
+Repeated observations of the same unresolved case reuse its notification
+state. A separate affected review gets its own alert, even if it failed for
+the same reason. The notification worker owns delivery. A failed delivery
+keeps the alert available for the configured delivery recovery and appears
+in the operational status. Review processing continues independently.
+
+The judge builds one transcript per attempted source revision in memory.
+Each tool response appears once, at the call that returned it. A confirmed
+review or a superseded source discards the transcript. A review that ends
+unresolved publishes its transcript in PostgreSQL; a pin selected but never
+attempted produces no transcript. A failed database readback requires an
+authoritative check before publication, since the review may have saved.
+The alert links to the saved transcript or says that publication is pending.
+A running watcher retries a pending transcript on reconnection. Pending
+transcripts exist only in memory and may be lost if that process exits.
+Operational logs record outcomes and actions without per-step debug entries.
+
+For a review needing a decision, the email directs the operator to
+`mimir judge repair --experience <uuid> --revision <revision>`, which
+opens a guided repair for that stored experience. For example, it shows which
+assessment has an unresolved target and lets the operator select the intended
+eligible belief, supply a supported candidate declaration, or explicitly
+remove the reference in a complete corrected review submitted with
+`--review PATH`. For a missing submission, `--retry` starts a fresh guided
+attempt that requires an actual review submission. Before
+applying an answer, Mimir rereads the selected source and review revisions.
+If the source changed or somebody already reviewed it, show the current
+state and use that state for the next decision. Otherwise apply the repair
+through the normal review path. If the operation fails, clean up the attempt
+and preserve the unresolved case with a concrete next action.
+
+The repair case is resolved only when PostgreSQL confirms a review for that
+experience and intended source revision. A quiet queue, a saved unrelated
+review, and accepted email delivery provide no such confirmation. A shared
+prerequisite such as invalid configuration uses its own repair action and
+wake-up path below. If the prerequisite is a product defect, the alert
+provides the public diagnostic and the upgrade path for resuming affected
+work when a fix is available.
+
 ## Waiting and recovery
 
 When PostgreSQL is temporarily unavailable, the watcher reconnects, including

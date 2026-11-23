@@ -53,8 +53,6 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     clock : Effect
     startClient : Effect
     selection : Selection.Effect → Effect
-    beginTrace : R.Report → Effect
-    reportTraceProblem : Text → Effect
     revision : Handshake.Contract.Ready contract model → Observation.Snapshot → R.Report → Effect
     readback : Readback.Effect → Effect
     finalize : Finalization.Effect → Effect
@@ -63,8 +61,6 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   Reply clock = Maybe ℕ
   Reply startClient = Revision.Error ⊎ Handshake.Contract.Ready contract model
   Reply (selection effect) = Selection.Reply effect
-  Reply (beginTrace report) = Text ⊎ UUID
-  Reply (reportTraceProblem failure) = ⊤
   Reply (revision clientReady selected report) = RevisionReceipt selected report
   Reply (readback effect) = Readback.Reply effect
   Reply (finalize effect) = Finalization.Reply effect
@@ -142,10 +138,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     dispatch Select.idle = finish (record updated { status = toList "idle" })
     dispatch Select.held = finish (record updated
       { status = toList "blocked" ; blockReason = just (toList "review_deferred") })
-    dispatch Select.review = ask (beginTrace updated) λ where
-      (inj₁ failureValue) → ask (reportTraceProblem failureValue) λ _ →
-        revisions clientReady pins batch updated
-      (inj₂ traceID) → revisions clientReady pins batch (record updated { diagnosticsId = just traceID })
+    dispatch Select.review = revisions clientReady pins batch updated
 
   afterClient : R.Report → Reply startClient → Script R.Report
   afterClient report (inj₁ failureValue) = failed report (toList "mcp_or_configuration_error") failureValue

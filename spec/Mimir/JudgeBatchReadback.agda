@@ -5,13 +5,14 @@
 module Mimir.JudgeBatchReadback where
 
 open import Data.Bool using (Bool; true; false)
+open import Data.Bool.ListAction using (all; any)
 open import Data.List using (List; []; _∷_; _++_; map; length)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ)
 open import Data.Product using (Σ; _×_; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.String using (toList)
-open import Relation.Binary.PropositionalEquality using (_≡_; refl)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong)
 open import Mimir.Text using (Text)
 open import Mimir.UUIDGroups using (UUID)
 import Mimir.ReviewObservation as O
@@ -40,6 +41,21 @@ receipt : (chosen : O.Pin) → Reply (getExperience chosen) → O.Receipt chosen
 receipt chosen (inj₁ error) = O.unavailable
 receipt chosen (inj₂ observed) = O.observe chosen observed
 
+data TranscriptDisposition : Set where
+  discard publish verifyBeforePublishing : TranscriptDisposition
+
+transcriptDisposition : Judge.Completion.Receipt → TranscriptDisposition
+transcriptDisposition Judge.Completion.confirmed = discard
+transcriptDisposition Judge.Completion.corrected = discard
+transcriptDisposition Judge.Completion.pending = publish
+transcriptDisposition Judge.Completion.unavailable = verifyBeforePublishing
+
+-- This applies to each actual attempt regardless of the other batch receipts.
+confirmedTranscriptIsDiscarded : ∀ {chosen} (outcome : O.Receipt chosen) →
+  Batch.label outcome ≡ Judge.Completion.confirmed →
+  transcriptDisposition (Batch.label outcome) ≡ discard
+confirmedTranscriptIsDiscarded outcome confirmed = cong transcriptDisposition confirmed
+
 captureFailure : O.Pin → Failure → R.Report → Script R.Report
 captureFailure chosen error before with R.Report.diagnostic before
 ... | just existing = done (R.captureSource (Failure.source error) before)
@@ -66,20 +82,37 @@ statusText Judge.Completion.partial = toList "partial"
 statusText Judge.Completion.complete = toList "complete"
 statusText Judge.Completion.blocked = toList "blocked"
 
-reason : Bool → Judge.Completion.Status → List O.Deferred → Maybe Text → Maybe Text
-reason failed Judge.Completion.complete deferred existing = nothing
-reason failed status deferred (just existing) = just existing
-reason true status deferred nothing = just (toList "incomplete")
-reason false Judge.Completion.idle deferred nothing = nothing
-reason false status [] nothing = just (toList "revision_not_confirmed")
-reason false status (_ ∷ _) nothing = just (toList "review_deferred")
+sourceChanged : List Judge.Completion.Receipt → Bool
+sourceChanged receipts with all readable receipts
+  where
+  readable : Judge.Completion.Receipt → Bool
+  readable Judge.Completion.confirmed = true
+  readable Judge.Completion.corrected = true
+  readable _ = false
+... | false = false
+... | true = any changed receipts
+  where
+  changed : Judge.Completion.Receipt → Bool
+  changed Judge.Completion.corrected = true
+  changed _ = false
+
+reason : Bool → Judge.Completion.Status → List Judge.Completion.Receipt → List O.Deferred → Maybe Text → Maybe Text
+reason failed Judge.Completion.complete receipts deferred existing = nothing
+reason failed status receipts deferred (just existing) = just existing
+reason true status receipts deferred nothing = just (toList "incomplete")
+reason false Judge.Completion.idle receipts deferred nothing = nothing
+reason false status receipts deferred nothing with sourceChanged receipts
+... | true = just (toList "review_source_changed")
+... | false with deferred
+...   | [] = just (toList "revision_not_confirmed")
+...   | _ ∷ _ = just (toList "review_deferred")
 
 report : ∀ {pins} → R.Report → Bool → Batch.Batch pins → List O.Deferred → R.Report
 report {pins} before failed observations deferred = record before
   { selectedIds = map O.Pin.identity pins
   ; status = statusText status
   ; deferredReviews = map (λ d → R.deferred (O.Deferred.identity d) (O.Deferred.revision d)) deferred
-  ; blockReason = reason failed status deferred (R.Report.blockReason before) }
+  ; blockReason = reason failed status (Batch.labels observations) deferred (R.Report.blockReason before) }
   where
   summary = Batch.finish observations deferred
   status = Batch.Report.status summary

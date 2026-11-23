@@ -430,10 +430,6 @@ impl<'a> Harness<'a> {
 }
 
 impl Backend for Harness<'_> {
-    fn will_call_model(&self, selected: &ExperienceState) -> bool {
-        self.selected_id != Some(selected.experience.id) || self.pending.is_empty()
-    }
-
     fn next<'a>(
         &'a mut self,
         selected: &'a ExperienceState,
@@ -691,6 +687,6 @@ esac
         let mut report = Report::new("blocked", 1, 0, 0, 1, 0);
         report.failure_source = Some(source);
         let serialized = serde_json::to_value(&report).unwrap();
-        assert_eq!(serialized["failure_source"]["excerpt"], "{\"review\": }");
+        assert!(serialized["failure_source"].get("excerpt").is_none());
     }
 }

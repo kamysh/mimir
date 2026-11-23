@@ -1,20 +1,17 @@
 {-# OPTIONS --safe #-}
--- Exact finish_report order: stamp, finalize trace, persist incident, persist
+-- Exact finish_report order: stamp, persist incident, persist
 -- status, notify, persist status again. Reporting errors are reported separately
 -- and do not replace the observed review outcome.
 module Mimir.JudgeFinalization where
 
-open import Data.Bool using (Bool; true; false)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ)
 open import Data.String using (toList)
 open import Data.Product using (_×_; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
-open import Relation.Nullary using (does)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
-open import Mimir.SourceReview using (_≟Text_)
 import Mimir.JudgeStateRecords as Records
 import Mimir.JudgeAcknowledgement as Acknowledgement
 import Mimir.Effects as Effects
@@ -25,7 +22,6 @@ module R = Records.Over UUID
 
 data Effect : Set where
   clock : Effect
-  finishTrace : UUID → R.Report → Effect
   reportProblem : Text → Text → Effect
   recordIncident : (report : R.Report) →
     Maybe (Acknowledgement.BatchEvidence (R.Report.selectedIds report)) → Effect
@@ -34,7 +30,6 @@ data Effect : Set where
 
 Reply : Effect → Set
 Reply clock = Maybe ℕ
-Reply (finishTrace id report) = Text ⊎ ⊤
 -- The acknowledgement records an attempt, not successful delivery.
 Reply (reportProblem whereFailed detail) = ⊤
 Reply (recordIncident report confirmation) = Text ⊎ ⊤
@@ -71,20 +66,8 @@ afterIncident report (inj₂ tt) = ask (writeStatus report) (afterFirstWrite rep
 incident : (report : R.Report) → Maybe (Acknowledgement.BatchEvidence (R.Report.selectedIds report)) → Script R.Report
 incident report confirmation = ask (recordIncident report confirmation) (afterIncident report)
 
-afterTrace : (report : R.Report) → Maybe (Acknowledgement.BatchEvidence (R.Report.selectedIds report)) →
-  Text ⊎ ⊤ → Script R.Report
-afterTrace report confirmation (inj₁ error) = ask (reportProblem (toList "trace") error) λ _ → incident report confirmation
-afterTrace report confirmation (inj₂ tt) with does (R.Report.status report ≟Text toList "complete")
-... | true = incident (record report { diagnosticsId = nothing }) confirmation
-... | false = incident report confirmation
-
-afterStamp : (report : R.Report) → Maybe (Acknowledgement.BatchEvidence (R.Report.selectedIds report)) → Script R.Report
-afterStamp report confirmation with R.Report.diagnosticsId report
-... | nothing = incident report confirmation
-... | just id = ask (finishTrace id report) (afterTrace report confirmation)
-
 finish : (report : R.Report) → Maybe (Acknowledgement.BatchEvidence (R.Report.selectedIds report)) → Script R.Report
-finish report confirmation = ask clock (λ observed → afterStamp (R.stamp observed report) confirmation)
+finish report confirmation = ask clock (λ observed → incident (R.stamp observed report) confirmation)
 
 -- Finalization may update notification metadata, but no combination of
 -- reporting results may change the review status or reason.
@@ -118,24 +101,8 @@ incidentPreserves report (inj₁ error) events result (replied _ _ warning (repl
 incidentPreserves report (inj₂ tt) events result (replied _ _ reply rest) =
   firstWritePreserves report reply _ result rest
 
-tracePreserves : ∀ report confirmation reply events result →
-  Runs (afterTrace report confirmation reply) events result → OutcomePreserved report result
-tracePreserves report confirmation (inj₁ error) events result (replied _ _ warning (replied _ _ reply rest)) =
-  incidentPreserves report reply _ result rest
-tracePreserves report confirmation (inj₂ tt) events result run with does (R.Report.status report ≟Text toList "complete")
-... | true with run
-...   | replied _ _ reply rest = incidentPreserves _ reply _ result rest
-tracePreserves report confirmation (inj₂ tt) events result run | false with run
-...   | replied _ _ reply rest = incidentPreserves report reply _ result rest
-
-stampPreserves : ∀ report confirmation events result → Runs (afterStamp report confirmation) events result → OutcomePreserved report result
-stampPreserves report confirmation events result run with R.Report.diagnosticsId report
-... | nothing with run
-...   | replied _ _ reply rest = incidentPreserves report reply _ result rest
-stampPreserves report confirmation events result run | just id with run
-...   | replied _ _ reply rest = tracePreserves report confirmation reply _ result rest
-
 finalizationPreservesOutcome : ∀ report confirmation events result →
   Runs (finish report confirmation) events result → OutcomePreserved report result
-finalizationPreservesOutcome report confirmation events result (replied _ _ observed rest) =
-  stampPreserves (R.stamp observed report) confirmation _ result rest
+finalizationPreservesOutcome report confirmation events result
+  (replied _ _ observed (replied _ _ receipt rest)) =
+  incidentPreserves (R.stamp observed report) receipt _ result rest

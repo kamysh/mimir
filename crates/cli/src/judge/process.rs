@@ -65,8 +65,7 @@ pub struct HarnessExit {
 impl std::fmt::Display for HarnessExit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Enough to include a provider error envelope's classification
-        // fields (api_error, api_error_status, result); the full capture
-        // stays in the private diagnostic store.
+        // fields (api_error, api_error_status, result).
         let diagnostic: String = self.diagnostic.chars().take(4000).collect();
         let output: String = self.output.chars().take(4000).collect();
         write!(

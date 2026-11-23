@@ -198,7 +198,7 @@ chmod 600 ~/.pgpass
 Run the setup script (creates the role, database, extensions, and grants):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kamysh/mimir/v3.2.0/mimir-setup/create-db-user.sh \
+curl -fsSL https://raw.githubusercontent.com/kamysh/mimir/v3.3.0/mimir-setup/create-db-user.sh \
   | bash -s -- --container postgres-ai --host localhost --port 5432 --user mimir --db mimir
 ```
 
@@ -223,7 +223,7 @@ psql -h localhost -U mimir -d mimir -c '\conninfo' >/dev/null && echo OK
 
 This step installs the two mimir binaries to `~/.local/bin`. It is one of three pieces — see Step 5 for the MCP server registration.
 
-Install the **3.2.0** release. This block selects one archive for your platform:
+Install the **3.3.0** release. This block selects one archive for your platform:
 
 ```bash
 mkdir -p "$HOME/.local/bin"
@@ -233,17 +233,17 @@ case "$(uname -s)-$(uname -m)" in
   Darwin-arm64)  TARBALL=mimir-darwin-arm64.tar.gz ;;
   *) echo "Use Building from source for this platform" >&2; exit 1 ;;
 esac
-curl -fL "https://github.com/kamysh/mimir/releases/download/v3.2.0/${TARBALL}" \
+curl -fL "https://github.com/kamysh/mimir/releases/download/v3.3.0/${TARBALL}" \
   | tar -xz -C "$HOME/.local/bin"
 chmod +x "$HOME/.local/bin/mimir" "$HOME/.local/bin/mimir-mcp"
 export PATH="$HOME/.local/bin:$PATH"
-mimir --version  # must report 3.2.0
+mimir --version  # must report 3.3.0
 ```
 
 The release workflow builds Linux x86_64, Linux ARM64 and Apple Silicon.
 For Intel macOS, use [Building from source](#building-from-source).
 
-After installing both Mimir 3.2.0 binaries, update the installed Mimir skill
+After installing both Mimir 3.3.0 binaries, update the installed Mimir skill
 and reconnect your MCP client to load the new tool schema. For a new experience,
 omit `experience.id` and keep the UUID returned by `record_experience` for later
 lookups and corrections.
@@ -259,8 +259,8 @@ xattr -d com.apple.quarantine ~/.local/bin/mimir ~/.local/bin/mimir-mcp
 **Verify the download** — each release publishes a `${TARBALL}.sha256` file:
 
 ```bash
-curl -fL "https://github.com/kamysh/mimir/releases/download/v3.2.0/${TARBALL}" -o "${TARBALL}"
-curl -fL "https://github.com/kamysh/mimir/releases/download/v3.2.0/${TARBALL}.sha256" -o "${TARBALL}.sha256"
+curl -fL "https://github.com/kamysh/mimir/releases/download/v3.3.0/${TARBALL}" -o "${TARBALL}"
+curl -fL "https://github.com/kamysh/mimir/releases/download/v3.3.0/${TARBALL}.sha256" -o "${TARBALL}.sha256"
 sha256sum -c "${TARBALL}.sha256"   # macOS: shasum -a 256 -c "${TARBALL}.sha256"
 ```
 

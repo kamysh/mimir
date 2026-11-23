@@ -6,6 +6,7 @@ module Mimir.NotificationIncident where
 
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ)
+open import Data.Product using (Σ; _×_; _,_)
 open import Relation.Nullary using (yes; no)
 open import Data.Empty using (⊥-elim)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
@@ -67,6 +68,16 @@ reconcile identity now before e | failure code summary with Incident.activeCode 
 ... | just active with active ≟Text code
 ...   | yes same = before
 ...   | no different = newFailure identity now before e code summary
+
+-- A new incident's mail is eligible at the time of detection. The daily
+-- statistics schedule is independent of this decision.
+firstFailureAlertIsDueNow : ∀ identity now before source key code summary details →
+  Incident.activeCode before ≡ nothing →
+  Σ Alert (λ queued →
+    Incident.outbox (reconcile identity now before (event source key (failure code summary) details)) ≡ just queued ×
+    Alert.nextDue queued ≡ now)
+firstFailureAlertIsDueNow identity now before source key code summary details inactive
+  rewrite inactive = _ , refl , refl
 
 duplicateFailurePreservesAllState : ∀ identity now before source key code summary details →
   Incident.activeCode before ≡ just code →

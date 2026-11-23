@@ -59,6 +59,24 @@ immediately. If a rejected review is deferred after readback, the watcher
 records the reason and immediately checks for other work. When the queue is
 empty or all remaining reviews are deferred, it waits for PostgreSQL
 notifications.
+
+When a review needs an operator decision, Mimir queues an alert as soon as the
+problem is detected. Its email has the experience UUID, source revision,
+explanation, and a repair command. Daily statistics use their configured time.
+The watcher owns alert delivery, so a stalled SMTP connection does not delay
+other reviews.
+
+```sh
+mimir judge repair --experience EXPERIENCE_UUID --revision SOURCE_REVISION
+```
+
+The command displays the repair case and its choices. Add `--retry` for a new
+judge attempt from the stored source, or `--review PATH` to submit a complete
+corrected `review_experience` JSON object. Use the UUID and source revision
+from the alert and include the same configuration and state options when the
+alert supplies them. Inspect the current source if the command reports a newer
+revision. A successful repair reports `confirmed` after PostgreSQL readback.
+
 If PostgreSQL refuses the connection at startup or a work subscription drops,
 the watcher retries every five seconds until it reconnects. For example, if
 Mimir starts before PostgreSQL after a reboot, the delay avoids a tight loop
@@ -84,20 +102,18 @@ Common cases:
 | PostgreSQL unavailable | The running watcher retries automatically. Check database availability if the condition persists. |
 | Source quotation rejected | The proposed quotation differs from the stored source, including literal JSON escapes. The judge receives the exact field path and correction explanation. Keep exact-quotation validation enabled. Persistent failure belongs in a bug report. |
 | Historical deadline/request-budget failure | This can appear in retained reports from an older binary. The current judge imposes neither limit. Run `mimir config upgrade`, check configuration, restart the existing application, and inspect a fresh attempt. |
-| Tool/database error | Inspect the private diagnostic trace. Mimir reads the review back to determine what actually committed; an opaque tool error is not proof that nothing changed. |
+| Tool/database error | Run `mimir judge diagnose` for the cause and next action. Mimir reads the review back to determine what committed. |
 
-The diagnostic command prints an exact command for the relevant private trace:
+Use these commands for the latest outcome and its recovery instructions.
 
 ```sh
-mimir judge diagnostics --id ATTEMPT_UUID
+mimir judge diagnose
 mimir judge status
 ```
 
-`status` retains its JSON interface for automation. `diagnostics` contains private
-model/tool data; a citation failure also retains its rejected item and cited
-source in the status report. Review and redact those files before sharing.
-The plain-English diagnostic summary and emails exclude raw source excerpts,
-model replies and arbitrary failure details. Report persistent failures at
+`status` retains its JSON interface for automation. Failure reports include
+the reason and any relevant argument location. Emails contain a plain-English
+summary and a concrete next action. Report persistent failures at
 <https://github.com/kamysh/mimir/issues>, including the summary, version, time
 and diagnostic ID. Never include credentials.
 
@@ -108,12 +124,17 @@ CLI judge events and MCP tracing append complete entries to
 does not truncate entries, rotate files or delete history automatically.
 An unavailable log is reported without stopping review work.
 
-Private judge diagnostics remain in the existing state directory, selected by
-`--state-dir` or the XDG state default. This preserves locks and restart history.
-The trace store retains complete attempts, events and selected IDs without a
-size or count ceiling. Status, last-failure and
-runtime snapshots replace their previous snapshots rather than append indefinitely.
-These are diagnostic retention files, not backups.
+The judge logs batch outcomes and actionable failures. It keeps transcripts
+only for unresolved review attempts and saves them in PostgreSQL. Use the
+command in the repair alert or run `mimir judge diagnostics --list` to find
+the transcript. The transcript may contain private source text, so review it
+before sharing. Successful attempts discard their transcripts. When PostgreSQL
+cannot accept a transcript, the watcher reports it as pending and retains it
+in memory until it can retry. Pending transcripts are lost if that process exits.
+
+Status, last-failure and runtime reports replace their previous snapshots.
+The diagnostics command can still look up a historical trace by ID in the
+older local transcript file.
 
 Mimir does not change a supervisor's own journal or files to which a shell
 redirects stdout/stderr. Any external retention policy remains an operator
@@ -139,9 +160,6 @@ other settings, then check again and restart the existing application. No
 system service changes are required. Stop/cancel remains available through
 normal process control and releases owned child processes.
 
-Diagnostic logs, excerpts and trace history retain their storage bounds. These
-bounds do not truncate model input or stop a review. New trace fields
-`model_requests` and `tool_attempts` count work performed; for legacy traces they
-are absent. Batch state can contain every selected/deferred revision without a
-fixed file-size ceiling. Provider/platform limits remain external constraints;
+Batch state can contain every selected and deferred revision. Provider and
+platform limits remain external constraints;
 see the runtime guide for Anthropic’s required native capacity lookup.

@@ -35,13 +35,18 @@ import Mimir.Validation as Validation
 import Mimir.StandardLibrary as Library
 open import Mimir.RecordDecoding using (_>>=_; mapResult)
 
+data RepairAction : Set where
+  inspect retry : RepairAction
+  submit : Path.Path → RepairAction
+
 data JudgeCommand : Set where
   diagnose : Maybe Path.Path → Maybe Path.Path → JudgeCommand
   checkConfig : Maybe Path.Path → JudgeCommand
   run : Maybe Path.Path → Maybe Path.Path → JudgeCommand
   watch : Maybe Path.Path → Maybe Path.Path → JudgeCommand
   status : Maybe Path.Path → JudgeCommand
-  diagnostics : Maybe Path.Path → Bool → Maybe UUID → JudgeCommand
+  diagnostics : Maybe Path.Path → Maybe Path.Path → Bool → Maybe UUID → JudgeCommand
+  repair : Maybe Path.Path → Maybe Path.Path → UUID → ℕ → RepairAction → JudgeCommand
 
 data HookCommand : Set where prompt pretooluse : HookCommand; stop : Maybe Text → HookCommand; setProject : Text → HookCommand
 

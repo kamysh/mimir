@@ -8,8 +8,10 @@ mod harness;
 mod mcp;
 mod notification;
 mod process;
+mod repair;
 mod runner;
 mod state;
+mod transcript;
 mod watcher;
 
 /// Shared policy for both provider APIs and external harnesses. The host still
@@ -62,13 +64,32 @@ pub enum JudgeCommand {
         #[arg(long)]
         state_dir: Option<PathBuf>,
     },
+    /// Inspect or repair a deferred review for one source revision.
+    Repair {
+        #[arg(long)]
+        config: Option<PathBuf>,
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
+        #[arg(long)]
+        experience: uuid::Uuid,
+        #[arg(long)]
+        revision: i64,
+        /// Start a new judge attempt from the stored source.
+        #[arg(long, conflicts_with = "review")]
+        retry: bool,
+        /// Submit a complete corrected review JSON file.
+        #[arg(long)]
+        review: Option<PathBuf>,
+    },
     /// Read the last local run report.
     Status {
         #[arg(long)]
         state_dir: Option<PathBuf>,
     },
-    /// Read the private trace for the first retained failure, or a selected attempt.
+    /// Read a failed review transcript.
     Diagnostics {
+        #[arg(long)]
+        config: Option<PathBuf>,
         #[arg(long)]
         state_dir: Option<PathBuf>,
         /// List retained attempt IDs without model or tool payloads.
@@ -82,10 +103,15 @@ pub enum JudgeCommand {
 pub async fn dispatch(command: JudgeCommand) -> i32 {
     if !matches!(
         &command,
-        JudgeCommand::Run { .. } | JudgeCommand::Watch { .. }
+        JudgeCommand::Run { .. } | JudgeCommand::Watch { .. } | JudgeCommand::Repair { .. }
     ) {
         return dispatch_inner(command).await;
     }
+    let interrupted = if matches!(&command, JudgeCommand::Repair { .. }) {
+        INCOMPLETE
+    } else {
+        0
+    };
     // Install before polling work. The outer race covers startup, model/tool
     // requests and watch sleeps; dropping its work future drops owned children.
     let listeners = (|| {
@@ -104,8 +130,8 @@ pub async fn dispatch(command: JudgeCommand) -> i32 {
     };
     tokio::select! {
         biased;
-        _ = interrupt.recv() => 0,
-        _ = terminate.recv() => 0,
+        _ = interrupt.recv() => interrupted,
+        _ = terminate.recv() => interrupted,
         code = dispatch_inner(command) => code,
     }
 }
@@ -135,8 +161,42 @@ async fn dispatch_inner(command: JudgeCommand) -> i32 {
                 INVALID_CONFIG
             }
         },
-        JudgeCommand::Run { config, state_dir } => run_once(config, state_dir, false).await.code,
+        JudgeCommand::Run { config, state_dir } => {
+            run_once(
+                config,
+                state_dir,
+                false,
+                &mut transcript::Pending::default(),
+            )
+            .await
+            .code
+        }
         JudgeCommand::Watch { config, state_dir } => watcher::run(config, state_dir).await,
+        JudgeCommand::Repair {
+            config,
+            state_dir,
+            experience,
+            revision,
+            retry,
+            review,
+        } => {
+            match repair::run(
+                config.as_deref(),
+                state_dir.as_deref(),
+                experience,
+                revision,
+                retry,
+                review.as_deref(),
+            )
+            .await
+            {
+                Ok(code) => code,
+                Err(error) => {
+                    eprintln!("Review repair: {error:#}");
+                    INCOMPLETE
+                }
+            }
+        }
         JudgeCommand::Status { state_dir } => {
             let path = match state::resolve(state_dir.as_deref()) {
                 Ok(path) => path,
@@ -173,6 +233,7 @@ async fn dispatch_inner(command: JudgeCommand) -> i32 {
             }
         }
         JudgeCommand::Diagnostics {
+            config,
             state_dir,
             list,
             id,
@@ -187,6 +248,22 @@ async fn dispatch_inner(command: JudgeCommand) -> i32 {
                     return INVALID_CONFIG;
                 }
             };
+            let database = match config::load(config.as_deref()) {
+                Ok(settings) => {
+                    let key = id.or_else(|| {
+                        state::read(&path)
+                            .ok()
+                            .flatten()
+                            .and_then(|report| report.diagnostics_id)
+                    });
+                    transcript::lookup(&settings.core.database, key, list).await
+                }
+                Err(error) => Err(error),
+            };
+            if let Ok(Some(value)) = &database {
+                println!("{value}");
+                return 0;
+            }
             let result = (|| {
                 let diagnostics = state::read_diagnostics(&path)?;
                 if list {
@@ -206,6 +283,9 @@ async fn dispatch_inner(command: JudgeCommand) -> i32 {
                             })
                         })
                         .collect::<Vec<_>>();
+                    if attempts.is_empty() && database.is_err() {
+                        return Ok(json!({"status":"no_diagnostics"}));
+                    }
                     return Ok::<_, anyhow::Error>(
                         json!({"status":"available","attempts":attempts}),
                     );
@@ -222,6 +302,14 @@ async fn dispatch_inner(command: JudgeCommand) -> i32 {
                 ))
             })();
             match result {
+                Ok(value) if value["status"] == "no_diagnostics" && database.is_err() => {
+                    eprintln!("Cannot read PostgreSQL transcripts. Check the database connection and the selected configuration.");
+                    println!(
+                        "{}",
+                        json!({"status":"unavailable","reason":"database_unavailable"})
+                    );
+                    UNAVAILABLE
+                }
                 Ok(value) => {
                     println!("{value}");
                     0
@@ -269,11 +357,8 @@ fn provider_resume_delay(detail: &str, now_minutes: u32) -> Option<u32> {
     Some(if delta == 0 { 1440 } else { delta })
 }
 
-fn record_invalid_configuration(state_dir: Option<&std::path::Path>, error: &anyhow::Error) {
-    record_startup_failure(state_dir, "invalid_config", error, None);
-}
-
 fn record_startup_failure(
+    config: Option<&std::path::Path>,
     state_dir: Option<&std::path::Path>,
     reason: &str,
     error: &anyhow::Error,
@@ -288,6 +373,14 @@ fn record_startup_failure(
     let mut report = state::Report::new("blocked", 0, 0, 0, 0, 0);
     report.block_reason = Some(reason.into());
     report.failure_detail = Some(format!("{error:#}"));
+    report.preserve_deferrals(state.path());
+    report.stamp();
+    if reason != "database_unavailable" {
+        if let Err(error) = notification::startup_failure(config, &state, &mut report) {
+            report.notification = "unavailable".into();
+            eprintln!("Cannot enqueue the startup failure email: {error:#}");
+        }
+    }
     let _ = state.record_incident(&report);
     let _ = state.write(&report);
     if let Some(phase) = phase {
@@ -299,11 +392,18 @@ async fn run_once(
     config: Option<PathBuf>,
     state_dir: Option<PathBuf>,
     watch_mode: bool,
+    transcripts: &mut transcript::Pending,
 ) -> RunOutcome {
     let settings = match config::load(config.as_deref()) {
         Ok(settings) => settings,
         Err(error) => {
-            record_invalid_configuration(state_dir.as_deref(), &error);
+            record_startup_failure(
+                config.as_deref(),
+                state_dir.as_deref(),
+                "invalid_config",
+                &error,
+                None,
+            );
             if !watch_mode {
                 eprintln!("judge configuration: {error}");
                 println!(
@@ -364,55 +464,53 @@ async fn run_once(
             };
         }
     };
-    if let Err(error) = settings.operations.logging.prepare().and_then(|()| {
-        settings.operations.logging.event(
-            "judge",
-            &format!(
-                "starting batch; version={}; config_format={}; pid={}",
-                env!("CARGO_PKG_VERSION"),
-                settings.operations.config_version,
-                std::process::id()
-            ),
-        )
-    }) {
-        eprintln!("Operational logging is unavailable; reviews continue: {error:#}");
-    }
     let _=state.write_runtime(&json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"phase":"reviewing","config_format":settings.operations.config_version}));
     let report = match settings.llm.backend {
         config::Backend::Api => match api::ApiBackend::new(&settings.llm) {
-            Ok(Some(mut backend)) => runner::run(&settings, &state, &mut backend).await,
-            Ok(None) => runner::run(&settings, &state, &mut runner::UnavailableBackend).await,
+            Ok(Some(mut backend)) => {
+                runner::run_queued(&settings, &state, &mut backend, None, transcripts).await
+            }
+            Ok(None) => {
+                runner::run_queued(
+                    &settings,
+                    &state,
+                    &mut runner::UnavailableBackend,
+                    None,
+                    transcripts,
+                )
+                .await
+            }
             Err(error) => {
                 runner::setup_failure(&settings, &state, "backend_configuration", &error).await
             }
         },
         _ => match harness::Harness::new(&settings.llm) {
-            Ok(mut backend) => runner::run(&settings, &state, &mut backend).await,
+            Ok(mut backend) => {
+                runner::run_queued(&settings, &state, &mut backend, None, transcripts).await
+            }
             Err(error) => {
                 runner::setup_failure(&settings, &state, "backend_configuration", &error).await
             }
         },
     };
-    let detail: String = report
-        .failure_detail
-        .as_deref()
-        .map(|detail| detail.chars().take(300).collect())
-        .unwrap_or_else(|| "none".into());
-    let _ = settings.operations.logging.event(
-        "judge",
-        &format!(
-            "batch {}; confirmed={}; pending={}; unavailable={}; reason={}; detail={}; diagnostics={}",
-            report.status,
-            report.confirmed,
-            report.pending,
-            report.unavailable,
-            report.block_reason.as_deref().unwrap_or("none"),
-            detail,
-            report
-                .diagnostics_id
-                .map_or_else(|| "none".into(), |id| id.to_string())
-        ),
-    );
+    if report.status != "idle" {
+        let logging = &settings.operations.logging;
+        if let Err(error) = logging.prepare().and_then(|()| {
+            logging.event(
+                "judge",
+                &format!(
+                    "batch {}; confirmed={}; pending={}; unavailable={}; reason={}",
+                    report.status,
+                    report.confirmed,
+                    report.pending,
+                    report.unavailable,
+                    report.block_reason.as_deref().unwrap_or("none")
+                ),
+            )
+        }) {
+            eprintln!("Cannot save the batch outcome to the operational log: {error:#}");
+        }
+    }
     let _=state.write_runtime(&json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"phase":"batch_finished","outcome":report.status,"config_format":settings.operations.config_version}));
     let code = match report.status.as_str() {
         "idle" | "complete" => 0,
@@ -420,6 +518,12 @@ async fn run_once(
         _ => UNAVAILABLE,
     };
     if !watch_mode {
+        if report.transcripts_pending != 0 {
+            eprintln!("The failed-review transcript could not be saved to PostgreSQL before this command exited.");
+        }
+        if report.notification == "retry_pending" {
+            eprintln!("Email is queued. If no watcher is running, start `mimir judge watch` with the same configuration and state directory to deliver it.");
+        }
         println!(
             "{}",
             serde_json::to_string(&report)
@@ -430,7 +534,7 @@ async fn run_once(
     // selected review, its refusal need not stop unrelated reviews.
     let reason = report.block_reason.as_deref();
     let deferred_only = reason == Some("review_deferred");
-    let local_refusal = reason == Some("tool_rejected")
+    let local_refusal = matches!(reason, Some("tool_rejected" | "review_requires_repair"))
         && report
             .deferred_reviews
             .iter()
@@ -446,7 +550,9 @@ async fn run_once(
         None
     };
     RunOutcome {
-        code: if watch_mode && (deferred_only || local_refusal) {
+        code: if watch_mode
+            && (deferred_only || local_refusal || reason == Some("review_source_changed"))
+        {
             0
         } else {
             code
@@ -504,7 +610,13 @@ mod watch_tests {
             .write(&state::Report::new("idle", 0, 0, 0, 0, 0))
             .unwrap();
         drop(state);
-        let outcome = run_once(Some(config), Some(state_dir.clone()), true).await;
+        let outcome = run_once(
+            Some(config),
+            Some(state_dir.clone()),
+            true,
+            &mut transcript::Pending::default(),
+        )
+        .await;
         assert_eq!(outcome.code, INVALID_CONFIG);
         let report = state::read(&state_dir).unwrap().unwrap();
         assert_eq!(report.status, "blocked");

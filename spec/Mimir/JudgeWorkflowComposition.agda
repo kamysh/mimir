@@ -41,7 +41,6 @@ module Compose (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   data External : W.Effect → Set where
     clock : External W.clock
-    reportTraceProblem : ∀ failure → External (W.reportTraceProblem failure)
 
 
   data Receipt : Backend.BackendState → (effect : W.Effect) → W.Reply effect → Backend.BackendState → Set where
@@ -49,7 +48,6 @@ module Compose (conversion : Conversion.Contract) (format : Encoding.Formatting)
     started : ∀ backend diagnostics reply client →
       ClientStartup.Run.Started conversion diagnostics contract model mcpProgram mcpArguments configurationPath reply client →
       Receipt backend W.startClient reply backend
-    began : ∀ backend report reply → Receipt backend (W.beginTrace report) reply backend
     finalized : ∀ backend effect reply → F.Receipt effect reply → Receipt backend (W.finalize effect) reply backend
     selected : ∀ backend effect reply → Batch.SelectionReceipt effect reply → Receipt backend (W.selection effect) reply backend
     observed : ∀ backend effect reply → Batch.ReadbackReceipt effect reply → Receipt backend (W.readback effect) reply backend
@@ -61,7 +59,6 @@ module Compose (conversion : Conversion.Contract) (format : Encoding.Formatting)
   Connection : ∀ {before effect reply after} → Maybe Client.Client → Receipt before effect reply after → Maybe Client.Client → Set
   Connection before (started backend diagnostics reply client receipt) after = before ≡ nothing × after ≡ client
   Connection before (external _ _ _ _) after = before ≡ after
-  Connection before (began _ _ _) after = before ≡ after
   Connection before (finalized _ _ _ _) after = before ≡ after
   Connection before (selected _ _ _ receipt) after = Client.Chain before (Batch.selectionCalls receipt) after
   Connection before (observed _ _ _ receipt) after = Client.Chain before (Batch.readbackCalls receipt) after

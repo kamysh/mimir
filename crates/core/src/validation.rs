@@ -64,13 +64,15 @@ impl Refusal {
         }
     }
 
-    pub fn undeclared_candidate() -> Self {
+    pub fn undeclared_candidate(path: Vec<Segment>, candidate_key: &str) -> Self {
         Self {
             kind: RefusalKind::UndeclaredCandidate,
             fault: Fault {
-                path: vec![Segment::Key("candidates".into())],
+                path,
                 code: Code::MissingReference,
-                message: "candidate belief reference must be declared in this review".into(),
+                message: format!(
+                    "A candidate belief reference must be declared in this review. Declare the supported belief candidate {candidate_key:?}, use the UUID of an existing eligible belief, or remove the unsupported reference."
+                ),
             },
         }
     }

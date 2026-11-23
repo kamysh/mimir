@@ -292,6 +292,22 @@ impl LlmConfig {
     }
 }
 
+// A valid [email] can notify the operator about a broken [judge], [llm],
+// database or logging section. Keep private-file checks on this path too.
+pub(super) fn load_email(explicit: Option<&Path>) -> Result<EmailConfig> {
+    let path = resolved_path(explicit)?;
+    validate_file_security(&path)?;
+    let text = std::fs::read_to_string(&path)?;
+    let decoded: toml::Table = toml::from_str(&text)
+        .map_err(|_| anyhow!("Configuration is not valid TOML. Correct it before sending mail."))?;
+    let email = match decoded.get("email") {
+        Some(value) => section(value.as_table(), "email")?,
+        None => EmailConfig::default(),
+    };
+    email.validate()?;
+    Ok(email)
+}
+
 pub fn load(explicit: Option<&Path>) -> Result<RuntimeConfig> {
     let path = resolved_path(explicit)?;
     validate_file_security(&path)?;

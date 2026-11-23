@@ -46,6 +46,7 @@ fn temporary_database_failure(error: &anyhow::Error) -> bool {
 
 fn record_outage(state_dir: Option<&Path>, error: &anyhow::Error) {
     record_startup_failure(
+        None,
         state_dir,
         "database_unavailable",
         error,
@@ -131,6 +132,7 @@ pub(super) async fn run(config: Option<PathBuf>, state_dir: Option<PathBuf>) -> 
         }
     };
     let mut subscription: Option<WorkSubscription> = None;
+    let mut transcripts = super::transcript::Pending::default();
     let mut in_outage = false;
     loop {
         if subscription.is_none() {
@@ -161,6 +163,7 @@ pub(super) async fn run(config: Option<PathBuf>, state_dir: Option<PathBuf>) -> 
                         in_outage = true;
                     } else {
                         record_startup_failure(
+                            config.as_deref(),
                             state_dir.as_deref(),
                             reason,
                             &error,
@@ -182,7 +185,7 @@ pub(super) async fn run(config: Option<PathBuf>, state_dir: Option<PathBuf>) -> 
         }
         // Every new subscription is followed by a pending-work query, including
         // after reconnecting. Notifications during the query remain queued.
-        let outcome = run_once(config.clone(), state_dir.clone(), true).await;
+        let outcome = run_once(config.clone(), state_dir.clone(), true, &mut transcripts).await;
         if let Ok(path) = super::state::resolve(state_dir.as_deref()) {
             if let Ok(Some(state)) = super::state::State::lock(path) {
                 let phase = match next_batch(&outcome) {

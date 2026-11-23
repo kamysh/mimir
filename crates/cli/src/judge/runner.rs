@@ -2,12 +2,11 @@ use super::{
     config::RuntimeConfig,
     mcp::{CandidateConflict, Client, McpApplicationError, UndeclaredBeliefCandidate},
     notification,
-    state::{
-        self, DeferredReview, DiagnosticEvent, FailureDiagnostic, Report, SourceFailure, State,
-    },
+    state::{self, DeferredReview, FailureDiagnostic, RepairCase, Report, SourceFailure, State},
 };
 use anyhow::{anyhow, bail, ensure, Result};
 use mimir_core::learning::{ExperienceState, Review};
+use mimir_core::validation::{Code, Fault, Refusal, RefusalKind, Segment};
 use serde_json::{json, Value};
 use std::future::Future;
 use std::pin::Pin;
@@ -41,11 +40,6 @@ macro_rules! input_ensure {
 
 /// Backends request operations; only the host owns the MCP client and scope.
 pub trait Backend {
-    /// A queued tool request can be returned without another provider call.
-    fn will_call_model(&self, _selected: &ExperienceState) -> bool {
-        true
-    }
-
     fn next<'a>(
         &'a mut self,
         selected: &'a ExperienceState,
@@ -146,10 +140,14 @@ async fn scoped_tool(
             // The model never chooses reviewer identity.
             review.reviewer = "mimir-judge".into();
             review.validate().map_err(|error| {
+                if error.is::<Refusal>() {
+                    return error;
+                }
                 InputRejected(format!(
                     "{error}. {}",
                     super::evidence::guidance(&selected.experience)
                 ))
+                .into()
             })?;
             // Source validation needs PostgreSQL-assigned item IDs and resolved
             // assessment keys. The service performs it after allocation, inside
@@ -173,16 +171,24 @@ async fn scoped_tool(
                 .as_str()
                 .ok_or_else(|| InputRejected("missing belief id".into()))?;
             // Provenance lookup is host-only and not counted as a model tool attempt.
-            input_ensure!(
-                visible_belief(client, belief_id, project).await?,
-                "belief is outside selected project"
-            );
-            if name == "explain_belief" || name == "query_intervention" {
-                let source = client.tool("get_belief", json!({"id":belief_id})).await?;
+            let _: Uuid = belief_id
+                .parse()
+                .map_err(|_| InputRejected("invalid belief id".into()))?;
+            let source = client.tool("get_belief", json!({"id":belief_id})).await?;
+            if name == "get_belief" {
                 input_ensure!(
-                    source["project"] == project,
-                    "Use a belief from the selected project for explanations or interventions. Global beliefs can be read with get_belief."
+                    !source.is_null()
+                        && (source["project"] == project || source["project"].is_null()),
+                    "belief is outside selected project"
                 );
+                return Ok(source);
+            }
+            if source["project"] != project {
+                return Err(Refusal::invalid(
+                    Code::WrongIdentity,
+                    vec![Segment::Key("id".into())],
+                    format!("Use a belief from the selected project for explanations or interventions. Belief {belief_id} cannot be used here. Global beliefs can be read with get_belief."),
+                ).into());
             }
             if name == "explain_belief" {
                 input_ensure!(
@@ -312,7 +318,10 @@ async fn scoped_tool(
     Ok(value)
 }
 
-async fn observe(client: &mut Client, selected: &ExperienceState) -> Result<&'static str> {
+pub(super) async fn observe(
+    client: &mut Client,
+    selected: &ExperienceState,
+) -> Result<&'static str> {
     let value = client
         .tool("get_experience", json!({"id":selected.experience.id}))
         .await?;
@@ -337,72 +346,49 @@ async fn observe(client: &mut Client, selected: &ExperienceState) -> Result<&'st
     }
 }
 
+#[cfg(test)]
 pub async fn run<B: Backend>(settings: &RuntimeConfig, state: &State, backend: &mut B) -> Report {
+    run_selected(settings, state, backend, None).await
+}
+
+pub(super) async fn run_selected<B: Backend>(
+    settings: &RuntimeConfig,
+    state: &State,
+    backend: &mut B,
+    target: Option<ExperienceState>,
+) -> Report {
+    run_queued(
+        settings,
+        state,
+        backend,
+        target,
+        &mut super::transcript::Pending::default(),
+    )
+    .await
+}
+
+pub(super) async fn run_queued<B: Backend>(
+    settings: &RuntimeConfig,
+    state: &State,
+    backend: &mut B,
+    target: Option<ExperienceState>,
+    queue: &mut super::transcript::Pending,
+) -> Report {
     let mut report = Report::new("blocked", 0, 0, 0, 0, 0);
-    let result = run_inner(settings, state, backend, &mut report).await;
+    let notify = target.is_none();
+    let mut attempts = std::collections::HashMap::new();
+    let result = run_inner(settings, state, backend, &mut report, target, &mut attempts).await;
     if let Err(error) = result {
         report.block_reason = Some("mcp_or_configuration_error".into());
         report.failure_detail = Some(format!("{error:#}"));
         report.capture_source(&error);
-    }
-    finish_report(settings, state, report).await
-}
-
-/// One recorded step of a review attempt: the event kind, work counters and
-/// the tool name; the detail is private and stays out of the shared log.
-struct Step<'a> {
-    kind: &'a str,
-    counts: (usize, usize),
-    tool: Option<&'a str>,
-    detail: Option<&'a str>,
-}
-
-fn trace(
-    operations: &mimir_core::operations::Operations,
-    state: &State,
-    report: &Report,
-    selected: &ExperienceState,
-    step: Step<'_>,
-) -> Result<()> {
-    let Step {
-        kind,
-        counts: (model_used, tool_used),
-        tool,
-        detail,
-    } = step;
-    // Operational progress: step kind, counters and tool name only — no
-    // model text, arguments or source excerpts ever reach the shared log.
-    let progress = format!(
-        "attempt {}; step={}; experience={}; model_requests={}; tool_attempts={}; tool={}",
-        report
-            .diagnostics_id
-            .map_or_else(|| "none".into(), |id| id.to_string()),
-        kind,
-        selected.experience.id,
-        model_used,
-        tool_used,
-        tool.unwrap_or("none")
-    );
-    eprintln!("judge: {progress}");
-    if let Err(error) = operations.logging.event("judge", &progress) {
-        eprintln!("Operational logging is unavailable; reviews continue: {error:#}");
-    }
-    if let Some(id) = report.diagnostics_id {
-        if let Err(error) = state.trace_event(
-            id,
-            DiagnosticEvent::new(
-                selected.experience.id,
-                kind,
-                model_used,
-                tool_used,
-                tool,
-                detail,
-            ),
-        ) {
-            eprintln!("Diagnostic trace unavailable; review continues: {error:#}");
+        if report.selected == 0 {
+            report.preserve_deferrals(state.path());
         }
     }
-    Ok(())
+    queue.extend(&settings.core.database, attempts.into_values());
+    queue.flush(&settings.core.database, &mut report).await;
+    finish_report(settings, state, report, notify).await
 }
 
 pub async fn setup_failure(
@@ -415,31 +401,25 @@ pub async fn setup_failure(
     report.block_reason = Some(reason.into());
     report.failure_detail = Some(format!("{error:#}"));
     report.capture_source(error);
-    finish_report(settings, state, report).await
+    report.preserve_deferrals(state.path());
+    finish_report(settings, state, report, true).await
 }
 
-async fn finish_report(settings: &RuntimeConfig, state: &State, mut report: Report) -> Report {
+async fn finish_report(
+    settings: &RuntimeConfig,
+    state: &State,
+    mut report: Report,
+    notify: bool,
+) -> Report {
     report.stamp();
-    if let Some(id) = report.diagnostics_id {
-        match state.finish_trace(id, &report) {
-            Ok(()) if report.status == "complete" => report.diagnostics_id = None,
-            Ok(()) => {}
-            Err(error) => {
-                eprintln!("Cannot finish diagnostic trace; review result is unchanged: {error:#}");
-            }
-        }
-    }
     if let Err(error) = state.record_incident(&report) {
         eprintln!("Cannot save the failure incident; review result is unchanged: {error:#}");
     }
     if let Err(error) = state.write(&report) {
         eprintln!("Cannot save the local review report: {error:#}");
     }
-    if notification::enqueue(settings, state, &mut report).is_err() {
+    if notify && notification::enqueue(settings, state, &mut report).is_err() {
         report.notification = "unavailable".into();
-    }
-    if report.notification == "retry_pending" {
-        eprintln!("Email is queued. Delivery is owned by `mimir judge watch`; run it with this run's --config and --state-dir settings if no watcher is running.");
     }
     if let Err(error) = state.write(&report) {
         eprintln!("Cannot save the local review report: {error:#}");
@@ -452,6 +432,8 @@ async fn run_inner<B: Backend>(
     state: &State,
     backend: &mut B,
     report: &mut Report,
+    target: Option<ExperienceState>,
+    attempts: &mut std::collections::HashMap<Uuid, super::transcript::Attempt>,
 ) -> Result<()> {
     let mut client = Client::start(
         &settings.judge.mcp_command,
@@ -463,15 +445,11 @@ async fn run_inner<B: Backend>(
     // another caller. Reconcile against the database before excluding it.
     // Spec (Mimir.DeferredReviews.ListValid): the retained list is bounded,
     // its revisions are valid, and no identity appears twice.
-    let previous = state::read(state.path())?;
-    let carried = previous
+    let carried = state::read(state.path())?
+        .filter(|previous| previous.guided_repair && target.is_none())
         .into_iter()
         .flat_map(|report| report.deferred_reviews)
         .collect::<Vec<_>>();
-    ensure!(
-        carried.len() <= 1000,
-        "deferred review list exceeds the supported size"
-    );
     {
         let mut ids = std::collections::HashSet::new();
         for item in &carried {
@@ -498,8 +476,20 @@ async fn run_inner<B: Backend>(
             .project
             .as_ref()
             .is_none_or(|project| *project == current.experience.project);
-        if in_scope && still_deferred(&deferred, current.revision, current.reviewed_revision) {
-            report.deferred_reviews.push(deferred);
+        if in_scope {
+            if still_deferred(&deferred, current.revision, current.reviewed_revision) {
+                report.deferred_reviews.push(deferred);
+            } else if deferred.repair.is_some()
+                && current.revision == deferred.revision
+                && current.reviewed_revision == deferred.revision
+            {
+                if let Err(error) =
+                    notification::review_recovered(settings, state.path(), &deferred)
+                {
+                    eprintln!("Cannot queue the review recovery notice: {error:#}");
+                    report.deferred_reviews.push(deferred);
+                }
+            }
         }
     }
     let mut arguments = json!({});
@@ -514,14 +504,19 @@ async fn run_inner<B: Backend>(
     if let Some(project) = &settings.judge.project {
         arguments["project"] = json!(project);
     }
-    let fetched = client.tool("pending_experiences", arguments).await?;
-    let batch: Vec<ExperienceState> = serde_json::from_value(fetched.clone()).map_err(|error| {
-        state::SourceFailure::json(
-            "invalid pending batch",
-            fetched.to_string().as_bytes(),
-            error,
-        )
-    })?;
+    let batch: Vec<ExperienceState> = match target {
+        Some(selected) => vec![selected],
+        None => {
+            let fetched = client.tool("pending_experiences", arguments).await?;
+            serde_json::from_value(fetched.clone()).map_err(|error| {
+                state::SourceFailure::json(
+                    "invalid pending batch",
+                    fetched.to_string().as_bytes(),
+                    error,
+                )
+            })?
+        }
+    };
     ensure!(
         settings
             .judge
@@ -553,58 +548,31 @@ async fn run_inner<B: Backend>(
         }
         return Ok(());
     }
-    report.diagnostics_id = match state.begin_trace(report, 0) {
-        Ok(id) => Some(id),
-        Err(error) => {
-            eprintln!("Cannot start diagnostic trace; reviews continue: {error:#}");
-            None
-        }
-    };
-    let mut model_used: usize = 0;
-    let mut tool_used: usize = 0;
     let mut failed = false;
+    let mut repairs = std::collections::HashMap::new();
     for selected in &batch {
+        let attempt = attempts
+            .entry(selected.experience.id)
+            .or_insert_with(|| super::transcript::Attempt::new(selected));
         let mut last: Option<Value> = None;
         let mut candidate_rejections = 0;
         let mut candidate_rejection_detail = None;
         let mut last_rejection: Option<(String, String, Option<SourceFailure>)> = None;
+        let mut rejected_faults: Vec<(String, Fault)> = Vec::new();
+        let mut submission_requested = false;
         let mut confirmed_review = false;
+        let mut repair_explanation = "The judge ended without saving a review.";
         loop {
-            let will_call_model = backend.will_call_model(selected);
-            if will_call_model {
-                model_used = model_used.saturating_add(1);
-                let detail = last.as_ref().map(Value::to_string);
-                trace(
-                    &settings.operations,
-                    state,
-                    report,
-                    selected,
-                    Step {
-                        kind: "model_request",
-                        counts: (model_used, tool_used),
-                        tool: None,
-                        detail: detail.as_deref(),
-                    },
-                )?;
-            }
             let action = match backend
                 .next(selected, last.as_ref(), client.allowed_tools())
                 .await
             {
                 Ok(action) => action,
                 Err(error) => {
-                    trace(
-                        &settings.operations,
-                        state,
-                        report,
-                        selected,
-                        Step {
-                            kind: "model_error",
-                            counts: (model_used, tool_used),
-                            tool: None,
-                            detail: Some(&format!("{error:#}")),
-                        },
-                    )?;
+                    let source = error.downcast_ref::<SourceFailure>();
+                    attempt.event("model_error", None, json!({
+                        "reason":format!("{error:#}"), "input":source.map(|source| &source.excerpt)
+                    }));
                     if candidate_rejections == 0 {
                         failed = true;
                         report.block_reason = Some(
@@ -625,34 +593,62 @@ async fn run_inner<B: Backend>(
             };
             match action {
                 Action::Done => {
-                    trace(
-                        &settings.operations,
-                        state,
-                        report,
-                        selected,
-                        Step {
-                            kind: "model_done",
-                            counts: (model_used, tool_used),
-                            tool: None,
-                            detail: None,
-                        },
-                    )?;
+                    attempt.event("model_done", None, Value::Null);
+                    match observe(&mut client, selected).await {
+                        Ok("confirmed" | "corrected") => {
+                            confirmed_review = true;
+                        }
+                        Ok("pending") if !submission_requested => {
+                            submission_requested = true;
+                            last = Some(json!({
+                                "error":"review_not_saved",
+                                "message":"There is no saved review for the selected experience revision.",
+                                "experience_id":selected.experience.id,
+                                "experience_revision":selected.revision,
+                                "expected_review_revision":selected.review_revision,
+                                "previous_rejection":last_rejection.as_ref().map(|(_, detail, _)| detail),
+                                "guidance":"Submit review_experience for the selected experience and revisions. Correct the rejected fields before submitting."
+                            }));
+                            continue;
+                        }
+                        Ok("pending") => {
+                            report
+                                .block_reason
+                                .get_or_insert_with(|| "review_requires_repair".into());
+                            last_rejection.get_or_insert_with(|| (
+                                "review_experience".into(),
+                                "The judge stopped without saving a review after being asked to submit it.".into(),
+                                None,
+                            ));
+                        }
+                        other => {
+                            let error = match other {
+                                Err(error) => error,
+                                Ok(_) => anyhow!("The selected experience is unavailable for review confirmation."),
+                            };
+                            failed = true;
+                            report.block_reason = Some("tool_error".into());
+                            report.diagnostic = Some(FailureDiagnostic::new(
+                                selected.experience.id,
+                                "get_experience",
+                                &format!("{error:#}"),
+                            ));
+                            report.capture_source(&error);
+                        }
+                    }
                     break;
                 }
                 Action::RejectedTool { name, source } => {
-                    trace(
-                        &settings.operations,
-                        state,
-                        report,
-                        selected,
-                        Step {
-                            kind: "tool_parse_rejection",
-                            counts: (model_used, tool_used),
-                            tool: Some(&name),
-                            detail: Some(&source.excerpt),
-                        },
-                    )?;
-                    tool_used = tool_used.saturating_add(1);
+                    attempt.event(
+                        "tool_parse_rejection",
+                        Some(&name),
+                        json!({
+                            "reason":source.detail, "input":source.excerpt
+                        }),
+                    );
+                    repair_explanation =
+                        "The judge submitted malformed arguments and did not correct them.";
+
                     // The model already knows its input. Return only the parser's
                     // location and a fixed correction instruction, never the input.
                     last = Some(json!({"error":"invalid_tool_arguments",
@@ -661,38 +657,20 @@ async fn run_inner<B: Backend>(
                     last_rejection = Some((name, source.to_string(), Some(source)));
                 }
                 Action::Tool { name, arguments } => {
-                    trace(
-                        &settings.operations,
-                        state,
-                        report,
-                        selected,
-                        Step {
-                            kind: "tool_request",
-                            counts: (model_used, tool_used),
-                            tool: Some(&name),
-                            detail: Some(&arguments.to_string()),
-                        },
-                    )?;
-                    tool_used = tool_used.saturating_add(1);
-                    let attempted_review = arguments.get("review").cloned();
+                    attempt.event("tool_request", Some(&name), arguments.clone());
                     match scoped_tool(&mut client, selected, &name, arguments).await {
                         Ok(value) => {
-                            trace(
-                                &settings.operations,
-                                state,
-                                report,
-                                selected,
-                                Step {
-                                    kind: "tool_result",
-                                    counts: (model_used, tool_used),
-                                    tool: Some(&name),
-                                    detail: Some(&value.to_string()),
-                                },
-                            )?;
+                            attempt.event("tool_result", Some(&name), value.clone());
                             if value.get("status").and_then(Value::as_str) == Some("needs_input") {
                                 failed = true;
                                 report.block_reason = Some("needs_input".into());
-                                report.failure_detail = Some(value.to_string());
+                                report.failure_detail = Some(
+                                    ["reason", "next_action"]
+                                        .into_iter()
+                                        .filter_map(|field| value[field].as_str())
+                                        .collect::<Vec<_>>()
+                                        .join(" "),
+                                );
                                 break;
                             }
                             let correction = value.get("status").and_then(Value::as_str)
@@ -702,7 +680,10 @@ async fn run_inner<B: Backend>(
                             // need not spend another turn saying it is done.
                             if !correction
                                 && name == "review_experience"
-                                && observe(&mut client, selected).await? != "pending"
+                                && matches!(
+                                    observe(&mut client, selected).await?,
+                                    "confirmed" | "corrected"
+                                )
                             {
                                 confirmed_review = true;
                                 break;
@@ -712,19 +693,14 @@ async fn run_inner<B: Backend>(
                             if name == "review_experience"
                                 && error.downcast_ref::<CandidateConflict>().is_some() =>
                         {
-                            trace(
-                                &settings.operations,
-                                state,
-                                report,
-                                selected,
-                                Step {
-                                    kind: "candidate_conflict",
-                                    counts: (model_used, tool_used),
-                                    tool: Some(&name),
-                                    detail: Some(&format!("{error:#}")),
-                                },
-                            )?;
+                            attempt.event(
+                                "tool_rejection",
+                                Some(&name),
+                                json!(format!("{error:#}")),
+                            );
                             candidate_rejections += 1;
+                            repair_explanation =
+                                "The review reused a candidate key with a different declaration.";
                             candidate_rejection_detail = Some(format!("{error:#}"));
                             last = Some(json!({"error":"candidate_key_conflict",
                                 "guidance":"A candidate key from an earlier review has a different declaration. Inspect experience_history. Reuse a key only with its exact original kind and declaration; use a new key for a revised claim."}));
@@ -733,25 +709,16 @@ async fn run_inner<B: Backend>(
                             if error.downcast_ref::<InputRejected>().is_some()
                                 || error.downcast_ref::<McpApplicationError>().is_some()
                                 || error.downcast_ref::<UndeclaredBeliefCandidate>().is_some()
-                                || error
-                                    .downcast_ref::<mimir_core::validation::Refusal>()
-                                    .is_some()
+                                || error.downcast_ref::<Refusal>().is_some()
                                 || error.downcast_ref::<SourceFailure>().is_some_and(
                                     |source| source.stage == "invalid review arguments",
                                 ) =>
                         {
-                            trace(
-                                &settings.operations,
-                                state,
-                                report,
-                                selected,
-                                Step {
-                                    kind: "tool_rejection",
-                                    counts: (model_used, tool_used),
-                                    tool: Some(&name),
-                                    detail: Some(&format!("{error:#}")),
-                                },
-                            )?;
+                            attempt.event(
+                                "tool_rejection",
+                                Some(&name),
+                                json!(format!("{error:#}")),
+                            );
                             // Only typed validation faults are correction feedback.
                             // Preserve the exact path, code and explanation.
                             let fault = error
@@ -762,11 +729,7 @@ async fn run_inner<B: Backend>(
                                         .downcast_ref::<UndeclaredBeliefCandidate>()
                                         .map(|e| &e.0)
                                 })
-                                .or_else(|| {
-                                    error
-                                        .downcast_ref::<mimir_core::validation::Refusal>()
-                                        .map(|e| &e.fault)
-                                });
+                                .or_else(|| error.downcast_ref::<Refusal>().map(|e| &e.fault));
                             let message = if let Some(input) = error.downcast_ref::<InputRejected>()
                             {
                                 input.to_string()
@@ -781,35 +744,55 @@ async fn run_inner<B: Backend>(
                                 "message":message,
                                 "fault":fault,
                                 "guidance":"Correct the tool arguments and resubmit the request. The rejected call changed nothing."}));
-                            let focused = fault.and_then(|fault| {
-                                use mimir_core::validation::{Code, Segment};
-                                if fault.code != Code::QuotationMismatch { return None; }
-                                let index = fault.path.iter().find_map(|part| match part { Segment::Index(n)=>Some(*n), _=>None })?;
-                                let item = attempted_review.as_ref()?.get("extracted_items")?.get(index)?;
-                                let source_ref = item.get("source_ref")?.as_str()?;
-                                let source = selected.experience.source_records.iter().find(|s|s.source_ref==source_ref)?;
-                                let payload = json!({"fault":fault,"rejected_item":item,"cited_source":source}).to_string();
-                                Some(SourceFailure::input("quotation_mismatch",payload.as_bytes(),&fault.message))
-                            });
+                            let focused = fault
+                                .filter(|fault| fault.code == Code::QuotationMismatch)
+                                .map(|fault| {
+                                    SourceFailure::input("quotation_mismatch", &[], &fault.message)
+                                });
                             last_rejection = Some((
-                                name,
-                                format!("{error:#}"),
+                                name.clone(),
+                                fault.map_or_else(
+                                    || format!("{error:#}"),
+                                    |fault| {
+                                        format!(
+                                            "{} Field path: {}.",
+                                            fault.message,
+                                            json!(fault.path)
+                                        )
+                                    },
+                                ),
                                 focused.or_else(|| error.downcast_ref::<SourceFailure>().cloned()),
                             ));
+                            let is_undeclared = error.is::<UndeclaredBeliefCandidate>()
+                                || error.downcast_ref::<Refusal>().is_some_and(|refusal| {
+                                    refusal.kind == RefusalKind::UndeclaredCandidate
+                                });
+                            let is_graph_scope =
+                                matches!(name.as_str(), "explain_belief" | "query_intervention")
+                                    && fault.is_some_and(|fault| {
+                                        fault.code == Code::WrongIdentity
+                                            && fault.path == [Segment::Key("id".into())]
+                                    });
+                            repair_explanation = if is_undeclared {
+                                "The review referred to a belief candidate that it did not declare."
+                            } else if is_graph_scope {
+                                "The judge asked for a graph explanation outside the review's project."
+                            } else {
+                                "The judge submitted a request Mimir rejected and did not resolve it."
+                            };
+                            if let Some(fault) = fault.filter(|_| is_undeclared || is_graph_scope) {
+                                let rejected = (name, fault.clone());
+                                if rejected_faults.contains(&rejected) {
+                                    report
+                                        .block_reason
+                                        .get_or_insert_with(|| "review_requires_repair".into());
+                                    break;
+                                }
+                                rejected_faults.push(rejected);
+                            }
                         }
                         Err(error) => {
-                            trace(
-                                &settings.operations,
-                                state,
-                                report,
-                                selected,
-                                Step {
-                                    kind: "tool_error",
-                                    counts: (model_used, tool_used),
-                                    tool: Some(&name),
-                                    detail: Some(&format!("{error:#}")),
-                                },
-                            )?;
+                            attempt.event("tool_error", Some(&name), json!(format!("{error:#}")));
                             failed = true;
                             report.block_reason = Some("tool_error".into());
                             report.diagnostic = Some(FailureDiagnostic::new(
@@ -823,6 +806,25 @@ async fn run_inner<B: Backend>(
                     }
                 }
             }
+        }
+        if confirmed_review {
+            attempts.remove(&selected.experience.id);
+        }
+        if !confirmed_review && !failed {
+            let detail = last_rejection
+                .as_ref()
+                .map(|(_, detail, _)| detail.clone())
+                .or_else(|| candidate_rejection_detail.clone())
+                .unwrap_or_else(|| repair_explanation.into());
+            repairs.insert(
+                selected.experience.id,
+                RepairCase {
+                    explanation: repair_explanation.into(),
+                    detail,
+                    diagnostic_id: None,
+                    transcript_pending: false,
+                },
+            );
         }
         if !confirmed_review {
             if let Some((name, detail, source)) = last_rejection {
@@ -841,20 +843,14 @@ async fn run_inner<B: Backend>(
                 }
             }
         }
-        if candidate_rejections > 0 && !confirmed_review && !failed {
-            if report.diagnostic.is_none() {
-                report.diagnostic = Some(FailureDiagnostic::new(
-                    selected.experience.id,
-                    "review_experience",
-                    candidate_rejection_detail
-                        .as_deref()
-                        .unwrap_or("review correction was not confirmed"),
-                ));
-            }
-            report.deferred_reviews.push(DeferredReview {
-                id: selected.experience.id,
-                revision: selected.revision,
-            });
+        if candidate_rejections > 0 && !confirmed_review && !failed && report.diagnostic.is_none() {
+            report.diagnostic = Some(FailureDiagnostic::new(
+                selected.experience.id,
+                "review_experience",
+                candidate_rejection_detail
+                    .as_deref()
+                    .unwrap_or("review correction was not confirmed"),
+            ));
         }
         if failed {
             break;
@@ -871,9 +867,18 @@ async fn run_inner<B: Backend>(
     }
     for selected in &batch {
         match observe(&mut client, selected).await {
-            Ok("confirmed") => report.confirmed += 1,
-            Ok("corrected") => report.corrected += 1,
+            Ok(outcome @ ("confirmed" | "corrected")) => {
+                attempts.remove(&selected.experience.id);
+                if outcome == "confirmed" {
+                    report.confirmed += 1;
+                } else {
+                    report.corrected += 1;
+                }
+            }
             Ok("pending") => {
+                if let Some(attempt) = attempts.get_mut(&selected.experience.id) {
+                    attempt.pending();
+                }
                 report.pending += 1;
                 // Spec (Mimir.JudgeBatchReadback.pendingDeferrals): a pin
                 // whose final readback stays pending — the stored revision
@@ -886,10 +891,11 @@ async fn run_inner<B: Backend>(
                 let deferred = report.deferred_reviews.iter().any(|item| {
                     item.id == selected.experience.id && item.revision == selected.revision
                 });
-                if !deferred {
+                if !deferred && repairs.contains_key(&selected.experience.id) {
                     report.deferred_reviews.push(DeferredReview {
                         id: selected.experience.id,
                         revision: selected.revision,
+                        repair: repairs.remove(&selected.experience.id),
                     });
                 }
             }
@@ -930,7 +936,9 @@ async fn run_inner<B: Backend>(
     }
     if report.status != "complete" && report.block_reason.is_none() {
         report.block_reason = Some(
-            if report.deferred_reviews.is_empty() {
+            if report.corrected > 0 && report.pending == 0 && report.unavailable == 0 {
+                "review_source_changed"
+            } else if report.deferred_reviews.is_empty() {
                 "revision_not_confirmed"
             } else {
                 "review_deferred"
@@ -1019,6 +1027,7 @@ mod tests {
         let item = DeferredReview {
             id: Uuid::new_v4(),
             revision: 2,
+            repair: None,
         };
         assert!(still_deferred(&item, 2, 1));
         assert!(!still_deferred(&item, 3, 1));
@@ -1041,14 +1050,21 @@ mod tests {
                 if self.calls > 0 {
                     let feedback = last.ok_or_else(|| anyhow!("missing validation feedback"))?;
                     ensure!(feedback["error"] == "invalid_tool_arguments");
+                    ensure!(
+                        feedback["fault"]["path"]
+                            == json!([
+                                "review",
+                                "candidate_feedback",
+                                0,
+                                "target",
+                                "candidate_key"
+                            ])
+                    );
                     ensure!(feedback["message"]
                         .as_str()
-                        .is_some_and(|text| text.contains("declared in this review")));
+                        .is_some_and(|text| text.contains("fixture-key")));
                 }
                 self.calls += 1;
-                if !self.correct && self.calls == 4 {
-                    return Ok(Action::Done);
-                }
                 let candidates = if self.calls == 2 && self.correct {
                     json!([{"kind":"belief","key":"fixture-key","content":"fixture conclusion"}])
                 } else {
@@ -1099,7 +1115,7 @@ mod tests {
         ) -> Pin<Box<dyn Future<Output = Result<Action>> + Send + 'a>> {
             Box::pin(async move {
                 self.calls += 1;
-                if self.calls == 26 {
+                if self.calls >= 26 {
                     return Ok(Action::Done);
                 }
                 Ok(Action::Tool {
@@ -1118,6 +1134,12 @@ mod tests {
             _tools: &'a [Value],
         ) -> Pin<Box<dyn Future<Output = Result<Action>> + Send + 'a>> {
             Box::pin(async move {
+                if matches!(self.case, RejectionCase::Exhausted) && self.calls == 26 {
+                    let feedback = last.ok_or_else(|| anyhow!("missing submission instruction"))?;
+                    ensure!(feedback["error"] == "review_not_saved");
+                    self.calls += 1;
+                    return Ok(Action::Done);
+                }
                 if self.calls > 0 {
                     let feedback = last.ok_or_else(|| anyhow!("missing tool feedback"))?;
                     if matches!(self.case, RejectionCase::WrongProject) {
@@ -1342,12 +1364,14 @@ mod tests {
             let report = run(&settings, &state, &mut backend).await;
             if matches!(case, RejectionCase::Exhausted) {
                 assert_eq!(report.status, "blocked");
-                assert_eq!(backend.calls, 26);
-                assert_eq!(report.block_reason.as_deref(), Some("tool_rejected"));
+                assert_eq!(backend.calls, 27);
                 assert_eq!(
-                    report.failure_source.as_ref().unwrap().excerpt,
-                    "{\"review\": }"
+                    report.block_reason.as_deref(),
+                    Some("review_requires_repair")
                 );
+                assert!(serde_json::to_value(&report).unwrap()["failure_source"]
+                    .get("excerpt")
+                    .is_none());
             } else if matches!(case, RejectionCase::MimirError) {
                 assert_eq!(report.status, "blocked");
                 assert_eq!(
@@ -1399,39 +1423,20 @@ mod tests {
         assert_eq!(failed.status, "blocked");
         assert_eq!(
             failed.block_reason.as_deref(),
-            Some("review_deferred"),
+            Some("review_requires_repair"),
             "a pending final readback joins the deferred set \
              (Mimir.JudgeBatchReadback.pendingDeferrals)"
         );
         assert_eq!(failed.pending, 1);
         assert_eq!(failed.deferred_reviews.len(), 1);
-        assert!(failed.diagnostic.is_none());
-        // The operational log records per-step activity during the batch —
-        // step kinds and tool names only, never model text or arguments.
-        let operational = std::fs::read_to_string(dir.join("logs/mimir.log")).unwrap();
-        assert!(operational.contains("step=model_request"));
-        assert!(operational.contains("tool=get_experience"));
-        assert!(!operational.contains("exec_command"));
-        assert_eq!(backend.calls, 26);
-        let id = failed.diagnostics_id.unwrap();
-        let diagnostics = state::read_diagnostics(state.path()).unwrap();
-        let trace = diagnostics
-            .attempts
-            .iter()
-            .find(|trace| trace.id == id)
-            .unwrap();
-        assert_eq!(trace.model_requests, Some(26));
-        assert_eq!(trace.tool_attempts, Some(25));
-        assert!(trace
-            .events
-            .iter()
-            .any(|event| event.kind == "model_request"));
-        assert!(trace.events.iter().any(|event| event.kind == "tool_result"));
-        assert_eq!(
-            trace.events_omitted, 0,
-            "all diagnostic events must survive"
-        );
-        assert_eq!(trace.events[1].tool.as_deref(), Some("get_experience"));
+        assert!(failed.diagnostic.is_some());
+        assert_eq!(backend.calls, 27);
+        assert!(failed.diagnostics_id.is_none());
+        let legacy = state.path().join("judge-diagnostics.json");
+        assert!(!legacy.exists());
+        let legacy_content = b"{\"attempts\":[]}";
+        std::fs::write(&legacy, legacy_content).unwrap();
+        std::fs::set_permissions(&legacy, std::fs::Permissions::from_mode(0o600)).unwrap();
 
         // The deferred pin is excluded from subsequent selections: the next
         // batch is empty and makes no model calls instead of re-selecting
@@ -1444,9 +1449,7 @@ mod tests {
         assert_eq!(excluded.pending, 0);
         assert_eq!(parked.calls, 0);
 
-        // A later revision change (a correction by another caller) drops the
-        // deferral and the batch completes normally; the first attempt's
-        // diagnostic trace stays retained.
+        // A later source correction lets the watcher complete a fresh review.
         write_config("revision-bump");
         let settings = super::super::config::load(Some(&config_path)).unwrap();
         let mut recovery = ToolCorrection {
@@ -1456,19 +1459,8 @@ mod tests {
         let completed = run(&settings, &state, &mut recovery).await;
         assert_eq!(completed.status, "complete");
         assert!(completed.deferred_reviews.is_empty());
-        assert!(state::read_diagnostics(state.path())
-            .unwrap()
-            .attempts
-            .iter()
-            .any(|trace| trace.id == id));
-        assert_eq!(
-            state::read_failure(state.path())
-                .unwrap()
-                .unwrap()
-                .first
-                .diagnostics_id,
-            Some(id)
-        );
+        assert_eq!(std::fs::read(legacy).unwrap(), legacy_content);
+        assert!(state::read_failure(state.path()).unwrap().is_some());
         drop(state);
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -1499,7 +1491,7 @@ mod tests {
             let mut backend = ReferenceCorrection { calls: 0, correct };
             let report = run(&settings, &state, &mut backend).await;
             assert_eq!(report.status, expected_status, "correct={correct}");
-            assert_eq!(backend.calls, if correct { 2 } else { 4 });
+            assert_eq!(backend.calls, 2);
             assert_eq!(report.confirmed, usize::from(correct));
             assert_eq!(
                 std::fs::read_to_string(&review_log)
@@ -1510,7 +1502,10 @@ mod tests {
                 "invalid review must not reach MCP"
             );
             if !correct {
-                assert_eq!(report.block_reason.as_deref(), Some("tool_rejected"));
+                assert_eq!(
+                    report.block_reason.as_deref(),
+                    Some("review_requires_repair")
+                );
                 assert_eq!(report.pending, 1);
                 assert_eq!(
                     report.deferred_reviews.len(),

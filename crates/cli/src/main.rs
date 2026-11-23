@@ -1270,6 +1270,7 @@ mod catalogue_routing_tests {
             "config upgrade",
             "judge run",
             "judge watch",
+            "judge repair",
             "judge diagnose",
             "judge diagnostics",
             "judge check-config",

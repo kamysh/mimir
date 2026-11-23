@@ -312,6 +312,15 @@ impl<'a> Notifier<'a> {
 
     /// The next configured retry wake, independent of review and queue events.
     pub fn next_delivery_due(&self) -> Result<Option<u64>> {
+        self.next_due(true)
+    }
+
+    /// Alert-only wake when daily statistics cannot run.
+    pub fn next_alert_due(&self) -> Result<Option<u64>> {
+        self.next_due(false)
+    }
+
+    fn next_due(&self, include_digest: bool) -> Result<Option<u64>> {
         let state = StateDir::lock(&self.state_dir)?;
         let outbox: Outbox = state.read()?.unwrap_or_default();
         let alert_due = outbox
@@ -321,6 +330,9 @@ impl<'a> Notifier<'a> {
             .filter(|alert| alert.delivery == Delivery::Pending)
             .map(|alert| alert.next_due)
             .min();
+        if !include_digest {
+            return Ok(alert_due);
+        }
         let digest: DigestState = state.read_digest()?.unwrap_or_default();
         Ok(alert_due
             .into_iter()
@@ -353,9 +365,12 @@ impl<'a> Notifier<'a> {
                 incident_key: event.incident_key.clone(),
                 ..Incident::default()
             });
+        let before = incident.clone();
         reconcile(incident, event, current);
         let result = outcome(incident);
-        state.write(&outbox)?;
+        if *incident != before {
+            state.write(&outbox)?;
+        }
         Ok((key, result))
     }
 
@@ -427,6 +442,7 @@ impl<'a> Notifier<'a> {
         if !self.config.enabled {
             return Ok(Vec::new());
         }
+        let current = now();
         let pending = {
             let state = StateDir::lock(&self.state_dir)?;
             let outbox: Outbox = state.read()?.unwrap_or_default();
@@ -437,7 +453,11 @@ impl<'a> Notifier<'a> {
             outbox
                 .incidents
                 .iter()
-                .filter(|(_, incident)| incident.outbox.is_some())
+                .filter(|(_, incident)| {
+                    incident.outbox.as_ref().is_some_and(|alert| {
+                        alert.delivery == Delivery::Pending && alert.next_due <= current
+                    })
+                })
                 .map(|(key, incident)| {
                     (
                         key.clone(),
