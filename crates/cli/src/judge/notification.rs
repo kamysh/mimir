@@ -186,12 +186,12 @@ fn review_failure(
 ) -> Option<Event> {
     let repair = review.repair.as_ref()?;
     let mut details = format!(
-        "Experience: {}\nSource revision: {}\nProblem: {}\n\nRun this command to inspect the failure and choose a correction:\n{}",
+        "Experience: {}\nSource revision: {}\nProblem: {}\n\nRun this command to open the review, choose a correction, and save it:\n{}",
         review.id, review.revision, repair.explanation, repair_command(settings, state_dir, review)
     );
     if let Some(id) = repair.diagnostic_id {
         details.push_str(&format!(
-            "\nInspect the transcript: {}",
+            "\nRead the failure explanation: {}",
             diagnostic_command(&settings.path, state_dir, id)
         ));
     } else if repair.transcript_pending {

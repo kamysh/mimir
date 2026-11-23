@@ -45,7 +45,7 @@ data JudgeCommand : Set where
   run : Maybe Path.Path → Maybe Path.Path → JudgeCommand
   watch : Maybe Path.Path → Maybe Path.Path → JudgeCommand
   status : Maybe Path.Path → JudgeCommand
-  diagnostics : Maybe Path.Path → Maybe Path.Path → Bool → Maybe UUID → JudgeCommand
+  diagnostics : Maybe Path.Path → Maybe Path.Path → Bool → Maybe UUID → Bool → JudgeCommand
   repair : Maybe Path.Path → Maybe Path.Path → UUID → ℕ → RepairAction → JudgeCommand
 
 data HookCommand : Set where prompt pretooluse : HookCommand; stop : Maybe Text → HookCommand; setProject : Text → HookCommand
