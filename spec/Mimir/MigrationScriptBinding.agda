@@ -26,6 +26,7 @@ source Schema.allocation = toList "-- Historical UUIDs are imported, never regen
 
 source Schema.workEvents = toList "CREATE FUNCTION mimir_signal_review_work() RETURNS trigger LANGUAGE plpgsql AS $$\nBEGIN\n    PERFORM pg_notify('mimir_review_work', '');\n    RETURN NULL;\nEND\n$$;\n\nCREATE TRIGGER mimir_review_work_changed\nAFTER INSERT OR UPDATE OR DELETE ON mimir_experiences\nFOR EACH STATEMENT EXECUTE FUNCTION mimir_signal_review_work();\n"
 source Schema.experienceAllocation = toList "ALTER TABLE mimir_experiences ALTER COLUMN id SET DEFAULT gen_random_uuid();"
+source Schema.reviewTranscripts = toList "CREATE TABLE mimir_failed_review_transcripts (\n    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),\n    attempt_key text NOT NULL UNIQUE,\n    experience_id uuid NOT NULL,\n    source_revision bigint NOT NULL,\n    transcript jsonb NOT NULL,\n    created_at timestamptz NOT NULL DEFAULT now(),\n    FOREIGN KEY (experience_id, source_revision)\n      REFERENCES mimir_experience_versions(experience_id, revision) ON DELETE CASCADE\n);\nCREATE INDEX mimir_failed_review_transcripts_source\n    ON mimir_failed_review_transcripts(experience_id, source_revision);\n"
 
 data Statement : Set where
   application : Schema.DDL → Statement

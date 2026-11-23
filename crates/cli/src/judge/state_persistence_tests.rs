@@ -127,41 +127,25 @@ fn encoding_and_size_rejection_leave_the_directory_untouched() {
 }
 
 #[test]
-fn restart_retains_committed_report_and_marks_running_trace_interrupted() {
+fn restart_retains_committed_report_and_ignores_old_trace() {
     let directory = Directory::new();
     let state = State::lock(directory.0.clone()).unwrap().unwrap();
     let report = Report::new("idle", 0, 0, 0, 0, 0);
     state.write(&report).unwrap();
-    let first = state.begin_trace(&report, 7).unwrap();
+    let legacy = directory.0.join(DIAGNOSTICS_FILE);
+    fs::write(&legacy, b"old diagnostic data").unwrap();
     let orphan = directory.0.join(".judge-status-orphan.tmp");
     fs::write(&orphan, b"unfinished JSON {").unwrap();
     drop(state);
 
-    let recovered = State::lock(directory.0.clone()).unwrap().unwrap();
+    let _recovered = State::lock(directory.0.clone()).unwrap().unwrap();
     assert_eq!(read(&directory.0).unwrap().unwrap().status, "idle");
-    let second = recovered.begin_trace(&report, 5).unwrap();
-    let diagnostics = read_diagnostics(&directory.0).unwrap();
-    let interrupted = diagnostics
-        .attempts
-        .iter()
-        .find(|trace| trace.id == first)
-        .unwrap();
-    assert_eq!(interrupted.status, "interrupted");
-    assert!(interrupted.finished_at.is_some());
-    assert_eq!(interrupted.model_requests, Some(7));
-    let current = diagnostics
-        .attempts
-        .iter()
-        .find(|trace| trace.id == second)
-        .unwrap();
-    assert_eq!(current.status, "running");
-    assert!(current.finished_at.is_none());
-    assert_eq!(current.model_requests, Some(5));
+    assert_eq!(fs::read(&legacy).unwrap(), b"old diagnostic data");
     assert_eq!(fs::read(&orphan).unwrap(), b"unfinished JSON {");
 }
 
 #[test]
-fn full_batch_and_diagnostic_selection_are_preserved() {
+fn full_batch_selection_is_preserved() {
     let directory = Directory::new();
     let state = State::lock(directory.0.clone()).unwrap().unwrap();
     let mut report = Report::new("blocked", 100_000, 0, 0, 100_000, 0);
@@ -170,14 +154,4 @@ fn full_batch_and_diagnostic_selection_are_preserved() {
     let saved = read(&directory.0).unwrap().unwrap();
     assert_eq!(saved.selected_ids, report.selected_ids);
     assert!(fs::metadata(directory.0.join(STATUS_FILE)).unwrap().len() > 3 * 1024 * 1024);
-    let id = state.begin_trace(&report, 0).unwrap();
-    state.finish_trace(id, &report).unwrap();
-    let traces = read_diagnostics(&directory.0).unwrap();
-    assert_eq!(traces.attempts[0].selected_ids, report.selected_ids);
-    assert!(
-        fs::metadata(directory.0.join(DIAGNOSTICS_FILE))
-            .unwrap()
-            .len()
-            > 3 * 1024 * 1024
-    );
 }

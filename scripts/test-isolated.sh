@@ -171,7 +171,8 @@ if [[ $selected == all || $selected == fixtures || $selected == runtime || $sele
     run runtime-recovery bash "$repo/tests/runtime-recovery.sh"
 fi
 if [[ $selected == all || $selected == runtime ]]; then
-    run judge-database-recovery cargo test -p mimir --test judge_database_recovery --locked --offline -- --ignored
+    # The listener-loss case identifies its LISTEN connection in this database.
+    run judge-database-recovery cargo test -p mimir --test judge_database_recovery --locked --offline -- --ignored --test-threads=1
 fi
 if [[ $selected == installed || $selected == runtime ]]; then
     run judge-adapter-fixtures bash "$repo/tests/judge-adapters.sh"

@@ -488,7 +488,10 @@ mod tests {
         assert!(undeclared_belief_candidate(&json!({
             "code":-32000,
             "message":"candidate belief reference must be declared in this review",
-            "data":Refusal::undeclared_candidate()
+            "data":Refusal::undeclared_candidate(
+                vec![mimir_core::validation::Segment::Key("candidate_key".into())],
+                "missing"
+            )
         })));
         assert!(!undeclared_belief_candidate(&json!({
             "code":-32001,

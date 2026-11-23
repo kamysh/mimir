@@ -665,6 +665,58 @@ async fn loopback_starttls_and_implicit_tls_with_certificate_checks() {
 }
 
 #[tokio::test]
+async fn actionable_repair_alert_is_due_at_detection_and_delivered_to_smtp() {
+    let (cert_dir, root, cert, key) = certificate();
+    let (port, server) = fixture(EmailTls::Tls, ServerCase::Accept, cert, key).await;
+    let mut config = config();
+    config.tls = Some(EmailTls::Tls);
+    config.port = Some(port);
+    config.daily_report_at = None;
+    let path = directory();
+    let notifier = Notifier::new(&config, &path).unwrap();
+    let mut event = failure("judge", "review/fixture/1", "review_requires_repair");
+    event.details = Some("The judge did not save a review.\nRun: mimir judge repair".into());
+    let (key, queued) = notifier.queue_at(&event, 100).unwrap();
+    assert_eq!(queued, Outcome::RetryPending);
+    let before = notifier.pending_ids().unwrap();
+    notifier.queue_at(&event, 101).unwrap();
+    assert_eq!(notifier.pending_ids().unwrap(), before);
+    assert_eq!(notifier.next_delivery_due().unwrap(), Some(100));
+    StateDir::lock(&path)
+        .unwrap()
+        .write_digest(&DigestState {
+            last_attempt_failed: true,
+            next_due: 10,
+            ..DigestState::default()
+        })
+        .unwrap();
+    assert_eq!(notifier.next_delivery_due().unwrap(), Some(10));
+    assert_eq!(notifier.next_alert_due().unwrap(), Some(100));
+    let mail = &config;
+    assert_eq!(
+        notifier
+            .attempt_with(
+                &key,
+                100,
+                Some(|message| async move {
+                    smtp::send_with_root(mail, message, Some(&root), None)
+                        .await
+                        .map_err(|_| SendFailure::Retryable)
+                })
+            )
+            .await
+            .unwrap(),
+        Outcome::Sent
+    );
+    let delivered = server.await.unwrap();
+    assert!(delivered.accepted);
+    assert!(delivered.data.contains("The judge did not save a review"));
+    assert!(delivered.data.contains("mimir judge repair"));
+    std::fs::remove_dir_all(cert_dir).unwrap();
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[tokio::test]
 async fn digest_uses_host_and_real_loopback_smtp() {
     let (cert_dir, root, cert, key) = certificate();
     let (port, server) = fixture(EmailTls::Tls, ServerCase::Accept, cert, key).await;
@@ -869,7 +921,7 @@ async fn shared_outbox_lock_privacy_and_due_retry() {
     let mut config = config();
     let path = directory();
     let locked = StateDir::lock(&path).unwrap();
-    assert!(StateDir::lock(&path).is_err());
+    assert!(StateDir::try_lock(&path).is_err());
     assert_eq!(
         std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
         0o700

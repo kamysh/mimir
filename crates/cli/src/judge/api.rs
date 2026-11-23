@@ -493,6 +493,14 @@ impl<'a> ApiBackend<'a> {
                 });
             }
             (None, None) => {}
+            (None, Some(feedback)) if feedback["error"] == "review_not_saved" => {
+                // Completing without a saved review has no provider tool call
+                // to attach a result to. The host asks for a submission.
+                self.history.push(json!({
+                    "role":"user",
+                    "content":serde_json::to_string(feedback)?
+                }));
+            }
             _ => bail!("provider tool result sequence is invalid"),
         }
         if let Some(call) = self.pending.pop_front() {
@@ -517,11 +525,14 @@ impl<'a> ApiBackend<'a> {
     }
 }
 
-impl Backend for ApiBackend<'_> {
+#[cfg(test)]
+impl ApiBackend<'_> {
     fn will_call_model(&self, selected: &ExperienceState) -> bool {
         self.selected_id != Some(selected.experience.id) || self.pending.is_empty()
     }
+}
 
+impl Backend for ApiBackend<'_> {
     fn next<'a>(
         &'a mut self,
         selected: &'a ExperienceState,
@@ -747,6 +758,45 @@ mod tests {
         );
         assert_eq!(input[input.len() - 2]["call_id"], "call_1");
         assert_eq!(input[input.len() - 1]["call_id"], "call_2");
+    }
+
+    #[tokio::test]
+    async fn premature_completion_feedback_starts_a_new_provider_turn() {
+        let selected = selected();
+        let done = json!({"status":"completed","output":[
+            {"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}
+        ]});
+        let (url, server) = fixture(vec![(200, done.clone()), (200, done)]).await;
+        let config = config(Provider::Openai, url);
+        let mut backend = ApiBackend::new(&config).unwrap().unwrap();
+        let tools = tools();
+        assert!(matches!(
+            backend.next(&selected, None, &tools).await.unwrap(),
+            Action::Done
+        ));
+        let feedback = json!({
+            "error":"review_not_saved",
+            "experience_id":selected.experience.id,
+            "guidance":"Submit review_experience for the selected revision."
+        });
+        assert!(matches!(
+            backend
+                .next(&selected, Some(&feedback), &tools)
+                .await
+                .unwrap(),
+            Action::Done
+        ));
+        let requests = server.await.unwrap();
+        let message = requests[1].body["input"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap();
+        assert_eq!(message["role"], "user");
+        assert_eq!(
+            serde_json::from_str::<Value>(message["content"].as_str().unwrap()).unwrap(),
+            feedback
+        );
     }
 
     #[tokio::test]

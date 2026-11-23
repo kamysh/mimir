@@ -38,7 +38,6 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   data Ordinary : T.Effect → Set where
     clock : Ordinary T.clock
-    reportTraceProblem : ∀ failure → Ordinary (T.reportTraceProblem failure)
 
   observation : Scoped.Failure ⊎ V.Value → Revision.Error ⊎ Maybe Observation.Snapshot
   observation (inj₁ failure) = inj₁ (T.scopedError failure)
@@ -60,8 +59,6 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
     toolStopped : ∀ before client events →
       (proof : Client.Runs (Client.dropClient client) events (inj₂ tt)) →
       Receipt before T.stopTool tt before
-    traceRecorded : ∀ before id kind name detail reply →
-      Receipt before (T.appendTrace id kind name detail) reply before
     ordinary : ∀ before effect reply → Ordinary effect → Receipt before effect reply before
 
   data Trace : BackendState → T.State → List (Maybe T.P.Event) → BackendState → T.State → Set where
@@ -81,7 +78,6 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
   issued (harnessResult _ _) = []
   issued (apiResult _ _ _) = []
   issued (unavailableResult _) = []
-  issued (traceRecorded _ _ _ _ _ _) = []
   issued (ordinary _ _ _ _) = []
 
   traceIssued : ∀ {backend before events after final} → Trace backend before events after final → List Client.Issued

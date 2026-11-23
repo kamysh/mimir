@@ -53,7 +53,8 @@ canContinue report with State.Report.blockReason report
 ... | nothing = false
 ... | just reason =
   is reason (toList "review_deferred") ∨
-  (is reason (toList "tool_rejected") ∧
+  is reason (toList "review_source_changed") ∨
+  ((is reason (toList "tool_rejected") ∨ is reason (toList "review_requires_repair")) ∧
     any (λ held → any (λ selected → does (selected ≟UUID State.Deferred.identity held))
       (State.Report.selectedIds report)) (State.Report.deferredReviews report))
 

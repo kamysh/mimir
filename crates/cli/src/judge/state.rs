@@ -11,15 +11,18 @@ const STATUS_FILE: &str = "judge-status.json";
 const FAILURE_FILE: &str = "judge-last-failure.json";
 const DIAGNOSTICS_FILE: &str = "judge-diagnostics.json";
 
-/// Complete private input that could not be parsed. It is never
-/// copied into notification mail or transition logs.
+/// A failure summary with an optional in-memory payload for the transcript.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SourceFailure {
     pub stage: String,
     pub detail: String,
     pub total_bytes: usize,
-    pub excerpt_start: usize,
+    #[serde(default, skip_serializing)]
     pub excerpt: String,
+}
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 impl SourceFailure {
@@ -28,7 +31,6 @@ impl SourceFailure {
             stage: stage.into(),
             detail: detail.into(),
             total_bytes: source.len(),
-            excerpt_start: 0,
             excerpt: String::from_utf8_lossy(source).into_owned(),
         }
     }
@@ -38,7 +40,6 @@ impl SourceFailure {
             stage: stage.into(),
             detail: error.to_string(),
             total_bytes: source.len(),
-            excerpt_start: 0,
             excerpt: String::from_utf8_lossy(source).into_owned(),
         }
     }
@@ -56,6 +57,17 @@ impl std::error::Error for SourceFailure {}
 pub struct DeferredReview {
     pub id: Uuid,
     pub revision: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repair: Option<RepairCase>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepairCase {
+    pub explanation: String,
+    pub detail: String,
+    pub diagnostic_id: Option<Uuid>,
+    #[serde(default)]
+    pub transcript_pending: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -93,6 +105,8 @@ pub struct Report {
     pub failure_source: Option<SourceFailure>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diagnostics_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub transcripts_pending: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub selected_ids: Vec<Uuid>,
     pub selected: usize,
@@ -102,6 +116,10 @@ pub struct Report {
     pub unavailable: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deferred_reviews: Vec<DeferredReview>,
+    /// Reports written before guided recovery must give every held pin a
+    /// fresh selection under the new correction rules.
+    #[serde(default)]
+    pub guided_repair: bool,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub notification: String,
     pub recorded_at: u64,
@@ -176,33 +194,9 @@ fn now() -> u64 {
         .map_or(0, |time| time.as_secs())
 }
 
-impl DiagnosticEvent {
-    pub fn new(
-        experience_id: Uuid,
-        kind: &str,
-        model_requests: usize,
-        tool_attempts: usize,
-        tool: Option<&str>,
-        detail: Option<&str>,
-    ) -> Self {
-        Self {
-            at: now(),
-            experience_id,
-            kind: kind.into(),
-            model_requests: Some(model_requests),
-            tool_attempts: Some(tool_attempts),
-            tool: tool.map(str::to_owned),
-            detail: detail.map(str::to_owned),
-            detail_bytes: detail.map(str::len),
-        }
-    }
-}
-
 impl Report {
     pub fn stamp(&mut self) {
-        self.recorded_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |time| time.as_secs());
+        self.recorded_at = now();
     }
 
     pub fn new(
@@ -220,6 +214,7 @@ impl Report {
             failure_detail: None,
             failure_source: None,
             diagnostics_id: None,
+            transcripts_pending: 0,
             selected_ids: Vec::new(),
             selected,
             confirmed,
@@ -227,6 +222,7 @@ impl Report {
             pending,
             unavailable,
             deferred_reviews: Vec::new(),
+            guided_repair: true,
             notification: "disabled".into(),
             recorded_at: 0,
         };
@@ -239,6 +235,13 @@ impl Report {
             if let Some(source) = error.downcast_ref::<SourceFailure>() {
                 self.failure_source = Some(source.clone());
             }
+        }
+    }
+
+    pub(super) fn preserve_deferrals(&mut self, path: &Path) {
+        if let Ok(Some(previous)) = read(path) {
+            self.guided_repair = previous.guided_repair;
+            self.deferred_reviews = previous.deferred_reviews;
         }
     }
 }
@@ -369,58 +372,6 @@ impl State {
 
     pub fn write_runtime(&self, value: &serde_json::Value) -> Result<()> {
         self.write_named("judge-runtime.json", value)
-    }
-
-    pub fn begin_trace(&self, report: &Report, initial_count: usize) -> Result<Uuid> {
-        let mut diagnostics = read_diagnostics(&self.path)?;
-        for trace in &mut diagnostics.attempts {
-            if trace.status == "running" {
-                trace.status = "interrupted".into();
-                trace.finished_at = Some(now());
-            }
-        }
-        let id = Uuid::new_v4();
-        diagnostics.attempts.push(DiagnosticTrace {
-            id,
-            started_at: now(),
-            finished_at: None,
-            status: "running".into(),
-            block_reason: None,
-            selected_ids: report.selected_ids.clone(),
-            model_requests: Some(initial_count),
-            tool_attempts: Some(initial_count),
-            events: Vec::new(),
-            events_omitted: 0,
-        });
-        self.write_named_limited(DIAGNOSTICS_FILE, &diagnostics, None)?;
-        Ok(id)
-    }
-
-    pub fn trace_event(&self, id: Uuid, event: DiagnosticEvent) -> Result<()> {
-        let mut diagnostics = read_diagnostics(&self.path)?;
-        let trace = diagnostics
-            .attempts
-            .iter_mut()
-            .find(|trace| trace.id == id && trace.status == "running")
-            .ok_or_else(|| anyhow!("active diagnostic trace is missing"))?;
-        trace.model_requests = event.model_requests;
-        trace.tool_attempts = event.tool_attempts;
-        trace.events.push(event);
-        self.write_named_limited(DIAGNOSTICS_FILE, &diagnostics, None)
-    }
-
-    pub fn finish_trace(&self, id: Uuid, report: &Report) -> Result<()> {
-        let mut diagnostics = read_diagnostics(&self.path)?;
-        let index = diagnostics
-            .attempts
-            .iter()
-            .position(|trace| trace.id == id)
-            .ok_or_else(|| anyhow!("diagnostic trace is missing"))?;
-        let trace = &mut diagnostics.attempts[index];
-        trace.status = report.status.clone();
-        trace.block_reason = report.block_reason.clone();
-        trace.finished_at = Some(now());
-        self.write_named_limited(DIAGNOSTICS_FILE, &diagnostics, None)
     }
 
     pub fn record_incident(&self, report: &Report) -> Result<()> {
@@ -725,21 +676,12 @@ mod tests {
             incident.latest.as_ref().unwrap().block_reason.as_deref(),
             Some("backend_error")
         );
-        assert_eq!(
-            incident
-                .latest
-                .as_ref()
-                .unwrap()
-                .failure_source
-                .as_ref()
-                .unwrap()
-                .excerpt,
-            "{\"review\": }"
-        );
-        assert_eq!(
-            incident.first.failure_source.as_ref().unwrap().excerpt,
-            "{\"review\": }"
-        );
+        for report in [&incident.first, incident.latest.as_ref().unwrap()] {
+            let source = report.failure_source.as_ref().unwrap();
+            assert_eq!(source.stage, "invalid harness tool arguments");
+            assert_eq!(source.total_bytes, malformed.len());
+            assert!(source.excerpt.is_empty());
+        }
         let incident_mode = fs::metadata(dir.join(FAILURE_FILE))
             .unwrap()
             .permissions()
@@ -773,7 +715,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_source_is_complete_including_the_error() {
+    fn malformed_source_retains_parser_error_without_payload() {
         let source = format!("{{\"items\":[{}]}}", "0,".repeat(100_000));
         let error = serde_json::from_str::<serde_json::Value>(&source)
             .err()
@@ -781,87 +723,43 @@ mod tests {
         let failure = SourceFailure::json("invalid response", source.as_bytes(), error);
         assert_eq!(failure.total_bytes, source.len());
         assert_eq!(failure.excerpt, source);
-        assert_eq!(failure.excerpt_start, 0);
-        assert!(failure.excerpt.contains("]}"));
+        assert!(!serde_json::to_value(&failure)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("excerpt"));
     }
 
     #[test]
     fn legacy_remaining_budget_is_not_reported_as_work_performed() {
         let id = Uuid::new_v4();
-        let event = DiagnosticEvent::new(id, "model_request", 25, 26, None, None);
-        let mut wire = serde_json::to_value(event).unwrap();
-        wire.as_object_mut().unwrap().remove("model_requests");
-        wire.as_object_mut().unwrap().remove("tool_attempts");
-        wire["model_remaining"] = serde_json::json!(5);
-        wire["tool_remaining"] = serde_json::json!(6);
+        let wire = serde_json::json!({
+            "at":0, "experience_id":id, "kind":"model_request",
+            "model_remaining":5, "tool_remaining":6
+        });
         let decoded: DiagnosticEvent = serde_json::from_value(wire).unwrap();
         assert_eq!(decoded.model_requests, None);
         assert_eq!(decoded.tool_attempts, None);
     }
 
     #[test]
-    fn diagnostic_trace_is_private_complete_and_survives_success() {
+    fn existing_diagnostics_remain_readable_only_as_private_files() {
         let dir = std::env::temp_dir().join(format!("mimir-judge-trace-{}", Uuid::new_v4()));
-        let state = State::lock(dir.clone()).unwrap().unwrap();
-        let experience_id = Uuid::new_v4();
-        let mut failed = Report::new("blocked", 1, 0, 0, 1, 0);
-        failed.selected_ids.push(experience_id);
-        failed.block_reason = Some("model_budget_exhausted".into());
-        let id = state.begin_trace(&failed, 5).unwrap();
-        failed.diagnostics_id = Some(id);
-        for _ in 0..80 {
-            state
-                .trace_event(
-                    id,
-                    DiagnosticEvent::new(
-                        experience_id,
-                        "model_request",
-                        0,
-                        1,
-                        None,
-                        Some(&"x".repeat(4096)),
-                    ),
-                )
-                .unwrap();
-        }
-        state.finish_trace(id, &failed).unwrap();
-        state.record_incident(&failed).unwrap();
-        let completed = Report::new("complete", 1, 1, 0, 0, 0);
-        let later_id = state.begin_trace(&completed, 5).unwrap();
-        state.finish_trace(later_id, &completed).unwrap();
-        let diagnostics = read_diagnostics(&dir).unwrap();
-        assert_eq!(diagnostics.attempts.len(), 2);
-        let trace = &diagnostics.attempts[0];
-        assert_eq!(trace.id, id);
-        assert_eq!(trace.events.len(), 80);
-        assert_eq!(trace.events_omitted, 0);
-        assert_eq!(trace.events[0].detail_bytes, Some(4096));
-        assert_eq!(trace.events[0].detail.as_ref().unwrap().len(), 4096);
-        assert_eq!(
-            trace.block_reason.as_deref(),
-            Some("model_budget_exhausted")
-        );
-        assert_eq!(
-            read_failure(&dir).unwrap().unwrap().first.diagnostics_id,
-            Some(id)
-        );
-        for _ in 0..10 {
-            let newer_id = state.begin_trace(&failed, 5).unwrap();
-            state.finish_trace(newer_id, &failed).unwrap();
-            let mut newer = failed.clone();
-            newer.diagnostics_id = Some(newer_id);
-            state.record_incident(&newer).unwrap();
-        }
-        let retained = read_diagnostics(&dir).unwrap();
-        assert_eq!(retained.attempts.len(), 12);
-        assert!(retained.attempts.iter().any(|trace| trace.id == id));
+        let _state = State::lock(dir.clone()).unwrap().unwrap();
+        let attempt = Uuid::new_v4();
         let path = dir.join(DIAGNOSTICS_FILE);
-        let metadata = fs::metadata(&path).unwrap();
-        assert_eq!(metadata.permissions().mode() & 0o077, 0);
-        assert!(metadata.len() > 256 * 1024);
+        fs::write(
+            &path,
+            serde_json::json!({"attempts":[{
+                "id":attempt,"started_at":0,"status":"complete","selected_ids":[],"events":[]
+            }]})
+            .to_string(),
+        )
+        .unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(read_diagnostics(&dir).unwrap().attempts[0].id, attempt);
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
         assert!(read_diagnostics(&dir).is_err());
-        drop(state);
         fs::remove_dir_all(dir).unwrap();
     }
 }

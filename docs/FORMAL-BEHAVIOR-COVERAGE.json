@@ -3,7 +3,7 @@
   "scope": "Application behavior, with standard libraries supplied externally; see the current value audit and historical verification receipt separately.",
   "counts": {
     "mcp": 34,
-    "cli_leaves": 30,
+    "cli_leaves": 31,
     "lifecycle_groups": 7
   },
   "mcp": [
@@ -1564,6 +1564,20 @@
       ],
       "status": "partially-specified",
       "remaining": "Recovery and public-entry coverage are checked by the registered controllers and structural coverage check. Rust conformance and installed-application verification remain pending; statistics, library algorithms and formatting are outside this recovery task."
+    },
+    {
+      "name": "judge repair",
+      "source": "crates/cli/src/judge/repair.rs",
+      "step": 4,
+      "existing_modules": [],
+      "completion_modules": [
+        "spec/Mimir/CLI.agda",
+        "spec/Mimir/JudgeHostProtocol.lagda.md",
+        "spec/Mimir/ReviewObservation.agda",
+        "spec/Mimir/NotificationIncident.agda"
+      ],
+      "status": "partially-specified",
+      "remaining": "Rust correspondence is checked by isolated recovery tests."
     },
     {
       "name": "judge diagnose",

@@ -316,6 +316,7 @@ pub fn check() -> Result<()> {
         "allocation",
         "workEvents",
         "experienceAllocation",
+        "reviewTranscripts",
     ];
     let mut sql = Vec::new();
     files(

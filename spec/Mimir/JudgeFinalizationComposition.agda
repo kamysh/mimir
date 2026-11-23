@@ -19,7 +19,6 @@ module Bound where
 
   Receipt : (effect : Finalization.Effect) → Finalization.Reply effect → Set
   Receipt Finalization.clock reply = ⊤
-  Receipt (Finalization.finishTrace id report) reply = ⊤
   Receipt (Finalization.reportProblem whereFailed detail) reply = ⊤
   Receipt (Finalization.recordIncident report confirmation) reply = State.IncidentExecution report confirmation reply
   Receipt (Finalization.writeStatus report) reply = ⊤

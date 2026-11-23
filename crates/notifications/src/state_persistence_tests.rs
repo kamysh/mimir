@@ -128,7 +128,7 @@ fn all_named_files_survive_restart_without_reading_orphan_temporary_files() {
     state.write(&"outbox").unwrap();
     state.write_oauth(&"oauth").unwrap();
     state.write_digest(&"digest").unwrap();
-    assert!(StateDir::lock(&directory.0).is_err());
+    assert!(StateDir::try_lock(&directory.0).is_err());
     let orphan = directory.0.join(".notification-orphan.tmp");
     fs::write(&orphan, b"unfinished JSON {").unwrap();
     drop(state);

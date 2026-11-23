@@ -7,7 +7,7 @@ open import Data.List using (List; []; _∷_; map; length)
 open import Data.List.Relation.Unary.All using (All; []; _∷_)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; _≤_; z≤n; s≤s; _≟_)
-open import Data.Nat.Properties using (m≤n⇒m≤1+n; ≤-trans)
+open import Data.Nat.Properties using (m≤n⇒m≤1+n)
 open import Data.Integer using (+_)
 import Data.Integer.Properties as Integer
 open import Data.Product using (_×_; _,_; Σ-syntax)
@@ -20,7 +20,7 @@ open import Mimir.Text using (Text)
 open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Mimir.Validation
 open import Mimir.RecordDecoding using (_>>=_)
-open import Mimir.Collections using (module Equality; atMost; checkCount)
+open import Mimir.Collections using (module Equality)
 open import Mimir.RevisionBounds using (i64Maximum)
 open import Mimir.ExperienceSchema using (Experience)
 import Mimir.ReviewObservation as Observation
@@ -38,11 +38,10 @@ validate d = combine
   (check (fault [] staleRevision "deferred source revision exceeds i64") (Deferred.revision d Integer.≤? (+ i64Maximum)))
 
 ListValid : List Deferred → Set
-ListValid ds = atMost 1000 ds × (All Valid ds × IDs.Unique (map Deferred.identity ds))
+ListValid ds = All Valid ds × IDs.Unique (map Deferred.identity ds)
 
 validateList : ∀ ds → Checked (ListValid ds)
-validateList ds = combine (checkCount 1000 ds)
-  (combine (allChecked validate ds) (IDs.checkUnique (map Deferred.identity ds)))
+validateList ds = combine (allChecked validate ds) (IDs.checkUnique (map Deferred.identity ds))
 
 Identity : Deferred → Snapshot → Set
 Identity d s = Deferred.identity d ≡ Experience.identity (Snapshot.experience s)
@@ -139,8 +138,8 @@ uniqueIDsPreserved (held received kept rest) (absent , unique) = absentIDsPreser
 uniqueIDsPreserved (removed received dropped rest) (absent , unique) = uniqueIDsPreserved rest unique
 
 validOutput : ∀ {scope read before after} → Reconciled scope read before after → ListValid before → ListValid after
-validOutput proof (bounded , valid , unique) =
-  ≤-trans (countDoesNotGrow proof) bounded , retainsAll proof valid , uniqueIDsPreserved proof unique
+validOutput proof (valid , unique) =
+  retainsAll proof valid , uniqueIDsPreserved proof unique
 
 checkedReconcile : ∀ scope before read →
   Fault ⊎ (Σ[ after ∈ List Deferred ] (Reconciled scope read before after × ListValid after))

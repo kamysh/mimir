@@ -63,14 +63,25 @@ fn ensure_dir(path: &Path) -> Result<()> {
 
 impl StateDir {
     pub(crate) fn lock(path: &Path) -> Result<Self> {
-        Self::lock_named(path, "notification.lock")
+        // The outbox lock covers only local reads and writes. Queueing and
+        // delivery must serialize instead of discarding a wake on contention.
+        Self::lock_named(path, "notification.lock", libc::LOCK_EX)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn try_lock(path: &Path) -> Result<Self> {
+        Self::lock_named(path, "notification.lock", libc::LOCK_EX | libc::LOCK_NB)
     }
 
     pub(crate) fn lock_oauth(path: &Path) -> Result<Self> {
-        Self::lock_named(path, "notification-oauth.lock")
+        Self::lock_named(
+            path,
+            "notification-oauth.lock",
+            libc::LOCK_EX | libc::LOCK_NB,
+        )
     }
 
-    fn lock_named(path: &Path, name: &str) -> Result<Self> {
+    fn lock_named(path: &Path, name: &str, flags: libc::c_int) -> Result<Self> {
         ensure_dir(path)?;
         let lock = OpenOptions::new()
             .read(true)
@@ -86,9 +97,14 @@ impl StateDir {
                 && meta.permissions().mode() & 0o077 == 0,
             "unsafe notification lock"
         );
-        let result = unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-        if result != 0 {
-            return Err(anyhow!("notification outbox is busy"));
+        loop {
+            if unsafe { libc::flock(lock.as_raw_fd(), flags) } == 0 {
+                break;
+            }
+            let error = std::io::Error::last_os_error();
+            if error.kind() != std::io::ErrorKind::Interrupted {
+                return Err(error.into());
+            }
         }
         Ok(Self {
             path: path.to_owned(),

@@ -3,11 +3,12 @@ module Mimir.LearningCandidates where
 
 open import Data.Bool using (Bool; true; false)
 open import Data.Empty using (⊥)
-open import Data.List using (List; []; _∷_)
+open import Data.List using (List; []; _∷_; _++_)
 open import Data.Maybe using (Maybe; just; nothing)
 import Data.Maybe.Properties as MaybeProps
 open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Data.Product using (_×_; _,_)
+open import Data.String using (toList)
 open import Data.Unit using (⊤; tt)
 open import Relation.Nullary using (Dec; yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl)
@@ -106,7 +107,9 @@ TargetValid candidates (candidate name) = Keys.Present name (beliefKeys candidat
 validateTarget : ∀ candidates target → Checked (TargetValid candidates target)
 validateTarget candidates (existing id) = accepted tt
 validateTarget candidates (candidate name) = check
-  (fault [] missingReference "candidate belief must be declared in this review")
+  (problem (key "candidate_key" ∷ []) missingReference
+    (toList "Declare the belief candidate named " ++ name ++
+      toList " in this review, use the UUID of an existing belief, or remove the unsupported reference."))
   (Keys.present? name (beliefKeys candidates))
 
 targetEqual : (x y : Target) → Dec (x ≡ y)
