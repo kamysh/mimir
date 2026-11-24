@@ -47,11 +47,12 @@ case "$operation" in
             } > "$output")
         ;;
     cancel)
-        ready= report= stderr_ready=
+        ready= report= stderr_ready= held_revision=
         while (($#)); do
             case $1 in
                 --ready) ready=${2:?}; shift 2 ;;
                 --report) report=${2:?}; shift 2 ;;
+                --held-review) held_revision=${2:?}; shift 2 ;;
                 --stderr-ready) stderr_ready=${2:?}; shift 2 ;;
                 --) shift; break ;;
                 *) echo "Unknown cancellation option: $1" >&2; exit 2 ;;
@@ -76,7 +77,8 @@ case "$operation" in
         }
         trap cleanup_child EXIT INT TERM
         for ((i=0; i<1200; i++)); do
-            if [[ -e $ready ]] && { [[ -z $stderr_ready ]] || grep -Fq -- "$stderr_ready" "$stderr"; }; then break; fi
+            if [[ -e $ready ]] && { [[ -z $stderr_ready ]] || grep -Fq -- "$stderr_ready" "$stderr"; } &&
+                { [[ -z $held_revision ]] || jq -e --arg id "$held_revision" '.selected == 0 and any(.deferred_reviews[]?; .id == $id and .repair.remedy == "choose_backend")' "$ready" >/dev/null; }; then break; fi
             kill -0 "$child" 2>/dev/null || { echo 'Judge exited before fixture readiness' >&2; exit 1; }
             sleep 0.05
         done

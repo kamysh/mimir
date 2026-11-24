@@ -273,6 +273,16 @@ impl<'a> ApiBackend<'a> {
             }
         })?;
         let status = response.status();
+        if matches!(status.as_u16(), 429 | 503) {
+            if let Some(after) = response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(super::recovery::ProviderReset::from_header)
+            {
+                return Err(after.into());
+            }
+        }
         let mut bytes = Vec::new();
         while let Some(chunk) = response
             .chunk()

@@ -53,12 +53,11 @@ A snapshot is historical evidence, not proof that a process is currently alive.
 With a custom configuration or state directory, pass `--config PATH` and/or
 `--state-dir PATH` to select the same installation as the watcher.
 
-The daily email includes a cause, batch impact, next action and this diagnostic
-command. A backlog is work still awaiting review. Successful batches continue
-immediately. If a rejected review is deferred after readback, the watcher
-records the reason and immediately checks for other work. When the queue is
-empty or all remaining reviews are deferred, it waits for PostgreSQL
-notifications.
+The daily email shows the backlog, the watcher’s next action and a repair
+command for each review that needs a decision. If the judge exits unexpectedly,
+Mimir checks whether PostgreSQL already saved the review. If the revision is
+still pending, the watcher gives other ready reviews their turn and starts
+a fresh attempt from the stored source. New arrivals go behind that turn.
 
 When a review needs an operator decision, Mimir queues an alert as soon as the
 problem is detected. Its email has the experience UUID, source revision,
@@ -80,6 +79,13 @@ from the alert and include the same configuration and state options when the
 alert supplies them. Inspect the current source if the command reports a newer
 revision. A successful repair reports `confirmed` after PostgreSQL readback.
 
+If a fresh judge exits again without a recovery signal, the repair command
+explains which backend stopped. Choose **edit settings** to select a working
+backend, or restore the configured account and choose **verify**. The command
+checks the source and runs the review. If the tool could not read the result,
+repair verifies access before allowing another submission. Closing the dialog
+leaves that revision pending. Other reviews can continue.
+
 If PostgreSQL refuses the connection at startup or a work subscription drops,
 the watcher retries every five seconds until it reconnects. For example, if
 Mimir starts before PostgreSQL after a reboot, the delay avoids a tight loop
@@ -93,8 +99,9 @@ For failures that require a repair, correct the reported problem and edit the
 configuration or send `kill -HUP WATCHER_PID` to start a fresh attempt. When
 the model provider declares a usage limit with a usable reset time, the
 watcher schedules one retry at that time. The report records the provider's
-message as `provider_usage_limit`. If the message carries no usable reset
-time, the watcher waits for a configuration change or SIGHUP.
+message as `provider_usage_limit`. An HTTP provider can also supply a
+`Retry-After` header. Without a recovery signal, a repeated failure opens
+the review-specific repair described above.
 Configuration changes are observed through file events.
 
 Common cases:
@@ -103,7 +110,7 @@ Common cases:
 | --- | --- |
 | Missing/incompatible configuration | Run `mimir config check`; upgrade missing operational settings as above. |
 | PostgreSQL unavailable | The running watcher retries automatically. Check database availability if the condition persists. |
-| Source quotation rejected | The proposed quotation differs from the stored source, including literal JSON escapes. The judge receives the exact field path and correction explanation. Keep exact-quotation validation enabled. Persistent failure belongs in a bug report. |
+| Source quotation rejected | The judge receives the field path and expected correction. If it repeats the same defect, open the repair command in the alert to supply the corrected review. |
 | Historical deadline/request-budget failure | This can appear in retained reports from an older binary. The current judge imposes neither limit. Run `mimir config upgrade`, check configuration, restart the existing application, and inspect a fresh attempt. |
 | Tool/database error | Run `mimir judge diagnose` for the cause and next action. Mimir reads the review back to determine what committed. |
 

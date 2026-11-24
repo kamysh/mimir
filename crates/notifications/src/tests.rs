@@ -548,6 +548,45 @@ async fn progress_keeps_failure_incident_open_until_idle_recovery() {
 }
 
 #[tokio::test]
+async fn corrected_delivery_must_be_accepted_to_clear_an_exhausted_alert() {
+    let mut config = config();
+    config.max_attempts = 1;
+    let path = directory();
+    let notifier = Notifier::new(&config, &path).unwrap();
+    let event = failure("judge-review", "review/fixture/1", "review_requires_repair");
+    assert_eq!(
+        notifier
+            .submit_with(&event, 100, |_| async { Err(SendFailure::AuthRequired) })
+            .await
+            .unwrap(),
+        Outcome::Exhausted
+    );
+    let id = notifier.pending_ids().unwrap().into_iter().next().unwrap();
+    assert_eq!(
+        notifier
+            .deliver(
+                &event.map_key(),
+                101,
+                Some(|_| async { Err(SendFailure::AuthRequired) }),
+                Some(&id)
+            )
+            .await
+            .unwrap(),
+        Outcome::Exhausted
+    );
+    assert!(notifier.pending_ids().unwrap().contains(&id));
+    assert_eq!(
+        notifier
+            .deliver(&event.map_key(), 102, Some(|_| async { Ok(()) }), Some(&id))
+            .await
+            .unwrap(),
+        Outcome::Sent
+    );
+    assert!(notifier.pending_ids().unwrap().is_empty());
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[tokio::test]
 async fn exhaustion_and_latest_status_replacement_are_per_incident() {
     let config = config();
     let path = directory();
