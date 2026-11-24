@@ -20,6 +20,7 @@ open import Mimir.Text using (Text)
 open import Mimir.SourceReview using (_≟Text_)
 import Mimir.ExperienceSchema as Experience
 import Mimir.ReviewObservation as Observation
+import Mimir.DeferredReviews as Holds
 import Mimir.JudgeHost as Host
 import Mimir.JudgeHandshake as Handshake
 import Mimir.Validation as Validation
@@ -109,17 +110,17 @@ module Select (contract model : ℕ) (batchLimit : Maybe ℕ) (project : Maybe T
 
     afterCurrent : Observation.Deferred → List Observation.Deferred → List Observation.Deferred →
       Revision.Error ⊎ Maybe Observation.Snapshot → Script Result
-    afterCurrent item remaining retained (inj₁ failureValue) = done (failed (Host.restoreToolClient (Revision.Error.detail failureValue)) failureValue)
-    afterCurrent item remaining retained (inj₂ nothing) = reconcile remaining retained
-    afterCurrent item remaining retained (inj₂ (just observed)) with Observation.checkSnapshot observed
-    ... | Validation.rejected fault invalid = done (malformed fault)
-    ... | Validation.accepted valid with inScope project observed ∧ does (Observation.stillDeferred? item observed)
-    ...   | true = reconcile remaining (retained ++ (item ∷ []))
-    ...   | false = reconcile remaining retained
+    -- Failure to verify one open repair case keeps just that case on hold.
+    -- The pending-work query still runs for the other revisions.
+    afterCurrent item remaining retained (inj₁ problem) = reconcile remaining (retained ++ item ∷ [])
+    afterCurrent item remaining retained (inj₂ observed) with Holds.reconcileOne project item observed
+    ... | inj₁ fault = reconcile remaining (retained ++ item ∷ [])
+    ... | inj₂ (Holds.keep _ evidence) = reconcile remaining (retained ++ item ∷ [])
+    ... | inj₂ (Holds.drop evidence) = reconcile remaining retained
 
   start : Script Result
   start = ask previousDeferred (λ
-    { (inj₁ failureValue) → done (failed (Host.restoreStateAccess (Revision.Error.detail failureValue)) failureValue) ; (inj₂ retained) → reconcile retained [] })
+    { (inj₁ failureValue) → done (failed (Host.restoreDatabaseSetup (Revision.Error.detail failureValue)) failureValue) ; (inj₂ retained) → reconcile retained [] })
 
   completedSelectionIsEligible : ∀ events chosen → Runs start events (selected chosen) →
     All (Pending.Eligible (map Observation.Deferred.identity (Prepared.deferred chosen))) (Prepared.batch chosen)
@@ -139,24 +140,16 @@ module Select (contract model : ℕ) (batchLimit : Maybe ℕ) (project : Maybe T
   -- Model execution is available only for review. Both empty-queue outcomes
   -- finish before trace allocation, backend.next or provider budget spending.
 
-  unchangedPendingRevisionRemainsDeferred : ∀ item remaining retained observed →
-    Observation.SnapshotValid observed → inScope project observed ≡ true → Observation.StillDeferred item observed →
-    afterCurrent item remaining retained (inj₂ (just observed)) ≡ reconcile remaining (retained ++ (item ∷ []))
-  unchangedPendingRevisionRemainsDeferred item remaining retained observed valid scoped deferred
-    with Observation.checkSnapshot observed
-  ... | Validation.rejected fault invalid = ⊥-elim (invalid valid)
-  ... | Validation.accepted checked with Observation.stillDeferred? item observed
-  ...   | yes still rewrite scoped = refl
-  ...   | no impossible = ⊥-elim (impossible deferred)
+  caseReadFailureIsLocal : ∀ item remaining retained problem →
+    afterCurrent item remaining retained (inj₁ problem) ≡ reconcile remaining (retained ++ item ∷ [])
+  caseReadFailureIsLocal item remaining retained problem = refl
 
-  changedOrReviewedRevisionIsReleased : ∀ item remaining retained observed →
-    Observation.SnapshotValid observed → (Observation.StillDeferred item observed → Data.Empty.⊥) →
-    afterCurrent item remaining retained (inj₂ (just observed)) ≡ reconcile remaining retained
-  changedOrReviewedRevisionIsReleased item remaining retained observed valid released
-    with Observation.checkSnapshot observed
-  ... | Validation.rejected fault invalid = ⊥-elim (invalid valid)
-  ... | Validation.accepted checked with Observation.stillDeferred? item observed
-  ...   | yes still = ⊥-elim (released still)
-  ...   | no different with inScope project observed
-  ...     | false = refl
-  ...     | true = refl
+  unchangedPendingRevisionRemainsDeferred : ∀ item remaining retained observed kept →
+    Holds.reconcileOne project item (just observed) ≡ inj₂ (Holds.keep observed kept) →
+    afterCurrent item remaining retained (inj₂ (just observed)) ≡ reconcile remaining (retained ++ item ∷ [])
+  unchangedPendingRevisionRemainsDeferred item remaining retained observed kept checked rewrite checked = refl
+
+  changedOrReviewedRevisionIsReleased : ∀ item remaining retained observed dropped →
+    Holds.reconcileOne project item observed ≡ inj₂ (Holds.drop dropped) →
+    afterCurrent item remaining retained (inj₂ observed) ≡ reconcile remaining retained
+  changedOrReviewedRevisionIsReleased item remaining retained observed dropped checked rewrite checked = refl

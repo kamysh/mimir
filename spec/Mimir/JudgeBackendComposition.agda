@@ -46,16 +46,26 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
   ... | inj₁ failure = inj₁ (T.scopedError failure)
   ... | inj₂ selected = inj₂ (just selected)
 
+  -- External receipts for the owned model invocation. An HTTP request has
+  -- released its local resources; an owned process has exited and been
+  -- reaped. An adapter that never acquired a process has nothing to stop.
+  data Released : BackendState → Set where
+    processAbsent : Released harness
+    processStopped : ∀ child events → Client.Runs (Client.dropChild child) events (inj₂ tt) → Released harness
+    requestReleased : ∀ provider → Released (api provider)
+    absentAdapter : Released unavailable
+
   data Receipt : BackendState → (effect : T.Effect) → T.Reply effect → BackendState → Set where
     harnessResult : ∀ last result → Receipt harness (T.nextModel last) result harness
     apiResult : ∀ provider last result → Receipt (api provider) (T.nextModel last) result (api provider)
     unavailableResult : ∀ last → Receipt unavailable (T.nextModel last)
-      (Revision.backendError (Revision.error (toList "configured backend adapter is not installed") nothing)) unavailable
+      (Revision.backendUnavailable (Revision.error (toList "configured backend adapter is not installed") nothing)) unavailable
     serviceCall : ∀ before id tool args reply → S.Receipt id tool args reply →
       Receipt before (T.hostTool (Scoped.call tool args)) reply before
     serviceObservation : ∀ before id reply →
       S.Receipt id Catalog.getExperience (T.Scope.byID T.Scope.canonicalID) reply →
       Receipt before T.observe (observation reply) before
+    backendReleased : ∀ before → Released before → Receipt before T.releaseBackend tt before
     toolStopped : ∀ before client events →
       (proof : Client.Runs (Client.dropClient client) events (inj₂ tt)) →
       Receipt before T.stopTool tt before
@@ -74,6 +84,7 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
   issued : ∀ {before effect reply after} → Receipt before effect reply after → List Client.Issued
   issued (serviceCall before id tool args reply receipt) = S.issued receipt ∷ []
   issued (serviceObservation before id reply receipt) = S.issued receipt ∷ []
+  issued (backendReleased _ _) = []
   issued (toolStopped before ownedClient events proof) = Client.stoppedClient ownedClient events proof ∷ []
   issued (harnessResult _ _) = []
   issued (apiResult _ _ _) = []

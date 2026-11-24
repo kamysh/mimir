@@ -1,7 +1,6 @@
 {-# OPTIONS --safe #-}
--- Selection and final readback share the actual public MCP service. Retained
--- deferrals come from the persisted status report; raw parse failures retain
--- their original bounded source evidence for final diagnostics.
+-- Selection and final readback share the actual public MCP service. Active holds come
+-- from repair cases. Parse failures retain their source evidence.
 module Mimir.JudgeBatchServiceBinding where
 
 open import Data.List using (List; []; _∷_; _++_; map)
@@ -18,6 +17,7 @@ import Mimir.StandardLibrary as Conversion
 import Mimir.PublicEncoding as Encoding
 import Mimir.ApplicationProtocol as Application
 import Mimir.JudgeRevision as Revision
+import Mimir.JudgeRevisionPolicy as Recovery
 import Mimir.JudgeServiceBinding as Service
 import Mimir.JudgeScopedTools as Scope
 import Mimir.JudgeSelection as Selection
@@ -69,11 +69,11 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
   ... | inj₁ failure = inj₁ (sourceError "invalid pending batch" value failure)
   ... | inj₂ snapshots = inj₂ snapshots
 
-  previous : Text ⊎ Maybe State.R.Report → Revision.Error ⊎ List Observation.Deferred
+  -- Only unresolved repair cases exclude a source revision. An interrupted
+  -- batch or a failed status-file write cannot erase them.
+  previous : Text ⊎ List Recovery.ObservedCase → Revision.Error ⊎ List Observation.Deferred
   previous (inj₁ detail) = inj₁ (Revision.error detail nothing)
-  previous (inj₂ nothing) = inj₂ []
-  previous (inj₂ (just report)) = inj₂ (map (λ item → Observation.deferred
-    (State.R.Deferred.identity item) (State.R.Deferred.revision item)) (State.R.Report.deferredReviews report))
+  previous (inj₂ cases) = inj₂ (Recovery.exclusions cases)
 
   byID : UUIDValue.UUID → V.Value
   byID id = Encoding.object (("id" , V.string (Encoding.Formatting.uuidText format id)) ∷ [])

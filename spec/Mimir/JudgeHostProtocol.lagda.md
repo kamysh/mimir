@@ -46,12 +46,12 @@ corrected draft. A refusal cannot save a review or advance its revision.
 If the selected revision is still pending and the correction cannot be
 applied, leave a repair case and process other eligible work.
 
-For the deferred reviews carried forward from 3.2.0, the first run with
-the corrected judge rechecks each revision in PostgreSQL. Revisions still
-pending are eligible for a fresh attempt using the applicable correction
-above. Keep the stored experience and the diagnostic. Restart review
-preparation from the stored source. The review's ordinary transactional
-publication applies when it is ready.
+Only an unresolved case with a concrete remedy can keep a source revision
+on hold. The watcher reconstructs those holds from the repair cases. An
+old status report alone cannot prevent a review from running. The failed
+attempt's transcript remains available. Each fresh attempt begins with the
+stored source. [Failed reviews](JudgeRevisionPolicy.lagda.md) describes the
+order of fresh attempts and how a completed remedy releases a hold.
 
 ## Action required
 
@@ -142,7 +142,7 @@ open import Data.Bool using (Bool; true; false)
 open import Data.List using (List; []; _∷_; _++_)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ)
-open import Data.Product using (Σ; _,_)
+open import Data.Product using (Σ; _×_; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
 open import Data.String using (toList)
@@ -155,6 +155,7 @@ import Mimir.ApplicationStore as Store
 import Mimir.JudgeConfiguration as Config
 import Mimir.JudgeConfigurationComposition as ConfigComposition
 import Mimir.JudgeRevision as Revision
+import Mimir.JudgeRevisionPolicy as Recovery
 import Mimir.JudgeBackendComposition as Backend
 import Mimir.JudgeServiceBinding as Service
 import Mimir.JudgeWorkflowComposition as Workflow
@@ -185,7 +186,10 @@ data Output : Set where
 
 -- Work notifications wake an idle watcher. A temporary database outage has
 -- its own retry event, which does not depend on an operator or a subscription.
-data WorkWake : Set where workAvailable configurationChanged explicitRetry : WorkWake
+data WorkWake : Set where
+  workAvailable configurationChanged explicitRetry : WorkWake
+  repairCompleted : (problem : Recovery.Case) →
+    Recovery.RemedyApplied (Recovery.Case.selected problem) (Recovery.Case.choice problem) → WorkWake
 data ReconnectWake : Set where retryDue configurationChanged explicitRetry : ReconnectWake
 data SubscriptionFailure : Set where
   configurationFailure databaseUnavailable databaseSetupFailure : Text → SubscriptionFailure
@@ -197,7 +201,7 @@ record WorkSubscription : Set where
 -- correction between diagnosis and registration is visible.
 data WakeCondition : Set where
   corrected : Host.Remedy → WakeCondition
-  lockReleased : WakeCondition
+  lockReleased providerAvailable : WakeCondition
   providerReset : ℕ → WakeCondition
 
 data RepairWake (condition : WakeCondition) : Maybe WorkSubscription → Set where
@@ -226,6 +230,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     harness : ∀ program → Config.Llm.backend config ≢ Config.api → Built config program Backend.harness
     api : ∀ provider → Config.Llm.backend config ≡ Config.api →
       Config.Llm.provider config ≡ just provider → Built config [] (Backend.api provider)
+
     unavailable : Config.Llm.backend config ≡ Config.api → Config.Llm.provider config ≡ nothing →
       Built config [] Backend.unavailable
 
@@ -241,11 +246,11 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     absent : Dropped nothing
     released : ∀ client events → Client.Runs (Client.dropClient client) events (inj₂ tt) → Dropped (just client)
 
-  data Executed (settings : Config.Runtime) (held : L.Locked) (configPath : Path.Path) : Host.Batch → Set where
+  data Executed (settings : Config.Runtime) (held : L.Locked) (configPath : Path.Path) (mode : Recovery.Selection) : Host.Batch → Set where
     completed : ∀ program before after events client report → Built (Config.Runtime.llm settings) program before →
-      W.Runs settings configPath before nothing (W.W.start settings configPath) events after client report → Dropped client → Executed settings held configPath report
+      W.Runs settings configPath before nothing (W.W.start settings configPath mode) events after client report → Dropped client → Executed settings held configPath mode report
     setupFailure : ∀ detail observed events report → BuildFailed (Config.Runtime.llm settings) detail →
-      F.Runs (Finalization.finish (setupReport observed detail) nothing) events report → Executed settings held configPath (Host.batch report (Host.whenCorrected (Host.selectWorkingBackend detail)))
+      F.Runs (Finalization.finish (setupReport observed detail) nothing) events report → Executed settings held configPath mode (Host.batch report (Host.whenCorrected (Host.selectWorkingBackend detail)))
 
   coreOf : C.Loaded → Core.Config
   coreOf loadedConfiguration = Config.Runtime.core
@@ -256,7 +261,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     prepareLog : C.Loaded → Effect
     acquire : Path.Path → Effect
     release : L.Locked → Effect
-    execute : Config.Runtime → L.Locked → Path.Path → Effect
+    execute : Config.Runtime → L.Locked → Path.Path → Recovery.Selection → Effect
     incident status : L.Locked → R.Report → Effect
     stdout : Output → Effect
     reportDiagnostic : Text → Effect
@@ -272,7 +277,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   Reply clock = Maybe ℕ
   Reply (acquire _) = L.FS.Result (Maybe L.Locked)
   Reply (release _) = ⊤
-  Reply (execute settings held configPath) = Host.Batch
+  Reply (execute settings held configPath mode) = Host.Batch
   Reply (incident held report) = Text ⊎ ⊤
   Reply (status held report) = Text ⊎ ⊤
   Reply (stdout _) = ⊤
@@ -319,47 +324,47 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     toList ". Restore access to the configured state directory and retry."
   stateProblem _ = toList "The judge state directory or lock is not usable. Check its type, ownership, and permissions."
 
-  afterLock : Bool → C.Loaded → Reply (acquire []) → Script Host.Outcome
-  afterLock watch loadedConfiguration (inj₁ failure) = ask (reportDiagnostic (stateProblem failure))
+  afterLock : Recovery.Selection → Bool → C.Loaded → Reply (acquire []) → Script Host.Outcome
+  afterLock mode watch loadedConfiguration (inj₁ failure) = ask (reportDiagnostic (stateProblem failure))
     (λ _ → failed watch stateUnavailable Host.unavailable (Host.whenCorrected (Host.restoreStateAccess (stateProblem failure))))
-  afterLock watch loadedConfiguration (inj₂ nothing) = ask (reportDiagnostic
+  afterLock mode watch loadedConfiguration (inj₂ nothing) = ask (reportDiagnostic
     (toList "Another judge holds the state lock. Let that judge finish before retrying."))
     (λ _ → failed watch alreadyRunning Host.alreadyRunning Host.whenLockReleased)
-  afterLock watch loadedConfiguration (inj₂ (just held)) =
+  afterLock mode watch loadedConfiguration (inj₂ (just held)) =
     let settings = Config.Validate.Admitted.settings (C.Loaded.configuration loadedConfiguration)
-    in ask (execute settings held (C.Loaded.path loadedConfiguration)) (λ result →
+    in ask (execute settings held (C.Loaded.path loadedConfiguration) mode) (λ result →
       emit watch (reportOutput (Host.Batch.report result)) >>= λ _ → ask (release held) (λ _ → done (Host.outcomeOf result)))
 
-  afterLogging : Bool → C.Loaded → Script Host.Outcome
-  afterLogging watch loadedConfiguration = ask resolveState λ where
+  afterLogging : Recovery.Selection → Bool → C.Loaded → Script Host.Outcome
+  afterLogging mode watch loadedConfiguration = ask resolveState λ where
     (inj₁ failure) → ask (reportDiagnostic (pathProblem failure))
       (λ _ → failed watch invalidStatePath Host.invalidConfig (Host.whenCorrected (Host.restoreStateAccess (pathProblem failure))))
-    (inj₂ resolvedPaths) → ask (acquire (StatePath.Resolved.path resolvedPaths)) (afterLock watch loadedConfiguration)
+    (inj₂ resolvedPaths) → ask (acquire (StatePath.Resolved.path resolvedPaths)) (afterLock mode watch loadedConfiguration)
 
-  afterLog : Bool → (loadedConfiguration : C.Loaded) → Reply (prepareLog loadedConfiguration) → Script Host.Outcome
-  afterLog watch loadedConfiguration observed with Operational.LogAttempt.outcome observed
-  ... | OperationalLog.For.failed detail files = ask (reportDiagnostic detail) (λ _ → afterLogging watch loadedConfiguration)
-  ... | OperationalLog.For.written files = afterLogging watch loadedConfiguration
+  afterLog : Recovery.Selection → Bool → (loadedConfiguration : C.Loaded) → Reply (prepareLog loadedConfiguration) → Script Host.Outcome
+  afterLog mode watch loadedConfiguration observed with Operational.LogAttempt.outcome observed
+  ... | OperationalLog.For.failed detail files = ask (reportDiagnostic detail) (λ _ → afterLogging mode watch loadedConfiguration)
+  ... | OperationalLog.For.written files = afterLogging mode watch loadedConfiguration
 
-  logFailureContinues : ∀ watch loadedConfiguration observed detail files events result →
+  logFailureContinues : ∀ mode watch loadedConfiguration observed detail files events result →
     Operational.LogAttempt.outcome observed ≡ Operational.LogAt.failed
       {coreOf loadedConfiguration} detail files →
-    P.Runs (afterLogging watch loadedConfiguration) events result →
-    P.Runs (afterLog watch loadedConfiguration observed)
+    P.Runs (afterLogging mode watch loadedConfiguration) events result →
+    P.Runs (afterLog mode watch loadedConfiguration observed)
       ((reportDiagnostic detail , tt) ∷ events) result
-  logFailureContinues watch loadedConfiguration observed detail files events result failure execution
+  logFailureContinues mode watch loadedConfiguration observed detail files events result failure execution
     rewrite failure = P.replied _ _ tt execution
 
-  afterConfig : Bool → C.Result → Script Host.Outcome
-  afterConfig watch (inj₁ detail) = persistBlocked (toList "invalid_config") detail >>= λ _ → announce watch
+  afterConfig : Recovery.Selection → Bool → C.Result → Script Host.Outcome
+  afterConfig mode watch (inj₁ detail) = persistBlocked (toList "invalid_config") detail >>= λ _ → announce watch
     where
     announce : Bool → Script Host.Outcome
     announce true = ask (reportDiagnostic detail) (λ _ → done (Host.outcome Host.invalidConfig (Host.whenCorrected (Host.correctConfiguration detail))))
     announce false = ask (reportDiagnostic detail) (λ _ → failed false (invalidConfig detail) Host.invalidConfig (Host.whenCorrected (Host.correctConfiguration detail)))
-  afterConfig watch (inj₂ loadedConfiguration) = ask (prepareLog loadedConfiguration) (afterLog watch loadedConfiguration)
+  afterConfig mode watch (inj₂ loadedConfiguration) = ask (prepareLog loadedConfiguration) (afterLog mode watch loadedConfiguration)
 
-  once : Bool → Script Host.Outcome
-  once watch = ask loadConfig (afterConfig watch)
+  once : Recovery.Selection → Bool → Script Host.Outcome
+  once mode watch = ask loadConfig (afterConfig mode watch)
 
   -- No batch result terminates watch mode. Successful work proceeds
   -- immediately; deferred batches continue to the next batch; idle and
@@ -367,6 +372,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   data WatchState : Set where
     subscribing : (outageReported : Bool) → WatchState
     watching : WorkSubscription → Script Host.Outcome → WatchState
+    serving : WorkSubscription → List Recovery.Entry → Script Host.Outcome → WatchState
     controlling : Script WatchState → WatchState
 
   reconnect : Script WatchState
@@ -406,16 +412,26 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     (persistBlocked (toList "database_setup") detail >>= λ _ → requestCorrection nothing (Host.restoreDatabaseSetup detail))
   afterSubscription false (inj₁ (databaseUnavailable detail)) = controlling (awaitDatabase detail)
   afterSubscription true (inj₁ (databaseUnavailable _)) = controlling reconnect
-  afterSubscription _ (inj₂ subscription) = watching subscription (once true)
+  afterSubscription _ (inj₂ subscription) = watching subscription (once Recovery.scanQueue true)
 
   afterWork : WorkSubscription → Text ⊎ WorkWake → Script WatchState
   afterWork subscription (inj₁ detail) = ask (dropWorkSubscription subscription) (λ _ → awaitDatabase detail)
   afterWork subscription (inj₂ configurationChanged) = ask (dropWorkSubscription subscription) (λ _ → done (subscribing false))
-  afterWork subscription (inj₂ workAvailable) = done (watching subscription (once true))
+  afterWork subscription (inj₂ (repairCompleted problem evidence)) = done (watching subscription (once Recovery.scanQueue true))
+  afterWork subscription (inj₂ workAvailable) = done (watching subscription (once Recovery.scanQueue true))
   afterWork subscription (inj₂ explicitRetry) = ask (dropWorkSubscription subscription) (λ _ → done (subscribing false))
 
+  serve : WorkSubscription → List Recovery.Entry → WatchState
+  serve subscription [] = watching subscription (once Recovery.scanQueue true)
+  serve subscription (item ∷ rest) = serving subscription rest (once (Recovery.runEntry item) true)
+
   afterWatch : WorkSubscription → Host.Outcome → WatchState
-  afterWatch subscription (Host.outcome _ Host.scan) = watching subscription (once true)
+  afterWatch subscription (Host.outcome _ (Host.scheduled work)) = serve subscription work
+  afterWatch subscription (Host.outcome _ Host.whenDatabaseReturns) = controlling
+    (ask (dropWorkSubscription subscription) (λ _ → reconnect))
+  afterWatch subscription (Host.outcome _ Host.whenProviderAvailable) =
+    controlling (await providerAvailable (just subscription))
+  afterWatch subscription (Host.outcome _ Host.scan) = watching subscription (once Recovery.scanQueue true)
   afterWatch subscription (Host.outcome _ Host.whenWorkArrives) =
     controlling (ask (waitForWork subscription) (afterWork subscription))
   afterWatch subscription (Host.outcome _ Host.whenLockReleased) =
@@ -425,6 +441,19 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   afterWatch subscription (Host.outcome _ (Host.whenCorrected remedy)) =
     controlling (requestCorrection (just subscription) remedy)
 
+  afterTurn : WorkSubscription → List Recovery.Entry → Host.Outcome → WatchState
+  afterTurn subscription rest (Host.outcome _ Host.scan) = serve subscription rest
+  afterTurn subscription rest (Host.outcome _ (Host.scheduled later)) = serve subscription (rest ++ later)
+  afterTurn subscription rest result = afterWatch subscription result
+
+  -- One eligible peer has finished. Work it adds behind the target cannot
+  -- move that target back or consume its turn.
+  peerCannotPostpone : ∀ subscription {target ahead queue} →
+    Recovery.BeforeTurn target ahead queue → ∀ later code →
+    Σ (List Recovery.Entry) (λ remaining → Recovery.BeforeTurn target ahead remaining ×
+      afterTurn subscription queue (Host.outcome code (Host.scheduled later)) ≡ serve subscription remaining)
+  peerCannotPostpone subscription order later code = _ , Recovery.appendPreservesTurn order later , refl
+
   data WatchStep : Set where
     internal : WatchState → WatchStep
     external : (effect : Effect) → (Reply effect → WatchState) → WatchStep
@@ -433,6 +462,9 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   nextWatch (subscribing outageReported) = external subscribeWork (afterSubscription outageReported)
   nextWatch (watching subscription (done result)) = internal (afterWatch subscription result)
   nextWatch (watching subscription (ask effect continuation)) = external effect (λ reply → watching subscription (continuation reply))
+  nextWatch (serving subscription rest (done result)) = internal (afterTurn subscription rest result)
+  nextWatch (serving subscription rest (ask effect continuation)) =
+    external effect (λ reply → serving subscription rest (continuation reply))
   nextWatch (controlling (done state)) = internal state
   nextWatch (controlling (ask effect continuation)) = external effect (λ reply → controlling (continuation reply))
 
@@ -454,7 +486,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     path : ∀ events result → SP.Runs (SP.resolve explicitState) events result → Receipt resolveState result
     locked : ∀ path events result → L.FS.Runs (FS.acquire path) events result → Receipt (acquire path) result
     unlocked : ∀ held events → L.FS.Runs (L.release held) events tt → Receipt (release held) tt
-    ran : ∀ settings held configPath report → Executed settings held configPath report → Receipt (execute settings held configPath) report
+    ran : ∀ settings held configPath mode report → Executed settings held configPath mode report → Receipt (execute settings held configPath mode) report
     observed : ∀ reply → Receipt clock reply
     recorded : ∀ held report reply → StateOperations.IncidentExecution report nothing reply → Receipt (incident held report) reply
     written : ∀ held report reply → Receipt (status held report) reply
@@ -483,6 +515,13 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
       (just (waitForRepair condition nothing , restored)) (controlling (done (subscribing false)))
   restoredStartsFresh condition = external refl (repairEvent condition nothing restored)
 
+  repairWakesIdleQueue : ∀ subscription problem evidence →
+    WatchTransition (controlling (ask (waitForWork subscription) (afterWork subscription)))
+      (just (waitForWork subscription , inj₂ (repairCompleted problem evidence)))
+      (controlling (done (watching subscription (once Recovery.scanQueue true))))
+  repairWakesIdleQueue subscription problem evidence = external refl
+    (workEvent subscription (inj₂ (repairCompleted problem evidence)))
+
   -- The retry wake does not require a file edit or signal. Every newly
   -- established subscription starts a batch, which checks pending work.
   outageRetryResubscribes :
@@ -497,7 +536,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   subscriptionStartsBatch : ∀ outageReported subscription →
     WatchTransition (subscribing outageReported) (just (subscribeWork , inj₂ subscription))
-      (watching subscription (once true))
+      (watching subscription (once Recovery.scanQueue true))
   subscriptionStartsBatch outageReported subscription = external refl (subscribed (inj₂ subscription))
 
   -- Delivery failure and cleanup never suspend the review controller. The
