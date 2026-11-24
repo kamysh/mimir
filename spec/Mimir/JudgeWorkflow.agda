@@ -94,7 +94,8 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   finalReads : List Observation.Pin → R.Report → Bool → Script R.Report
   finalReads original report failure = liftReadback (Readback.finish original report failure
     (map (λ d → Observation.deferred (R.Deferred.identity d) (R.Deferred.revision d))
-      (R.Report.deferredReviews report))) >>= λ { (observed , confirmation) → finishObserved observed confirmation }
+      (R.Report.deferredReviews report))) >>= λ checked →
+      finishObserved (Readback.Readback.observed checked) (Readback.Readback.confirmation checked)
 
   mutual
     revisions : Handshake.Contract.Ready contract model → List Observation.Pin → List Observation.Snapshot → R.Report → Script R.Report
