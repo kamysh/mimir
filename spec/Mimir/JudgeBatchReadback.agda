@@ -20,6 +20,7 @@ import Mimir.BatchReport as Batch
 import Mimir.JudgeAcknowledgement as Acknowledgement
 import Mimir.JudgeStateRecords as Records
 import Mimir.Judge as Judge
+open import Data.Unit using (⊤; tt)
 import Mimir.Effects as Effects
 import Mimir.SourceFailure as Source
 import Mimir.Validation as Validation
@@ -30,10 +31,14 @@ record Failure : Set where
   constructor failure
   field detail : Text; source : Maybe Source.Failure
 
-data Effect : Set where getExperience : O.Pin → Effect; clock : Effect
+data Effect : Set where
+  getExperience : O.Pin → Effect
+  reviewConfirmed : (chosen : O.Pin) → Acknowledgement.Evidence chosen → Effect
+  clock : Effect
 Reply : Effect → Set
 Reply (getExperience chosen) = Failure ⊎ Maybe O.Snapshot
 Reply clock = Maybe ℕ
+Reply (reviewConfirmed _ _) = ⊤
 module E = Effects.Protocol Effect Reply
 open E
 
@@ -73,6 +78,8 @@ readAll (chosen ∷ remaining) before = ask (getExperience chosen) (λ reply →
   capture (inj₂ snapshot) with O.observe chosen snapshot
   ... | O.malformed error = captureFailure chosen
       (failure (Validation.Fault.explanation error) nothing) before
+  ... | O.found stored valid (O.confirmed acknowledgement) = ask
+    (reviewConfirmed chosen (Acknowledgement.evidence stored valid acknowledgement)) (λ _ → done before)
   ... | _ = done before
 
 statusText : Judge.Completion.Status → Text
