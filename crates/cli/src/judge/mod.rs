@@ -1,4 +1,5 @@
 mod api;
+mod cases;
 pub mod config;
 mod config_events;
 mod diagnose;
@@ -8,6 +9,7 @@ mod harness;
 mod mcp;
 mod notification;
 mod process;
+mod recovery;
 mod repair;
 mod runner;
 mod state;
@@ -24,11 +26,9 @@ fn review_guidance(selected: &mimir_core::learning::ExperienceState) -> String {
     )
 }
 
-use chrono::Timelike;
 use clap::Subcommand;
 use serde_json::json;
 use std::path::PathBuf;
-use std::time::Duration;
 
 const INVALID_CONFIG: i32 = 2;
 const UNAVAILABLE: i32 = 5;
@@ -165,14 +165,9 @@ async fn dispatch_inner(command: JudgeCommand) -> i32 {
             }
         },
         JudgeCommand::Run { config, state_dir } => {
-            run_once(
-                config,
-                state_dir,
-                false,
-                &mut transcript::Pending::default(),
-            )
-            .await
-            .code
+            run_once(config, state_dir, false, &mut recovery::Session::default())
+                .await
+                .code
         }
         JudgeCommand::Watch { config, state_dir } => watcher::run(config, state_dir).await,
         JudgeCommand::Repair {
@@ -397,10 +392,7 @@ fn print_diagnostics(value: &serde_json::Value, raw: bool) {
 struct RunOutcome {
     code: i32,
     degraded: bool,
-    idle: bool,
-    /// A provider-declared usage limit arms an automatic resume: the repair
-    /// wait wakes after this delay instead of waiting for a human SIGHUP.
-    auto_resume: Option<Duration>,
+    next: recovery::Next,
 }
 
 /// Delay until the next occurrence of the local time a provider message
@@ -460,7 +452,7 @@ async fn run_once(
     config: Option<PathBuf>,
     state_dir: Option<PathBuf>,
     watch_mode: bool,
-    transcripts: &mut transcript::Pending,
+    session: &mut recovery::Session,
 ) -> RunOutcome {
     let settings = match config::load(config.as_deref()) {
         Ok(settings) => settings,
@@ -482,11 +474,14 @@ async fn run_once(
             return RunOutcome {
                 code: INVALID_CONFIG,
                 degraded: true,
-                idle: false,
-                auto_resume: None,
+                next: recovery::Next::Correct {
+                    code: "invalid_config",
+                    action: format!("{error:#}. Correct the reported configuration setting."),
+                },
             };
         }
     };
+    session.select_scope(&settings);
     let path = match state::resolve(state_dir.as_deref()) {
         Ok(path) => path,
         Err(_) => {
@@ -499,12 +494,14 @@ async fn run_once(
             return RunOutcome {
                 code: INVALID_CONFIG,
                 degraded: true,
-                idle: false,
-                auto_resume: None,
+                next: recovery::Next::Correct {
+                    code: "invalid_state_path",
+                    action: "Select an absolute, accessible judge state directory.".into(),
+                },
             };
         }
     };
-    let state = match state::State::lock(path) {
+    let state = match state::State::lock(path.clone()) {
         Ok(Some(state)) => state,
         Ok(None) => {
             if !watch_mode {
@@ -512,39 +509,48 @@ async fn run_once(
             }
             return RunOutcome {
                 code: ALREADY_RUNNING,
-                degraded: true,
-                idle: false,
-                auto_resume: None,
+                degraded: false,
+                next: recovery::Next::Lock(path),
             };
         }
-        Err(_) => {
+        Err(error) => {
             if !watch_mode {
                 println!(
                     "{}",
                     json!({"status":"unavailable","reason":"state_unavailable"})
                 );
             }
+            let action = format!(
+                "Restore ownership and private read/write access to {}. {error:#}",
+                path.display()
+            );
+            if let Err(mail_error) =
+                notification::shared_action(config.as_deref(), &path, "state_unavailable", &action)
+            {
+                eprintln!("{action} The alert outbox is also unavailable: {mail_error:#}");
+            }
             return RunOutcome {
                 code: UNAVAILABLE,
                 degraded: true,
-                idle: false,
-                auto_resume: None,
+                next: recovery::Next::Correct {
+                    code: "state_unavailable",
+                    action,
+                },
             };
         }
     };
     let _=state.write_runtime(&json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"phase":"reviewing","config_format":settings.operations.config_version}));
-    let report = match settings.llm.backend {
+    let (report, next) = match settings.llm.backend {
         config::Backend::Api => match api::ApiBackend::new(&settings.llm) {
             Ok(Some(mut backend)) => {
-                runner::run_queued(&settings, &state, &mut backend, None, transcripts).await
+                runner::run_queued(&settings, &state, &mut backend, None, session).await
             }
             Ok(None) => {
-                runner::run_queued(
+                runner::setup_failure(
                     &settings,
                     &state,
-                    &mut runner::UnavailableBackend,
-                    None,
-                    transcripts,
+                    "backend_configuration",
+                    &anyhow::anyhow!("Select an installed judge backend in [llm]."),
                 )
                 .await
             }
@@ -554,7 +560,7 @@ async fn run_once(
         },
         _ => match harness::Harness::new(&settings.llm) {
             Ok(mut backend) => {
-                runner::run_queued(&settings, &state, &mut backend, None, transcripts).await
+                runner::run_queued(&settings, &state, &mut backend, None, session).await
             }
             Err(error) => {
                 runner::setup_failure(&settings, &state, "backend_configuration", &error).await
@@ -598,37 +604,10 @@ async fn run_once(
                 .unwrap_or_else(|_| "{\"status\":\"unavailable\"}".into())
         );
     }
-    // Keep the diagnostic reason intact. Once readback has deferred a
-    // selected review, its refusal need not stop unrelated reviews.
-    let reason = report.block_reason.as_deref();
-    let deferred_only = reason == Some("review_deferred");
-    let local_refusal = matches!(reason, Some("tool_rejected" | "review_requires_repair"))
-        && report
-            .deferred_reviews
-            .iter()
-            .any(|held| report.selected_ids.contains(&held.id));
-    let auto_resume = if report.block_reason.as_deref() == Some("provider_usage_limit") {
-        let now = chrono::Local::now();
-        let minutes = provider_resume_delay(
-            report.failure_detail.as_deref().unwrap_or(""),
-            now.hour() * 60 + now.minute(),
-        );
-        minutes.map(|delay| Duration::from_secs(u64::from(delay) * 60))
-    } else {
-        None
-    };
     RunOutcome {
-        code: if watch_mode
-            && (deferred_only || local_refusal || reason == Some("review_source_changed"))
-        {
-            0
-        } else {
-            code
-        },
-        degraded: matches!(report.status.as_str(), "blocked" | "partial"),
-        idle: report.status == "idle"
-            || (watch_mode && deferred_only && report.selected_ids.is_empty()),
-        auto_resume,
+        code,
+        degraded: report.operator_needed.unwrap_or(false),
+        next,
     }
 }
 
@@ -682,7 +661,7 @@ mod watch_tests {
             Some(config),
             Some(state_dir.clone()),
             true,
-            &mut transcript::Pending::default(),
+            &mut recovery::Session::default(),
         )
         .await;
         assert_eq!(outcome.code, INVALID_CONFIG);

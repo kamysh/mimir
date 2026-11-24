@@ -15,7 +15,7 @@ open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 data Migration : Set where
   initial searchPath beliefEmbeddings evidenceEdges betaBeliefs learningLedger
     reviewCandidates assessments itemOwners postgresItemAllocation reviewWorkEvents
-    postgresExperienceIDs failedReviewTranscripts : Migration
+    postgresExperienceIDs failedReviewTranscripts reviewRepairCases : Migration
 
 name : Migration → String
 name initial = "initial"
@@ -31,26 +31,28 @@ name postgresItemAllocation = "postgres-item-allocation"
 name reviewWorkEvents = "review-work-events"
 name postgresExperienceIDs = "postgres-experience-ids"
 name failedReviewTranscripts = "failed-review-transcripts"
+name reviewRepairCases = "review-repair-cases"
 
-predecessor : Migration → Maybe Migration
-predecessor initial = nothing
-predecessor searchPath = just initial
-predecessor beliefEmbeddings = just searchPath
-predecessor evidenceEdges = just beliefEmbeddings
-predecessor betaBeliefs = just evidenceEdges
-predecessor learningLedger = just betaBeliefs
-predecessor reviewCandidates = just learningLedger
-predecessor assessments = just reviewCandidates
-predecessor itemOwners = just assessments
-predecessor postgresItemAllocation = just itemOwners
-predecessor reviewWorkEvents = just postgresItemAllocation
-predecessor postgresExperienceIDs = just reviewWorkEvents
-predecessor failedReviewTranscripts = just postgresExperienceIDs
+requires : Migration → List Migration
+requires initial = []
+requires searchPath = initial ∷ []
+requires beliefEmbeddings = searchPath ∷ []
+requires evidenceEdges = beliefEmbeddings ∷ []
+requires betaBeliefs = evidenceEdges ∷ []
+requires learningLedger = betaBeliefs ∷ []
+requires reviewCandidates = learningLedger ∷ []
+requires assessments = reviewCandidates ∷ []
+requires itemOwners = assessments ∷ []
+requires postgresItemAllocation = itemOwners ∷ []
+requires reviewWorkEvents = postgresItemAllocation ∷ []
+requires postgresExperienceIDs = reviewWorkEvents ∷ []
+requires failedReviewTranscripts = postgresExperienceIDs ∷ []
+requires reviewRepairCases = reviewWorkEvents ∷ []
 
 manifest : List Migration
 manifest = initial ∷ searchPath ∷ beliefEmbeddings ∷ evidenceEdges ∷
   betaBeliefs ∷ learningLedger ∷ reviewCandidates ∷ assessments ∷ itemOwners ∷
-  postgresItemAllocation ∷ reviewWorkEvents ∷ postgresExperienceIDs ∷ failedReviewTranscripts ∷ []
+  postgresItemAllocation ∷ reviewWorkEvents ∷ postgresExperienceIDs ∷ failedReviewTranscripts ∷ reviewRepairCases ∷ []
 
 -- The executable lifecycle is MigrationDriver. The former untyped state
 -- table was removed because it conflated queued rollback with acknowledgement
