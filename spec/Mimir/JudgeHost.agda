@@ -5,12 +5,13 @@
 module Mimir.JudgeHost where
 
 open import Data.Bool using (Bool; true; false; _∨_)
-open import Data.List using (_++_)
+open import Data.List using (List; _++_)
 open import Data.Nat using (ℕ)
 open import Data.String using (toList)
 open import Relation.Nullary using (does)
 open import Mimir.Text using (Text)
 open import Mimir.SourceReview using (_≟Text_)
+import Mimir.JudgeRevisionPolicy as Recovery
 import Mimir.JudgeStateRecords as Records
 
 open import Mimir.UUIDGroups using (UUID)
@@ -40,7 +41,8 @@ guidance (restoreToolClient detail) = detail ++ toList ". Select a working, comp
 guidance (selectWorkingBackend detail) = detail ++ toList ". Choose an available judge backend or restore access to the configured one."
 
 data Continuation : Set where
-  scan whenWorkArrives whenLockReleased : Continuation
+  scan whenWorkArrives whenLockReleased whenDatabaseReturns whenProviderAvailable : Continuation
+  scheduled : List Recovery.Entry → Continuation
   whenCorrected : Remedy → Continuation
   whenProviderResets : ℕ → Continuation
 
