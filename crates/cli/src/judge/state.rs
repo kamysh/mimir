@@ -62,12 +62,39 @@ pub struct DeferredReview {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Remedy {
+    EditReview,
+    ChooseBackend,
+    RestoreClient,
+    RestoreRead,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepairCase {
+    #[serde(default = "RepairCase::edit_review")]
+    pub remedy: Remedy,
     pub explanation: String,
     pub detail: String,
     pub diagnostic_id: Option<Uuid>,
     #[serde(default)]
     pub transcript_pending: bool,
+}
+
+impl RepairCase {
+    fn edit_review() -> Remedy {
+        Remedy::EditReview
+    }
+
+    pub fn new(remedy: Remedy, explanation: &str, detail: String) -> Self {
+        Self {
+            remedy,
+            explanation: explanation.into(),
+            detail,
+            diagnostic_id: None,
+            transcript_pending: false,
+        }
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -96,6 +123,10 @@ impl FailureDiagnostic {
 pub struct Report {
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_action: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator_needed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub block_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diagnostic: Option<FailureDiagnostic>,
@@ -109,6 +140,8 @@ pub struct Report {
     pub transcripts_pending: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub selected_ids: Vec<Uuid>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub selected_revisions: std::collections::BTreeMap<Uuid, i64>,
     pub selected: usize,
     pub confirmed: usize,
     pub corrected: usize,
@@ -120,6 +153,8 @@ pub struct Report {
     /// fresh selection under the new correction rules.
     #[serde(default)]
     pub guided_repair: bool,
+    #[serde(default)]
+    pub database_cases: bool,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub notification: String,
     pub recorded_at: u64,
@@ -210,12 +245,15 @@ impl Report {
         let mut report = Self {
             status: status.into(),
             block_reason: None,
+            recovery_action: None,
+            operator_needed: None,
             diagnostic: None,
             failure_detail: None,
             failure_source: None,
             diagnostics_id: None,
             transcripts_pending: 0,
             selected_ids: Vec::new(),
+            selected_revisions: Default::default(),
             selected,
             confirmed,
             corrected,
@@ -223,6 +261,7 @@ impl Report {
             unavailable,
             deferred_reviews: Vec::new(),
             guided_repair: true,
+            database_cases: false,
             notification: "disabled".into(),
             recorded_at: 0,
         };
@@ -241,6 +280,7 @@ impl Report {
     pub(super) fn preserve_deferrals(&mut self, path: &Path) {
         if let Ok(Some(previous)) = read(path) {
             self.guided_repair = previous.guided_repair;
+            self.database_cases = previous.database_cases;
             self.deferred_reviews = previous.deferred_reviews;
         }
     }
@@ -331,6 +371,24 @@ impl State {
         &self.path
     }
     pub fn lock(path: PathBuf) -> Result<Option<Self>> {
+        Self::acquire(path, libc::LOCK_EX | libc::LOCK_NB)
+    }
+
+    /// Let the kernel wake the watcher when the owner releases its lock.
+    /// A dedicated thread keeps signal handling responsive. Unlike a Tokio
+    /// blocking task, it cannot delay process shutdown if the owner is stuck.
+    pub async fn wait_for_release(path: PathBuf) -> Result<()> {
+        let (send, received) = tokio::sync::oneshot::channel();
+        std::thread::Builder::new()
+            .name("judge-lock-wait".into())
+            .spawn(move || {
+                let result = Self::acquire(path, libc::LOCK_EX).map(drop);
+                let _ = send.send(result);
+            })?;
+        received.await?
+    }
+
+    fn acquire(path: PathBuf, flags: libc::c_int) -> Result<Option<Self>> {
         ensure_parents(&path)?;
         if !path.exists() {
             match fs::DirBuilder::new().mode(0o700).create(&path) {
@@ -355,9 +413,11 @@ impl State {
                 && metadata.permissions().mode() & 0o077 == 0,
             "unsafe state lock"
         );
-        let result = unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-        if result != 0 {
+        while unsafe { libc::flock(lock.as_raw_fd(), flags) } != 0 {
             let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
             if error.kind() == std::io::ErrorKind::WouldBlock {
                 return Ok(None);
             }
@@ -403,7 +463,13 @@ impl State {
             }
             "idle" => {
                 if let Some(mut item) = existing {
-                    if item.recovered_at.is_none() {
+                    if item.recovered_at.is_none()
+                        && item
+                            .first
+                            .selected_ids
+                            .iter()
+                            .all(|id| item.confirmed_reviews.iter().any(|review| review.id == *id))
+                    {
                         item.recovered_at = Some(report.recorded_at);
                         return self.write_named(FAILURE_FILE, &item);
                     }
@@ -422,6 +488,13 @@ impl State {
                         let mut changed = false;
                         for id in &report.selected_ids {
                             if item.first.selected_ids.contains(id)
+                                && item
+                                    .first
+                                    .selected_revisions
+                                    .get(id)
+                                    .is_some_and(|revision| {
+                                        report.selected_revisions.get(id) == Some(revision)
+                                    })
                                 && !item.confirmed_reviews.iter().any(|review| review.id == *id)
                             {
                                 item.confirmed_reviews.push(ConfirmedReview {
@@ -440,6 +513,26 @@ impl State {
             }
             _ => Ok(()),
         }
+    }
+
+    pub fn confirm_review(&self, id: Uuid, revision: i64) -> Result<()> {
+        let Some(mut incident) = read_failure(&self.path)? else {
+            return Ok(());
+        };
+        if incident.recovered_at.is_none()
+            && incident.first.selected_revisions.get(&id) == Some(&revision)
+            && !incident
+                .confirmed_reviews
+                .iter()
+                .any(|review| review.id == id)
+        {
+            incident.confirmed_reviews.push(ConfirmedReview {
+                id,
+                recorded_at: now(),
+            });
+            self.write_named(FAILURE_FILE, &incident)?;
+        }
+        Ok(())
     }
 
     fn write_named<T: Serialize>(&self, name: &str, value: &T) -> Result<()> {
@@ -586,6 +679,7 @@ mod tests {
         let unrelated = Uuid::new_v4();
         let mut failed = Report::new("blocked", 1, 0, 0, 1, 0);
         failed.selected_ids.push(affected);
+        failed.selected_revisions.insert(affected, 1);
         state.record_incident(&failed).unwrap();
         let idle = Report::new("idle", 0, 0, 0, 0, 0);
         state.record_incident(&idle).unwrap();
@@ -606,6 +700,7 @@ mod tests {
             .is_empty());
         let mut affected_complete = Report::new("complete", 1, 1, 0, 0, 0);
         affected_complete.selected_ids.push(affected);
+        affected_complete.selected_revisions.insert(affected, 1);
         state.record_incident(&affected_complete).unwrap();
         state.record_incident(&idle).unwrap();
         let incident = read_failure(&dir).unwrap().unwrap();
@@ -641,6 +736,7 @@ mod tests {
         assert_eq!(diagnostic.detail, format!("rejected\n{}", "x".repeat(1000)));
         failed.block_reason = Some("tool_error".into());
         failed.selected_ids = vec![Uuid::new_v4()];
+        failed.selected_revisions.insert(failed.selected_ids[0], 1);
         let malformed = b"{\"review\": }";
         let parse_error = serde_json::from_slice::<serde_json::Value>(malformed)
             .err()
@@ -655,7 +751,9 @@ mod tests {
         later.block_reason = Some("backend_error".into());
         later.failure_source = failed.failure_source.clone();
         state.record_incident(&later).unwrap();
-        let completed = Report::new("complete", 1, 1, 0, 0, 0);
+        let mut completed = Report::new("complete", 1, 1, 0, 0, 0);
+        completed.selected_ids = failed.selected_ids.clone();
+        completed.selected_revisions = failed.selected_revisions.clone();
         state.write(&completed).unwrap();
         state.record_incident(&completed).unwrap();
         assert_eq!(
@@ -712,6 +810,19 @@ mod tests {
         drop(state);
         assert!(State::lock(dir.clone()).unwrap().is_some());
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn acquiring_the_lock_wakes_a_waiter_on_release() {
+        let path = std::env::temp_dir().join(format!("mimir-wait-lock-{}", Uuid::new_v4()));
+        let owner = State::lock(path.clone()).unwrap().unwrap();
+        let waiter = tokio::spawn(State::wait_for_release(path.clone()));
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+        drop(owner);
+        waiter.await.unwrap().unwrap();
+        assert!(State::lock(path.clone()).unwrap().is_some());
+        fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

@@ -34,6 +34,12 @@ pub fn summary(report: Option<&state::Report>) -> String {
             .into();
     };
     let code = classified(report);
+    if let Some(action) = &report.recovery_action {
+        return format!(
+            "Batch impact: {} confirmed; {} pending; {} unavailable.\n{}\n",
+            report.confirmed, report.pending, report.unavailable, action
+        );
+    }
     let action = match code {
         Some("invalid_config") => "Run mimir config check. If required settings are missing, run mimir config upgrade --log-directory /absolute/path/to/logs, then check again.",
         Some("database_unavailable") => "The running watcher retries automatically. Check PostgreSQL availability if the outage persists.",
