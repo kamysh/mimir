@@ -63,7 +63,10 @@ Repeated observations of the same unresolved case reuse its notification
 state. A separate affected review gets its own alert, even if it failed for
 the same reason. The notification worker owns delivery. A failed delivery
 keeps the alert available for the configured delivery recovery and appears
-in the operational status. Review processing continues independently.
+in the operational status. Review processing continues independently. A
+configuration change wakes a check of the affected prerequisite. The checker
+must confirm restoration before the notification system closes the episode.
+A later failure of that prerequisite can then produce a new alert.
 
 The judge builds one transcript per attempted source revision in memory.
 Each tool response appears once, at the call that returned it. A confirmed
@@ -281,7 +284,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     stdout : Output → Effect
     reportDiagnostic : Text → Effect
     subscribeWork waitForReconnect : Effect
-    queueAction : Host.Remedy → Effect
+    queueAction clearAction probeRemedy : Host.Remedy → Effect
     waitForRepair : WakeCondition → Maybe WorkSubscription → Effect
     waitForWork dropWorkSubscription : WorkSubscription → Effect
 
@@ -301,6 +304,8 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   Reply (waitForWork _) = Text ⊎ WorkWake
   Reply (dropWorkSubscription _) = ⊤
   Reply (queueAction remedy) = ⊤
+  Reply (clearAction remedy) = ⊤
+  Reply (probeRemedy _) = Bool
   Reply (waitForRepair condition subscription) = RepairWake condition subscription
   Reply waitForReconnect = ReconnectWake
   module P = Effects.Protocol Effect Reply
@@ -407,10 +412,27 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   resetSubscription (just subscription) =
     ask (dropWorkSubscription subscription) (λ _ → done (subscribing false))
 
+  resumeCorrected : Maybe WorkSubscription → Host.Remedy → Script WatchState
+  resumeCorrected subscription remedy = ask (clearAction remedy) (λ _ → resetSubscription subscription)
+
+  recheck : Maybe WorkSubscription → Host.Remedy → Script WatchState
+  recheck subscription remedy = ask (probeRemedy remedy) λ where
+    true → resumeCorrected subscription remedy
+    false → resetSubscription subscription
+
+  recheckCondition : WakeCondition → Maybe WorkSubscription → Script WatchState
+  recheckCondition (corrected remedy) subscription = recheck subscription remedy
+  recheckCondition lockReleased subscription = resetSubscription subscription
+  recheckCondition providerAvailable subscription = resetSubscription subscription
+  recheckCondition (providerReset time) subscription = resetSubscription subscription
+
   resumeRepair : ∀ condition (subscription : Maybe WorkSubscription) → RepairWake condition subscription → Script WatchState
-  resumeRepair condition subscription restored = resetSubscription subscription
-  resumeRepair condition subscription configurationChanged = resetSubscription subscription
-  resumeRepair condition subscription explicitRetry = resetSubscription subscription
+  resumeRepair (corrected remedy) subscription restored = resumeCorrected subscription remedy
+  resumeRepair lockReleased subscription restored = resetSubscription subscription
+  resumeRepair providerAvailable subscription restored = resetSubscription subscription
+  resumeRepair (providerReset time) subscription restored = resetSubscription subscription
+  resumeRepair condition subscription configurationChanged = recheckCondition condition subscription
+  resumeRepair condition subscription explicitRetry = recheckCondition condition subscription
   resumeRepair condition (just subscription) (databaseDisconnected detail) =
     ask (dropWorkSubscription subscription) (λ _ → awaitDatabase detail)
 
@@ -512,6 +534,8 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     subscriptionDropped : ∀ subscription → Receipt (dropWorkSubscription subscription) tt
     workEvent : ∀ subscription event → Receipt (waitForWork subscription) event
     actionQueued : ∀ remedy → Host.Recorded format (Host.prerequisite remedy) → Receipt (queueAction remedy) tt
+    actionCleared : ∀ remedy → Host.Reconciled (Host.restoredPrerequisite format remedy) → Receipt (clearAction remedy) tt
+    remedyChecked : ∀ remedy available → Receipt (probeRemedy remedy) available
     repairEvent : ∀ condition subscription event → Receipt (waitForRepair condition subscription) event
     reconnectEvent : ∀ event → Receipt waitForReconnect event
 
@@ -526,10 +550,15 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
       (just (queueAction remedy , tt)) (controlling (await (corrected remedy) subscription))
   operatorActionPrecedesWait subscription remedy receipt = external refl (actionQueued remedy receipt)
 
-  restoredStartsFresh : ∀ condition →
-    WatchTransition (controlling (await condition nothing))
-      (just (waitForRepair condition nothing , restored)) (controlling (done (subscribing false)))
-  restoredStartsFresh condition = external refl (repairEvent condition nothing restored)
+  verifiedCorrectionReopensQueue : ∀ remedy →
+    WatchTransition (controlling (await (corrected remedy) nothing))
+      (just (waitForRepair (corrected remedy) nothing , restored)) (controlling (resumeCorrected nothing remedy))
+  verifiedCorrectionReopensQueue remedy = external refl (repairEvent (corrected remedy) nothing restored)
+
+  clearedRestartsOriginalWork : ∀ remedy → Host.Reconciled (Host.restoredPrerequisite format remedy) →
+    WatchTransition (controlling (resumeCorrected nothing remedy))
+      (just (clearAction remedy , tt)) (controlling (done (subscribing false)))
+  clearedRestartsOriginalWork remedy receipt = external refl (actionCleared remedy receipt)
 
   repairWakesIdleQueue : ∀ subscription problem evidence →
     WatchTransition (controlling (ask (waitForWork subscription) (afterWork subscription)))

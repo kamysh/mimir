@@ -84,6 +84,11 @@ alert format (prerequisite remedy) = Mail.event (toList "judge") (codeOf remedy)
   codeOf (restoreLogAccess _) = toList "logging_unavailable"
   codeOf (restoreMailAccess _) = toList "notification_unavailable"
 
+restoredPrerequisite : Encoding.Formatting → Remedy → Mail.Event
+restoredPrerequisite format remedy = Mail.event (Mail.Event.source original)
+  (Mail.Event.incidentKey original) Mail.recovery (just (toList "The judge verified the prerequisite is available again."))
+  where original = alert format (prerequisite remedy)
+
 -- The storage adapter supplies the pre- and post-state of the matching
 -- incident. Repeated reports reuse its delivery state.
 record Reconciled (event : Mail.Event) : Set where
