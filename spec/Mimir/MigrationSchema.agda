@@ -17,12 +17,12 @@ open import Mimir.Text using (Text)
 import Mimir.ItemOwnerBackfill as Historical
 import Mimir.ItemOwners as Owners
 open import Mimir.Migrations public
-  using (Migration; initial; searchPath; evidenceEdges; betaBeliefs)
+  using (Migration; initial; searchPath; evidenceEdges; betaBeliefs; requires)
   renaming (name to migrationName; beliefEmbeddings to embeddingTable; learningLedger to learning;
     reviewCandidates to candidates; assessments to assessment; itemOwners to owners;
     postgresItemAllocation to allocation; reviewWorkEvents to workEvents;
     postgresExperienceIDs to experienceAllocation; failedReviewTranscripts to reviewTranscripts;
-    predecessor to requires; manifest to ordered)
+    reviewRepairCases to repairCases; manifest to ordered)
 
 data Type : Set where uuid text bigint timestamp jsonb double boolean vector : Type
 data Default : Set where noDefault now zero falseDefault postgresUUID : Default
@@ -149,6 +149,7 @@ data DDL : Set where
   addUniqueConstraint : String → String → List String → DDL
   addCheckConstraint : String → String → Expr → DDL
   notifyExperienceChanges : String → DDL
+  notifyRepairCaseChanges : String → DDL
 
 kappa alpha beta : Expr
 kappa = add (number "2.0" ∷ multiply (columnValue "confidence" ∷ number "198.0" ∷ []) ∷ [])
@@ -191,6 +192,14 @@ body reviewTranscripts =
       ("experience_id" ∷ "revision" ∷ []) cascade ∷ []) []) ∷
   createIndex (index "mimir_failed_review_transcripts_source" "mimir_failed_review_transcripts"
     ("experience_id" ∷ "source_revision" ∷ []) nothing) ∷ []
+
+body repairCases =
+  create (table "mimir_review_repair_cases"
+    (required "experience_id" uuid ∷ required "source_revision" bigint ∷ required "remedy" jsonb ∷ [])
+    ("experience_id" ∷ "source_revision" ∷ []) []
+    (references ("experience_id" ∷ "source_revision" ∷ []) "mimir_experience_versions"
+      ("experience_id" ∷ "revision" ∷ []) cascade ∷ []) []) ∷
+  notifyRepairCaseChanges "mimir_review_work" ∷ []
 
 -- PostgreSQL supplies the decoded historical rows and execution order. The
 -- application's data rule is insert-missing-only, linked to its general laws.

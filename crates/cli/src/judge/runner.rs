@@ -1,12 +1,18 @@
 use super::{
+    cases,
     config::RuntimeConfig,
     mcp::{CandidateConflict, Client, McpApplicationError, UndeclaredBeliefCandidate},
-    notification, repair,
-    state::{self, DeferredReview, FailureDiagnostic, RepairCase, Report, SourceFailure, State},
+    notification,
+    recovery::{Entry, Next, Obstacle, Resolution, Session, Task},
+    repair,
+    state::{
+        self, DeferredReview, FailureDiagnostic, Remedy, RepairCase, Report, SourceFailure, State,
+    },
 };
-use anyhow::{anyhow, bail, ensure, Result};
+use anyhow::{anyhow, bail, ensure, Context, Result};
+use chrono::Timelike;
 use mimir_core::learning::{ExperienceState, Review};
-use mimir_core::validation::{Code, Fault, Refusal, RefusalKind, Segment};
+use mimir_core::validation::{Code, Refusal, RefusalKind, Segment};
 use serde_json::{json, Value};
 use std::future::Future;
 use std::pin::Pin;
@@ -348,7 +354,16 @@ pub(super) async fn observe(
 
 #[cfg(test)]
 pub async fn run<B: Backend>(settings: &RuntimeConfig, state: &State, backend: &mut B) -> Report {
-    run_selected(settings, state, backend, None).await
+    run_batch(
+        settings,
+        state,
+        backend,
+        None,
+        &mut Session::default(),
+        cases::Storage::Fixture,
+    )
+    .await
+    .0
 }
 
 pub(super) async fn run_selected<B: Backend>(
@@ -357,14 +372,9 @@ pub(super) async fn run_selected<B: Backend>(
     backend: &mut B,
     target: Option<ExperienceState>,
 ) -> Report {
-    run_queued(
-        settings,
-        state,
-        backend,
-        target,
-        &mut super::transcript::Pending::default(),
-    )
-    .await
+    run_queued(settings, state, backend, target, &mut Session::default())
+        .await
+        .0
 }
 
 pub(super) async fn run_queued<B: Backend>(
@@ -372,37 +382,104 @@ pub(super) async fn run_queued<B: Backend>(
     state: &State,
     backend: &mut B,
     target: Option<ExperienceState>,
-    queue: &mut super::transcript::Pending,
-) -> Report {
+    session: &mut Session,
+) -> (Report, Next) {
+    run_batch(
+        settings,
+        state,
+        backend,
+        target,
+        session,
+        cases::Storage::Database,
+    )
+    .await
+}
+
+async fn run_batch<B: Backend>(
+    settings: &RuntimeConfig,
+    state: &State,
+    backend: &mut B,
+    target: Option<ExperienceState>,
+    session: &mut Session,
+    storage: cases::Storage,
+) -> (Report, Next) {
     let mut report = Report::new("blocked", 0, 0, 0, 0, 0);
     let notify = target.is_none();
     let mut attempts = std::collections::HashMap::new();
-    let result = run_inner(settings, state, backend, &mut report, target, &mut attempts).await;
-    if let Err(error) = result {
-        report.block_reason = Some("mcp_or_configuration_error".into());
-        report.failure_detail = Some(format!("{error:#}"));
-        report.capture_source(&error);
-        if report.selected == 0 {
-            report.preserve_deferrals(state.path());
+    let original = session.ready.front().cloned();
+    let result = run_inner(
+        settings,
+        state,
+        backend,
+        &mut report,
+        target,
+        &mut attempts,
+        &mut session.ready,
+        storage,
+    )
+    .await;
+    let next = match result {
+        Ok(next) => next,
+        Err(error) => {
+            if let Some(original) = original {
+                if session.ready.front().is_none_or(|entry| {
+                    entry.id != original.id || entry.revision != original.revision
+                }) {
+                    session.ready.push_front(original);
+                }
+            }
+            report.block_reason = Some("mcp_or_configuration_error".into());
+            report.failure_detail = Some(format!("{error:#}"));
+            report.capture_source(&error);
+            if report.selected == 0 {
+                report.preserve_deferrals(state.path());
+            }
+            if error.is::<cases::Access>() && super::watcher::temporary_database_failure(&error) {
+                Next::Reconnect
+            } else if error.is::<cases::Access>() {
+                Next::Correct {
+                    code: "database_setup",
+                    action: format!(
+                        "Restore database access to the judge repair records. {error:#}"
+                    ),
+                }
+            } else {
+                Next::Correct { code: "tool_client", action: "Restore the program selected by [judge].mcp_command and its database access. After restoring it, reload the watcher to check the connection.".into() }
+            }
         }
-    }
-    queue.extend(&settings.core.database, attempts.into_values());
-    queue.flush(&settings.core.database, &mut report).await;
-    finish_report(settings, state, report, notify).await
+    };
+    session
+        .transcripts
+        .extend(&settings.core.database, attempts.into_values());
+    session
+        .transcripts
+        .flush(&settings.core.database, &mut report)
+        .await;
+    (
+        finish_report(settings, state, report, notify, &next).await,
+        next,
+    )
 }
 
 pub async fn setup_failure(
     settings: &RuntimeConfig,
     state: &State,
-    reason: &str,
+    reason: &'static str,
     error: &anyhow::Error,
-) -> Report {
+) -> (Report, Next) {
     let mut report = Report::new("blocked", 0, 0, 0, 0, 0);
     report.block_reason = Some(reason.into());
     report.failure_detail = Some(format!("{error:#}"));
     report.capture_source(error);
     report.preserve_deferrals(state.path());
-    finish_report(settings, state, report, true).await
+    let next = Next::Correct {
+        code: reason,
+        action: format!("Select an available backend and account in [llm]. {error:#}"),
+    };
+    (
+        finish_report(settings, state, report, true, &next).await,
+        next,
+    )
 }
 
 async fn finish_report(
@@ -410,7 +487,25 @@ async fn finish_report(
     state: &State,
     mut report: Report,
     notify: bool,
+    next: &Next,
 ) -> Report {
+    report.operator_needed =
+        Some(matches!(next, Next::Correct { .. }) || !report.deferred_reviews.is_empty());
+    report.recovery_action = Some(match next {
+        Next::Scan if report.pending > 0 && report.deferred_reviews.is_empty() => {
+            "The watcher will check the source again after the other ready reviews.".into()
+        }
+        Next::Scan => "The watcher continues with the next eligible review.".into(),
+        Next::WorkEvent => "The watcher is subscribed to new or changed work.".into(),
+        Next::Reconnect => {
+            "The watcher will reconnect to PostgreSQL and read the queue again.".into()
+        }
+        Next::Provider(wait) => {
+            format!("The provider requested a wait of {wait:?}. The watcher resumes automatically.")
+        }
+        Next::Correct { action, .. } => action.clone(),
+        Next::Lock(_) => "The watcher resumes when the current judge releases the lock.".into(),
+    });
     report.stamp();
     if let Err(error) = state.record_incident(&report) {
         eprintln!("Cannot save the failure incident; review result is unchanged: {error:#}");
@@ -418,7 +513,7 @@ async fn finish_report(
     if let Err(error) = state.write(&report) {
         eprintln!("Cannot save the local review report: {error:#}");
     }
-    if notify && notification::enqueue(settings, state, &mut report).is_err() {
+    if notify && notification::enqueue_batch(settings, state, &mut report, next).is_err() {
         report.notification = "unavailable".into();
     }
     if let Err(error) = state.write(&report) {
@@ -427,6 +522,7 @@ async fn finish_report(
     report
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_inner<B: Backend>(
     settings: &RuntimeConfig,
     state: &State,
@@ -434,60 +530,71 @@ async fn run_inner<B: Backend>(
     report: &mut Report,
     target: Option<ExperienceState>,
     attempts: &mut std::collections::HashMap<Uuid, super::transcript::Attempt>,
-) -> Result<()> {
+    ready: &mut std::collections::VecDeque<Entry>,
+    storage: cases::Storage,
+) -> Result<Next> {
     let mut client = Client::start(
         &settings.judge.mcp_command,
         &settings.judge.mcp_args,
         &settings.path,
     )
     .await?;
-    // A rejected source revision is held until it is corrected or reviewed by
-    // another caller. Reconcile against the database before excluding it.
-    // Spec (Mimir.DeferredReviews.ListValid): the retained list is bounded,
-    // its revisions are valid, and no identity appears twice.
-    let carried = state::read(state.path())?
-        .filter(|previous| previous.guided_repair && target.is_none())
-        .into_iter()
-        .flat_map(|report| report.deferred_reviews)
-        .collect::<Vec<_>>();
-    {
-        let mut ids = std::collections::HashSet::new();
-        for item in &carried {
-            ensure!(item.revision > 0, "invalid deferred review revision");
-            ensure!(ids.insert(item.id), "duplicate deferred review");
-        }
-    }
-    for deferred in carried {
-        let current = client
-            .tool("get_experience", json!({"id":deferred.id}))
-            .await?;
-        if current.is_null() {
-            continue;
-        }
-        let current = parse_state(current)?;
-        // Spec (Mimir.DeferredReviews.checkIdentity): the deferred lookup
-        // must return the same experience, not merely matching revisions.
-        ensure!(
-            current.experience.id == deferred.id,
-            "deferred lookup returned another experience"
+    // Production holds come from the database; unit MCP fixtures have no SQL server.
+    let db = storage.connect(&settings.core.database).await?;
+    let previous = state::read(state.path()).unwrap_or_else(|error| {
+        eprintln!(
+            "Could not read the previous judge report. Using PostgreSQL repair cases: {error:#}"
         );
-        let in_scope = settings
-            .judge
-            .project
-            .as_ref()
-            .is_none_or(|project| *project == current.experience.project);
-        if in_scope {
-            if still_deferred(&deferred, current.revision, current.reviewed_revision) {
-                report.deferred_reviews.push(deferred);
-            } else if deferred.repair.is_some()
-                && current.revision == deferred.revision
-                && current.reviewed_revision == deferred.revision
-            {
-                if let Err(error) =
-                    notification::review_recovered(settings, state.path(), &deferred)
+        None
+    });
+    let legacy = previous
+        .as_ref()
+        .filter(|old| old.guided_repair && !old.database_cases);
+    if let Some(db) = &db {
+        if let Some(old) = legacy {
+            for held in &old.deferred_reviews {
+                if let Some(case) = &held.repair {
+                    cases::open(db, held.id, held.revision, case)
+                        .await
+                        .context(cases::Access)?;
+                }
+            }
+        }
+        for (held, revision, reviewed) in cases::list(db, &settings.judge.project)
+            .await
+            .context(cases::Access)?
+        {
+            if still_deferred(&held, revision, reviewed) {
+                notification::queue_repair(settings, state, &held);
+                report.deferred_reviews.push(held);
+            } else {
+                if reviewed == held.revision {
+                    if let Err(error) = state.confirm_review(held.id, held.revision) {
+                        eprintln!("Could not save confirmation in the judge status: {error:#}");
+                    }
+                    if let Err(error) =
+                        notification::review_recovered(settings, state.path(), &held)
+                    {
+                        eprintln!(
+                            "Could not queue the notice for confirmed review {}: {error:#}",
+                            held.id
+                        );
+                        continue;
+                    }
+                }
+                cases::close(db, &held).await.context(cases::Access)?;
+            }
+        }
+        report.database_cases = true;
+    } else if let Some(old) = legacy {
+        for held in &old.deferred_reviews {
+            let value = client.tool("get_experience", json!({"id":held.id})).await?;
+            if !value.is_null() && held.repair.is_some() {
+                let row = parse_state(value)?;
+                if row.experience.id == held.id
+                    && still_deferred(held, row.revision, row.reviewed_revision)
                 {
-                    eprintln!("Cannot queue the review recovery notice: {error:#}");
-                    report.deferred_reviews.push(deferred);
+                    report.deferred_reviews.push(held.clone());
                 }
             }
         }
@@ -504,10 +611,99 @@ async fn run_inner<B: Backend>(
     if let Some(project) = &settings.judge.project {
         arguments["project"] = json!(project);
     }
+    let scheduled = if target.is_none() {
+        ready.pop_front()
+    } else {
+        None
+    };
+    let mut retries = Vec::new();
+    let mut shared = None;
     let batch: Vec<ExperienceState> = match target {
         Some(selected) => vec![selected],
+        None if scheduled.is_some() => {
+            let entry = scheduled.as_ref().expect("scheduled turn");
+            if report
+                .deferred_reviews
+                .iter()
+                .any(|held| held.id == entry.id && held.revision == entry.revision)
+            {
+                vec![]
+            } else {
+                let source = client
+                    .tool("get_experience", json!({"id":entry.id}))
+                    .await
+                    .and_then(|value| {
+                        if value.is_null() {
+                            Ok(None)
+                        } else {
+                            parse_state(value).map(Some)
+                        }
+                    })
+                    .and_then(|row| {
+                        ensure!(
+                            row.as_ref().is_none_or(|r| r.experience.id == entry.id),
+                            "source read returned another experience"
+                        );
+                        Ok(row)
+                    });
+                match source {
+                    Ok(Some(row))
+                        if entry.pending(&row)
+                            && settings
+                                .judge
+                                .project
+                                .as_ref()
+                                .is_none_or(|p| *p == row.experience.project) =>
+                    {
+                        match &entry.task {
+                            Task::Prepare => vec![row],
+                            Task::VerifySource => {
+                                ready.push_back(Entry {
+                                    task: Task::Prepare,
+                                    ..entry.clone()
+                                });
+                                vec![]
+                            }
+                            Task::VerifyOutcome(obstacle) => {
+                                match obstacle.clone().after_pending_read(entry.clone()) {
+                                    Resolution::Requeue(turn) => ready.push_back(turn),
+                                    Resolution::Shared(next) => return Ok(next),
+                                    Resolution::Repair(case) => {
+                                        retain_case(
+                                            settings,
+                                            state,
+                                            db.as_ref(),
+                                            report,
+                                            entry,
+                                            case,
+                                        )
+                                        .await?;
+                                    }
+                                }
+                                vec![]
+                            }
+                        }
+                    }
+                    Ok(_) => vec![],
+                    Err(error) => {
+                        if matches!(entry.task, Task::Prepare) {
+                            ready.push_back(Entry {
+                                task: Task::VerifySource,
+                                ..entry.clone()
+                            });
+                        } else {
+                            let case = RepairCase::new(Remedy::RestoreRead, "The review result could not be read. Restore source access and verify the revision.", format!("{error:#}"));
+                            retain_case(settings, state, db.as_ref(), report, entry, case).await?;
+                        }
+                        vec![]
+                    }
+                }
+            }
+        }
         None => {
-            let fetched = client.tool("pending_experiences", arguments).await?;
+            let fetched = client
+                .tool("pending_experiences", arguments.clone())
+                .await?;
             serde_json::from_value(fetched.clone()).map_err(|error| {
                 state::SourceFailure::json(
                     "invalid pending batch",
@@ -539,6 +735,10 @@ async fn run_inner<B: Backend>(
     }
     report.selected = batch.len();
     report.selected_ids = batch.iter().map(|item| item.experience.id).collect();
+    report.selected_revisions = batch
+        .iter()
+        .map(|item| (item.experience.id, item.revision))
+        .collect();
     if batch.is_empty() {
         if report.deferred_reviews.is_empty() {
             report.status = "idle".into();
@@ -546,11 +746,17 @@ async fn run_inner<B: Backend>(
             report.status = "blocked".into();
             report.block_reason = Some("review_deferred".into());
         }
-        return Ok(());
+        return Ok(if scheduled.is_some() {
+            Next::Scan
+        } else {
+            Next::WorkEvent
+        });
     }
-    let mut failed = false;
-    let mut repairs = std::collections::HashMap::new();
+    let mut any_failed = false;
     for selected in &batch {
+        let mut failed = false;
+        let mut obstacle = None;
+        let turn = scheduled.clone().unwrap_or_else(|| Entry::first(selected));
         let attempt = attempts
             .entry(selected.experience.id)
             .or_insert_with(|| super::transcript::Attempt::new(selected));
@@ -558,7 +764,7 @@ async fn run_inner<B: Backend>(
         let mut candidate_rejections = 0;
         let mut candidate_rejection_detail = None;
         let mut last_rejection: Option<(String, String, Option<SourceFailure>)> = None;
-        let mut rejected_faults: Vec<(String, Fault)> = Vec::new();
+        let mut rejected_requests = Vec::new();
         let mut submission_requested = false;
         let mut needs_repair = false;
         let mut corrected_draft = None;
@@ -577,10 +783,29 @@ async fn run_inner<B: Backend>(
                     }));
                     if candidate_rejections == 0 {
                         failed = true;
+                        let delay = error
+                            .downcast_ref::<super::harness::ProviderLimit>()
+                            .and_then(|limit| {
+                                let now = chrono::Local::now();
+                                super::provider_resume_delay(
+                                    &limit.to_string(),
+                                    now.hour() * 60 + now.minute(),
+                                )
+                                .map(|minutes| {
+                                    std::time::Duration::from_secs(u64::from(minutes) * 60)
+                                })
+                            });
+                        let delay = delay.or_else(|| {
+                            error
+                                .downcast_ref::<super::recovery::ProviderReset>()
+                                .map(|r| r.0)
+                        });
+                        obstacle = Some(Obstacle::Model(format!("{error:#}"), delay));
                         report.block_reason = Some(
-                            if error
-                                .downcast_ref::<super::harness::ProviderLimit>()
-                                .is_some()
+                            if delay.is_some()
+                                || error
+                                    .downcast_ref::<super::harness::ProviderLimit>()
+                                    .is_some()
                             {
                                 "provider_usage_limit".into()
                             } else {
@@ -592,6 +817,10 @@ async fn run_inner<B: Backend>(
                     }
                     break;
                 }
+            };
+            let tool_name = match &action {
+                Action::Tool { name, .. } | Action::RejectedTool { name, .. } => Some(name.clone()),
+                Action::Done => None,
             };
             match action {
                 Action::Done => {
@@ -614,6 +843,12 @@ async fn run_inner<B: Backend>(
                             continue;
                         }
                         Ok("pending") => {
+                            if last_rejection.is_none() && candidate_rejections == 0 {
+                                obstacle = Some(Obstacle::NoSubmission(
+                                    "The judge stopped without submitting the requested review."
+                                        .into(),
+                                ));
+                            }
                             needs_repair = true;
                             last_rejection.get_or_insert_with(|| (
                                 "review_experience".into(),
@@ -678,6 +913,11 @@ async fn run_inner<B: Backend>(
                                         .collect::<Vec<_>>()
                                         .join(" "),
                                 );
+                                obstacle = Some(Obstacle::Decision(RepairCase::new(
+                                    Remedy::EditReview,
+                                    "The review needs a decision before it can be saved.",
+                                    report.failure_detail.clone().unwrap_or_default(),
+                                )));
                                 break;
                             }
                             let correction = value.get("status").and_then(Value::as_str)
@@ -685,14 +925,20 @@ async fn run_inner<B: Backend>(
                             last = Some(value);
                             // The database acknowledgement is authoritative. A model
                             // need not spend another turn saying it is done.
-                            if !correction
-                                && name == "review_experience"
-                                && matches!(
-                                    observe(&mut client, selected).await?,
-                                    "confirmed" | "corrected"
-                                )
-                            {
-                                confirmed_review = true;
+                            if !correction && name == "review_experience" {
+                                match observe(&mut client, selected).await {
+                                    Ok("confirmed" | "corrected") => confirmed_review = true,
+                                    Ok(_) => {
+                                        obstacle = Some(Obstacle::NoSubmission(
+                                            "The review tool returned without a confirmed review."
+                                                .into(),
+                                        ))
+                                    }
+                                    Err(error) => {
+                                        failed = true;
+                                        obstacle = Some(Obstacle::Tool(format!("{error:#}")));
+                                    }
+                                }
                                 break;
                             }
                         }
@@ -793,14 +1039,6 @@ async fn run_inner<B: Backend>(
                             } else {
                                 "The judge submitted a request Mimir rejected and did not resolve it."
                             };
-                            if let Some(fault) = fault.filter(|_| is_undeclared || is_graph_scope) {
-                                let rejected = (name, fault.clone());
-                                if rejected_faults.contains(&rejected) {
-                                    needs_repair = true;
-                                    break;
-                                }
-                                rejected_faults.push(rejected);
-                            }
                         }
                         Err(error) => {
                             attempt.event("tool_error", Some(&name), json!(format!("{error:#}")));
@@ -815,6 +1053,16 @@ async fn run_inner<B: Backend>(
                             break;
                         }
                     }
+                }
+            }
+            if let (Some(name), Some(feedback)) = (tool_name, last.as_ref()) {
+                if feedback.get("error").is_some() || feedback["status"] == "needs_correction" {
+                    let rejected = (name, feedback.clone());
+                    if rejected_requests.contains(&rejected) {
+                        needs_repair = true;
+                        break;
+                    }
+                    rejected_requests.push(rejected);
                 }
             }
         }
@@ -842,7 +1090,7 @@ async fn run_inner<B: Backend>(
                     Ok("confirmed" | "corrected")
                 );
             }
-            if !confirmed_review {
+            if !confirmed_review && obstacle.is_none() {
                 report
                     .block_reason
                     .get_or_insert_with(|| "review_requires_repair".into());
@@ -851,21 +1099,17 @@ async fn run_inner<B: Backend>(
         if confirmed_review {
             attempts.remove(&selected.experience.id);
         }
-        if !confirmed_review && !failed {
+        if !confirmed_review && obstacle.is_none() && !failed {
             let detail = last_rejection
                 .as_ref()
                 .map(|(_, detail, _)| detail.clone())
                 .or_else(|| candidate_rejection_detail.clone())
                 .unwrap_or_else(|| repair_explanation.into());
-            repairs.insert(
-                selected.experience.id,
-                RepairCase {
-                    explanation: repair_explanation.into(),
-                    detail,
-                    diagnostic_id: None,
-                    transcript_pending: false,
-                },
-            );
+            obstacle = Some(Obstacle::Decision(RepairCase::new(
+                Remedy::EditReview,
+                repair_explanation,
+                detail,
+            )));
         }
         if !confirmed_review {
             if let Some((name, detail, source)) = last_rejection {
@@ -880,7 +1124,14 @@ async fn run_inner<B: Backend>(
                     report.failure_source = source;
                 }
                 if report.block_reason.is_none() {
-                    report.block_reason = Some("tool_rejected".into());
+                    report.block_reason = Some(
+                        if matches!(obstacle, Some(Obstacle::NoSubmission(_))) {
+                            "no_submission"
+                        } else {
+                            "tool_rejected"
+                        }
+                        .into(),
+                    );
                 }
             }
         }
@@ -893,23 +1144,65 @@ async fn run_inner<B: Backend>(
                     .unwrap_or("review correction was not confirmed"),
             ));
         }
-        if failed {
-            break;
+        if !confirmed_review {
+            any_failed = true;
+            let obstacle = obstacle.unwrap_or_else(|| {
+                Obstacle::Tool(
+                    report
+                        .diagnostic
+                        .as_ref()
+                        .map(|d| d.detail.clone())
+                        .unwrap_or_else(|| "The review tool stopped.".into()),
+                )
+            });
+            if failed {
+                client.stop().await;
+                client = Client::start(
+                    &settings.judge.mcp_command,
+                    &settings.judge.mcp_args,
+                    &settings.path,
+                )
+                .await?;
+            }
+            match observe(&mut client, selected).await {
+                Ok("pending") => match obstacle.after_pending_read(turn) {
+                    Resolution::Requeue(entry) => retries.push(entry),
+                    Resolution::Shared(next) => {
+                        shared = Some(next);
+                        break;
+                    }
+                    Resolution::Repair(case) => {
+                        report.block_reason = Some("review_requires_repair".into());
+                        let mut case = case;
+                        case.transcript_pending = attempts.contains_key(&selected.experience.id);
+                        retain_case(
+                            settings,
+                            state,
+                            db.as_ref(),
+                            report,
+                            &Entry::first(selected),
+                            case,
+                        )
+                        .await?;
+                    }
+                },
+                Ok(_) => {
+                    attempts.remove(&selected.experience.id);
+                }
+                Err(_) => retries.push(Entry {
+                    task: Task::VerifyOutcome(obstacle),
+                    ..turn
+                }),
+            }
         }
-    }
-    if failed {
-        client.stop().await;
-        client = Client::start(
-            &settings.judge.mcp_command,
-            &settings.judge.mcp_args,
-            &settings.path,
-        )
-        .await?;
     }
     for selected in &batch {
         match observe(&mut client, selected).await {
             Ok(outcome @ ("confirmed" | "corrected")) => {
                 attempts.remove(&selected.experience.id);
+                report.deferred_reviews.retain(|pin| {
+                    pin.id != selected.experience.id || pin.revision != selected.revision
+                });
                 if outcome == "confirmed" {
                     report.confirmed += 1;
                 } else {
@@ -921,24 +1214,6 @@ async fn run_inner<B: Backend>(
                     attempt.pending();
                 }
                 report.pending += 1;
-                // Spec (Mimir.JudgeBatchReadback.pendingDeferrals): a pin
-                // whose final readback stays pending — the stored revision
-                // still matches the selection but no review was confirmed —
-                // joins the deferred set. It is excluded from subsequent
-                // selections and reconciled against fresh reads, so one
-                // conflicted experience cannot park the whole watcher.
-                // The deferred set is unique per pin; the candidate-conflict
-                // path may already hold this pin.
-                let deferred = report.deferred_reviews.iter().any(|item| {
-                    item.id == selected.experience.id && item.revision == selected.revision
-                });
-                if !deferred && repairs.contains_key(&selected.experience.id) {
-                    report.deferred_reviews.push(DeferredReview {
-                        id: selected.experience.id,
-                        revision: selected.revision,
-                        repair: repairs.remove(&selected.experience.id),
-                    });
-                }
             }
             Ok(_) => report.unavailable += 1,
             Err(error) => {
@@ -972,7 +1247,7 @@ async fn run_inner<B: Backend>(
         // replaces an earlier blocking reason — the retained diagnostic and
         // failure detail still explain the attempt.
         report.block_reason = None;
-    } else if failed && report.block_reason.is_none() {
+    } else if any_failed && report.block_reason.is_none() {
         report.block_reason = Some("incomplete".into());
     }
     if report.status != "complete" && report.block_reason.is_none() {
@@ -987,6 +1262,69 @@ async fn run_inner<B: Backend>(
             .into(),
         );
     }
+    if !retries.is_empty() && scheduled.is_none() {
+        arguments
+            .as_object_mut()
+            .expect("selection arguments")
+            .remove("limit");
+        let mut excluded = retries
+            .iter()
+            .map(|e| e.id)
+            .chain(report.deferred_reviews.iter().map(|h| h.id))
+            .collect::<std::collections::HashSet<_>>();
+        arguments["exclude_ids"] = json!(excluded);
+        let waiting: Vec<ExperienceState> =
+            serde_json::from_value(client.tool("pending_experiences", arguments).await?)?;
+        for row in waiting {
+            ensure!(
+                settings
+                    .judge
+                    .project
+                    .as_ref()
+                    .is_none_or(|p| *p == row.experience.project),
+                "MCP returned wrong project"
+            );
+            ensure!(
+                row.revision > 0 && row.review_revision >= 0,
+                "MCP returned invalid revision"
+            );
+            if excluded.insert(row.experience.id) {
+                ready.push_back(Entry::first(&row));
+            }
+        }
+    }
+    ready.extend(retries);
+    Ok(shared.unwrap_or(Next::Scan))
+}
+
+async fn retain_case(
+    settings: &RuntimeConfig,
+    state: &State,
+    db: Option<&tokio_postgres::Client>,
+    report: &mut Report,
+    entry: &Entry,
+    case: RepairCase,
+) -> Result<()> {
+    if let Some(db) = db {
+        let mut stored = case.clone();
+        stored.transcript_pending = false;
+        if !cases::open(db, entry.id, entry.revision, &stored)
+            .await
+            .context(cases::Access)?
+        {
+            return Ok(());
+        }
+    }
+    let held = DeferredReview {
+        id: entry.id,
+        revision: entry.revision,
+        repair: Some(case),
+    };
+    notification::queue_repair(settings, state, &held);
+    report
+        .deferred_reviews
+        .retain(|r| r.id != held.id || r.revision != held.revision);
+    report.deferred_reviews.push(held);
     Ok(())
 }
 
@@ -1371,7 +1709,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalid_tool_requests_remain_correctable_until_backend_stops() {
+    async fn rejected_requests_receive_feedback_and_repeated_defects_open_repair() {
         use std::os::unix::fs::PermissionsExt;
 
         let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/judge/retry_fixture.sh");
@@ -1405,7 +1743,7 @@ mod tests {
             let report = run(&settings, &state, &mut backend).await;
             if matches!(case, RejectionCase::Exhausted) {
                 assert_eq!(report.status, "blocked");
-                assert_eq!(backend.calls, 27);
+                assert_eq!(backend.calls, 2);
                 assert_eq!(
                     report.block_reason.as_deref(),
                     Some("review_requires_repair")
@@ -1431,7 +1769,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn requests_beyond_old_budget_are_counted_and_pending_readback_defers() {
+    async fn missing_submission_gets_a_fresh_turn_before_repair() {
         use std::os::unix::fs::PermissionsExt;
 
         let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/judge/retry_fixture.sh");
@@ -1460,13 +1798,36 @@ mod tests {
         let settings = super::super::config::load(Some(&config_path)).unwrap();
         let state = State::lock(dir.join("state")).unwrap().unwrap();
         let mut backend = NoReview { calls: 0 };
-        let failed = run(&settings, &state, &mut backend).await;
+        let mut session = Session::default();
+        let (initial, _) = run_batch(
+            &settings,
+            &state,
+            &mut backend,
+            None,
+            &mut session,
+            cases::Storage::Fixture,
+        )
+        .await;
+        assert_eq!(initial.pending, 1);
+        assert!(initial.deferred_reviews.is_empty());
+        assert_eq!(backend.calls, 27);
+        assert!(session
+            .ready
+            .front()
+            .is_some_and(|entry| entry.id == experience_id && entry.fresh));
+        let (failed, _) = run_batch(
+            &settings,
+            &state,
+            &mut NoReview { calls: 0 },
+            None,
+            &mut session,
+            cases::Storage::Fixture,
+        )
+        .await;
         assert_eq!(failed.status, "blocked");
         assert_eq!(
             failed.block_reason.as_deref(),
-            Some("review_requires_repair"),
-            "a pending final readback joins the deferred set \
-             (Mimir.JudgeBatchReadback.pendingDeferrals)"
+            Some("review_requires_repair")
         );
         assert_eq!(failed.pending, 1);
         assert_eq!(failed.deferred_reviews.len(), 1);
@@ -1813,7 +2174,7 @@ mod tests {
         assert_eq!(report.status, "partial");
         assert_eq!(report.confirmed, 1);
         assert_eq!(report.pending, 1);
-        assert_eq!(report.notification, "retry_pending");
+        assert_eq!(report.notification, "not_needed");
         let reviewed = service
             .get_experience(first.id)
             .await

@@ -478,6 +478,35 @@ impl<'a> Notifier<'a> {
         Ok(outcomes)
     }
 
+    /// An operator has corrected delivery settings or requested a check after
+    /// restoring the account. Try each stopped message with the same ID. Only
+    /// SMTP acceptance clears it; another failure leaves it stopped.
+    pub async fn verify_delivery_repair(&self) -> Result<()> {
+        let stopped = {
+            let state = StateDir::lock(&self.state_dir)?;
+            let outbox: Outbox = state.read()?.unwrap_or_default();
+            outbox
+                .incidents
+                .into_iter()
+                .filter_map(|(key, incident)| {
+                    incident
+                        .outbox
+                        .filter(|a| a.delivery == Delivery::Exhausted)
+                        .map(|a| (key, a.id))
+                })
+                .collect::<Vec<_>>()
+        };
+        for (key, id) in stopped {
+            let outcome = self
+                .deliver(&key, now(), None::<NoSender>, Some(&id))
+                .await?;
+            if outcome == Outcome::Exhausted {
+                eprintln!("The mail service still cannot accept the saved alert. Check the configured account and SMTP service.");
+            }
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     async fn submit_with<F, Fut>(&self, event: &Event, current: u64, send: F) -> Result<Outcome>
     where
@@ -514,6 +543,20 @@ impl<'a> Notifier<'a> {
         F: FnOnce(lettre::Message) -> Fut,
         Fut: Future<Output = std::result::Result<(), SendFailure>>,
     {
+        self.deliver(key, current, send_override, None).await
+    }
+
+    async fn deliver<F, Fut>(
+        &self,
+        key: &str,
+        current: u64,
+        send_override: Option<F>,
+        stopped_id: Option<&str>,
+    ) -> Result<Outcome>
+    where
+        F: FnOnce(lettre::Message) -> Fut,
+        Fut: Future<Output = std::result::Result<(), SendFailure>>,
+    {
         // Snapshot the original message, then release the outbox lock before
         // any network work. Review completion can enqueue mail while SMTP stalls.
         let original = {
@@ -525,15 +568,19 @@ impl<'a> Notifier<'a> {
             let Some(alert) = incident.outbox.as_mut() else {
                 return Ok(Outcome::NotNeeded);
             };
-            if alert.delivery == Delivery::Exhausted || alert.next_due > current {
+            if let Some(id) = stopped_id {
+                if alert.delivery != Delivery::Exhausted || alert.id != id {
+                    return Ok(outcome(incident));
+                }
+            } else if alert.delivery == Delivery::Exhausted || alert.next_due > current {
                 return Ok(outcome(incident));
             }
-            if alert.attempts >= self.config.max_attempts {
+            if stopped_id.is_none() && alert.attempts >= self.config.max_attempts {
                 alert.delivery = Delivery::Exhausted;
                 state.write(&outbox)?;
                 return Ok(Outcome::Exhausted);
             }
-            alert.attempts += 1;
+            alert.attempts = alert.attempts.saturating_add(1);
             alert.next_due = current.saturating_add(self.config.retry_seconds);
             let original = alert.clone();
             state.write(&outbox)?;

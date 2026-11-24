@@ -38,6 +38,11 @@ elif [[ "$kind" == claude ]]; then
     for needle in --print --restricted --tools --strict-mcp-config --mcp-config --disable-slash-commands --no-session-persistence --output-format --json-schema --permission-mode --permission-prompts --settings --model; do has "$@"; done
 fi
 payload="$(cat)"
+if [[ -f "$MIMIR_ADAPTER_FIXTURE_ROOT/failing-source" ]]; then
+    selected=$(jq -er '.experience.experience.id' <<< "$payload")
+    printf '%s\n' "$selected" >> "$MIMIR_ADAPTER_FIXTURE_ROOT/attempt-order"
+    if [[ $selected == "$(<"$MIMIR_ADAPTER_FIXTURE_ROOT/failing-source")" ]]; then exit 7; fi
+fi
 if jq -e '.history | length > 0' <<< "$payload" >/dev/null; then
     reply='{"calls":[]}'
 else
@@ -175,24 +180,27 @@ project="step6-watch-$(uuidgen)"
 config="$base/watch.toml"
 current_config="$config"
 current_project="$project"
-make_config command "$project" "$config" "$base/judge-process-fixture"
-seed "$config" "$project" >/dev/null
-MIMIR_JUDGE_FIXTURE_MODE=crash bash "$repo/tests/support/fixture.sh" cancel \
-    --ready "$base/state-watch/judge-status.json" --stderr-ready 'Review attempt stopped' \
+make_config command "$project" "$config" "$base/bin/custom"
+broken=$(seed "$config" "$project")
+healthy=$(seed "$config" "$project")
+printf '%s\n' "$broken" > "$base/failing-source"
+bash "$repo/tests/support/fixture.sh" cancel \
+    --ready "$base/state-watch/judge-status.json" --held-review "$broken" \
     --report "$base/watch-stdout" -- "$bin" judge watch --config "$config" \
     --state-dir "$base/state-watch"
 test ! -s "$base/watch-stdout"
-test "$(grep -c 'Review attempt stopped' "$base/watch-stdout.stderr")" -eq 1
-jq -e '.phase == "awaiting_repair" and .needs_attention == true' "$base/state-watch/judge-runtime.json" >/dev/null
-"$bin" judge status --state-dir "$base/state-watch" \
-    | jq -e '.report.status == "blocked" and .report.block_reason == "backend_error"
-        and .report.diagnostics_id != null
-        and (.report.failure_detail | contains("harness exited with status Some(7)"))' >/dev/null
-test ! -e "$base/state-watch/judge-diagnostics.json"
-diagnostic=$("$bin" judge status --state-dir "$base/state-watch" | jq -er '.report.diagnostics_id')
+printf '%s\n' "$broken" "$healthy" "$broken" > "$base/expected-order"
+diff -u "$base/expected-order" "$base/attempt-order"
+call_tool "$config" get_experience "$(jq -nc --arg id "$healthy" '{id:$id}')" | jq -e '.reviewed_revision == 1' >/dev/null
+call_tool "$config" pending_experiences "$(jq -nc --arg project "$project" '{project:$project}')" | jq -e --arg id "$broken" 'length == 1 and .[0].experience.id == $id' >/dev/null
+diagnostic=$("$bin" judge diagnostics --list --json --config "$config" --state-dir "$base/state-watch" |
+    jq -er --arg id "$broken" '[.attempts[] | select(.experience_id == $id)] | select(length == 2) | first.id')
 "$bin" judge diagnostics --json --id "$diagnostic" --config "$config" --state-dir "$base/state-watch" \
     | jq -e '.trace.transcript.events | any(.kind == "model_error")' >/dev/null
-call_tool "$config" pending_experiences "$(jq -nc --arg project "$project" '{project:$project,limit:1}')" | jq -e 'length == 1' >/dev/null
+# The operator restores the backend, opens the emailed command and chooses verification.
+rm "$base/failing-source"
+printf 'v\n' | "$bin" judge repair --config "$config" --state-dir "$base/state-watch" --experience "$broken" --revision 1 > "$base/operator-repair"
+call_tool "$config" get_experience "$(jq -nc --arg id "$broken" '{id:$id}')" | jq -e '.reviewed_revision == 1' >/dev/null
 call_tool "$config" delete_project "$(jq -nc --arg project "$project" '{project:$project}')" >/dev/null
 current_project=
 printf 'judge adapter fixtures passed: Claude, Codex, custom, crash, malformed, oversized, cancellation, descendant cleanup, false completion, incompatible flags, quiet watch retry\n'
