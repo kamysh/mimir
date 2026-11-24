@@ -20,6 +20,7 @@ open import Mimir.Text using (Text)
 open import Mimir.SourceReview using (_≟Text_)
 import Mimir.ExperienceSchema as Experience
 import Mimir.ReviewObservation as Observation
+import Mimir.JudgeHost as Host
 import Mimir.JudgeHandshake as Handshake
 import Mimir.Validation as Validation
 import Mimir.Effects as Effects
@@ -62,7 +63,7 @@ module Select (contract model : ℕ) (batchLimit : Maybe ℕ) (project : Maybe T
   noPreparedItemIsExcluded chosen = Pending.noSelectedIsExcluded (Prepared.valid chosen)
 
   data Result : Set where
-    failed : Revision.Error → Result
+    failed : Host.Remedy → Revision.Error → Result
     malformed : Validation.Fault → Result
     selected : Prepared → Result
 
@@ -98,7 +99,7 @@ module Select (contract model : ℕ) (batchLimit : Maybe ℕ) (project : Maybe T
 
   fetch : List Observation.Deferred → Script Result
   fetch deferred = ask (pending project batchLimit (map Observation.Deferred.identity deferred)) (λ
-    { (inj₁ failureValue) → done (failed failureValue) ; (inj₂ batch) → admit deferred batch })
+    { (inj₁ failureValue) → done (failed (Host.restoreToolClient (Revision.Error.detail failureValue)) failureValue) ; (inj₂ batch) → admit deferred batch })
 
   mutual
     reconcile : List Observation.Deferred → List Observation.Deferred → Script Result
@@ -108,7 +109,7 @@ module Select (contract model : ℕ) (batchLimit : Maybe ℕ) (project : Maybe T
 
     afterCurrent : Observation.Deferred → List Observation.Deferred → List Observation.Deferred →
       Revision.Error ⊎ Maybe Observation.Snapshot → Script Result
-    afterCurrent item remaining retained (inj₁ failureValue) = done (failed failureValue)
+    afterCurrent item remaining retained (inj₁ failureValue) = done (failed (Host.restoreToolClient (Revision.Error.detail failureValue)) failureValue)
     afterCurrent item remaining retained (inj₂ nothing) = reconcile remaining retained
     afterCurrent item remaining retained (inj₂ (just observed)) with Observation.checkSnapshot observed
     ... | Validation.rejected fault invalid = done (malformed fault)
@@ -118,7 +119,7 @@ module Select (contract model : ℕ) (batchLimit : Maybe ℕ) (project : Maybe T
 
   start : Script Result
   start = ask previousDeferred (λ
-    { (inj₁ failureValue) → done (failed failureValue) ; (inj₂ retained) → reconcile retained [] })
+    { (inj₁ failureValue) → done (failed (Host.restoreStateAccess (Revision.Error.detail failureValue)) failureValue) ; (inj₂ retained) → reconcile retained [] })
 
   completedSelectionIsEligible : ∀ events chosen → Runs start events (selected chosen) →
     All (Pending.Eligible (map Observation.Deferred.identity (Prepared.deferred chosen))) (Prepared.batch chosen)
