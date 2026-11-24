@@ -9,7 +9,7 @@ open import Data.Nat using (ℕ)
 import Mimir.UUIDGroups as UUIDValue
 open import Data.Product using (_,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
-open import Data.Unit using (⊤)
+open import Data.Unit using (⊤; tt)
 open import Data.String using (String; toList)
 open import Relation.Binary.PropositionalEquality using (_≡_)
 open import Mimir.Text using (Text)
@@ -18,6 +18,7 @@ import Mimir.PublicEncoding as Encoding
 import Mimir.ApplicationProtocol as Application
 import Mimir.JudgeRevision as Revision
 import Mimir.JudgeRevisionPolicy as Recovery
+import Mimir.JudgeHost as Host
 import Mimir.JudgeServiceBinding as Service
 import Mimir.JudgeScopedTools as Scope
 import Mimir.JudgeSelection as Selection
@@ -102,6 +103,8 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
   readback (inj₂ observedSnapshot) = inj₂ observedSnapshot
 
   data ReadbackReceipt : (effect : Readback.Effect) → Readback.Reply effect → Set where
+    confirmed : ∀ chosen evidence → Host.Reconciled (Host.savedReview format chosen) →
+      ReadbackReceipt (Readback.reviewConfirmed chosen evidence) tt
     clock : ∀ now → ReadbackReceipt Readback.clock now
     observed : ∀ pin requestID reply →
       S.Receipt requestID Catalog.getExperience (byID (Observation.Pin.identity pin)) reply →
@@ -113,5 +116,6 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
   selectionCalls (selected _ _ _ _ _ receipt) = S.issued receipt ∷ []
 
   readbackCalls : ∀ {effect reply} → ReadbackReceipt effect reply → List Client.Issued
+  readbackCalls (confirmed _ _ _) = []
   readbackCalls (clock _) = []
   readbackCalls (observed _ _ _ receipt) = S.issued receipt ∷ []
