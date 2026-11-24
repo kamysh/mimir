@@ -17,6 +17,7 @@ import Mimir.JudgeServiceBinding as Service
 import Mimir.JudgeBackendComposition as Backend
 import Mimir.JudgeWorkflow as Workflow
 import Mimir.JudgeHost as Host
+import Mimir.JudgeRevisionPolicy as Recovery
 import Mimir.JudgeHandshake as Handshake
 import Mimir.JudgeFinalizationComposition as Finalization
 import Mimir.UnixPath as Path
@@ -42,6 +43,8 @@ module Compose (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   data External : W.Effect → Set where
     clock : External W.clock
+    -- A successful reply means the case and immediate notification are both available.
+    repairCase : ∀ request → External (W.openRepair request (Recovery.instructions (Recovery.Case.choice request)))
 
 
   data Receipt : Backend.BackendState → (effect : W.Effect) → W.Reply effect → Backend.BackendState → Set where

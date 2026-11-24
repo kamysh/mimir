@@ -14,6 +14,7 @@ Follow the topic's links for the transaction and proof details.
 | [Experience recording](spec/Mimir/ExperienceRecord.lagda.md), [review correction](spec/Mimir/ReviewRecord.lagda.md), and [history](spec/Mimir/LearningHistory.lagda.md) | Stable identity, versioned contributions, stale requests, and consistent history | MCP correction, learning-cycle, and PostgreSQL history tests |
 | [Belief explanations](spec/Mimir/BeliefExplanation.lagda.md) and [lesson assessments](spec/Mimir/AssessmentRead.lagda.md) | Current provenance and links, active contribution selection, and assessment history | MCP explanation and assessment reads in the learning cycle |
 | [Inference and retirement](spec/Mimir/InferenceProtocol.lagda.md) and [project deletion](spec/Mimir/ProjectDeletion.lagda.md) | Which beliefs change or are removed, and what happens after a failed write | PostgreSQL rollback and fresh-retry tests |
+| [Failed reviews](spec/Mimir/JudgeRevisionPolicy.lagda.md) | Database confirmation, fresh attempts, and actionable repair | Judge recovery specification |
 | [Judge watcher](spec/Mimir/JudgeHostProtocol.lagda.md) | Work selection, confirmation, deferral, outage recovery, and repair | Watcher unit tests and the isolated judge database recovery test |
 
 The [formal coverage inventory](docs/FORMAL-BEHAVIOR-COVERAGE.md) describes the
