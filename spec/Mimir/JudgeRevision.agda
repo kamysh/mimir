@@ -2,7 +2,8 @@
 -- One selected revision. Database readback confirms a review.
 module Mimir.JudgeRevision where
 
-open import Data.Bool using (Bool; true; false; not)
+open import Data.Bool using (Bool; true; false; _∧_)
+open import Data.Bool.ListAction using (any)
 open import Data.List using (List; []; _∷_; _++_; map)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; zero; suc; _+_)
@@ -50,6 +51,8 @@ data Action : Set where
 data Answer : Set where
   action : Action → Answer
   backendError : Error → Answer
+  backendUnavailable : Error → Answer
+  providerWaiting : Error → Policy.Signal → Answer
 
 record Rejection : Set where
   constructor rejection
@@ -74,17 +77,17 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   record Work : Set where
     constructor work
-    field report : R.Report; policy : Policy.State; last : Maybe V.Value; lastRejection : Maybe Rejection
+    field report : R.Report; sentCorrections : List (Text × Text); last : Maybe V.Value; lastRejection : Maybe Rejection
           submissionRequested : Bool
 
   record Outcome : Set where
     constructor outcome
-    field report : R.Report; failed : Bool
+    field report : R.Report; obstacle : Maybe Policy.Obstacle
 
   data Effect : Set where
     nextModel : Maybe V.Value → Effect
     hostTool : Scoped.Effect → Effect
-    stopTool : Effect
+    stopTool releaseBackend : Effect
     observe : Effect
     clock : Effect
 
@@ -92,6 +95,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   Reply (nextModel last) = Answer
   Reply (hostTool request) = Scoped.Reply request
   Reply stopTool = ⊤
+  Reply releaseBackend = ⊤
   Reply observe = Error ⊎ Maybe Observation.Snapshot
   Reply clock = Maybe ℕ
   module P = Effects.Protocol Effect Reply
@@ -113,45 +117,26 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     { report = record (R.captureSource source (Work.report w))
       { diagnostic = just (R.newDiagnostic observed identity name detail) } }))
 
-  deferred : Work → Script State
-  deferred w with Policy.finish pin (Work.policy w)
-    (map (λ d → Observation.deferred (R.Deferred.identity d) (R.Deferred.revision d))
-      (R.Report.deferredReviews (Work.report w)))
-  ... | Policy.retained retained = done (finished (outcome
-      (record (Work.report w) { deferredReviews = map
-        (λ d → R.deferred (Observation.Deferred.identity d) (Observation.Deferred.revision d)) retained })
-      (Policy.State.failed (Work.policy w))))
+  closeAttempt : Script State → Script State
+  closeAttempt next = ask stopTool (λ _ → ask releaseBackend (λ _ → next))
 
-  afterRejection : Work → Script State
-  afterRejection w with Policy.shouldDefer (Work.policy w)
-  ... | false = deferred w
-  ... | true = firstDiagnostic w (toList "review_experience") detail nothing >>= deferred
-    where
-    detail : Text
-    detail with Policy.State.lastConflict (Work.policy w)
-    ... | just message = message
-    ... | nothing = toList "review correction was not confirmed"
+  afterCleanup : Work → Policy.Obstacle → String → Error → Script State
+  afterCleanup w obstacle reason failure = done (finished (outcome
+    (record (R.captureSource (Error.source failure) (Work.report w))
+      { blockReason = just (toList reason) ; failureDetail = just (Error.detail failure) })
+    (just obstacle)))
 
-  rejectionReason : R.Report → R.Report
-  rejectionReason r with R.Report.blockReason r
-  ... | just _ = r
-  ... | nothing = record r { blockReason = just (toList "tool_rejected") }
+  interrupted : Work → Policy.Obstacle → String → Error → Script State
+  interrupted w obstacle reason failure = closeAttempt (afterCleanup w obstacle reason failure)
 
-  end : Work → Script State
-  end w with Policy.State.settled (Work.policy w) | Work.lastRejection w
-  ... | true | _ = afterRejection w
-  ... | false | nothing = afterRejection w
-  ... | false | just rejected = firstDiagnostic w (Rejection.name rejected)
-      (Rejection.detail rejected) (Rejection.source rejected) >>= λ updated →
-      afterRejection (record updated { report = rejectionReason (Work.report updated) })
+  endsAfterCleanup : ∀ w obstacle reason problem events result →
+    Runs (interrupted w obstacle reason problem) events result →
+    events ≡ ((stopTool , tt) ∷ (releaseBackend , tt) ∷ [])
+  endsAfterCleanup w obstacle reason problem ._ result
+    (replied _ _ tt (replied _ _ tt (returned _))) = refl
 
-  conditional : Work → Policy.Event → String → Maybe Text → Maybe Source.Failure → Work
-  conditional w event reason detail source with Policy.State.conflicts (Work.policy w)
-  ... | suc _ = record w { policy = Policy.Step.state (Policy.step (Work.policy w) event) }
-  ... | zero = record w
-    { policy = Policy.Step.state (Policy.step (Work.policy w) event)
-    ; report = record (R.captureSource source (Work.report w))
-        { blockReason = just (toList reason) ; failureDetail = detail } }
+  settled : Work → Script State
+  settled w = done (finished (outcome (Work.report w) nothing))
 
   sourceError : String → V.Value → Validation.Fault → Error
   sourceError stage value failure = error (Source.display source) (just source)
@@ -178,22 +163,19 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   rejectionMessage (Scoped.invalidReviewSchema failure) = just (Error.detail (scopedError (Scoped.invalidReviewSchema failure)))
   rejectionMessage _ = nothing
 
-  unresolvedReview : Work → Script State
-  unresolvedReview w = end (record w
-    { policy = Policy.Step.state (Policy.step (Work.policy w) Policy.toolInfrastructureError)
-    ; report = record (Work.report w) { blockReason = just (toList "tool_error") } })
-
   readbackUnavailable : Work → Error → Script State
   readbackUnavailable w failure =
-    firstDiagnostic w (toList "review readback") (Error.detail failure) (Error.source failure) >>= unresolvedReview
+    firstDiagnostic w (toList "review readback") (Error.detail failure) (Error.source failure) >>= λ recorded →
+    interrupted recorded (Policy.toolStopped (Error.detail failure)) "tool_error" failure
 
   afterObservation : Work → Reply observe → Script State
   afterObservation w (inj₁ failure) = readbackUnavailable w failure
   afterObservation w (inj₂ snapshot) with Observation.observe pin snapshot
+  ... | Observation.unavailable = readbackUnavailable w (error (toList "Review readback unavailable") nothing)
   ... | Observation.malformed failure = readbackUnavailable w (error (Display.fault display failure) nothing)
-  ... | receipt with Policy.step (Work.policy w) (Policy.reviewed (Batch.label receipt))
-  ...   | Policy.mkStep next Policy.continueRevision = done (loop (record w { policy = next }))
-  ...   | Policy.mkStep next _ = end (record w { policy = next })
+  ... | Observation.found _ _ (Observation.pending _ _ _) = done (loop w)
+  ... | Observation.found _ _ (Observation.confirmed _) = settled w
+  ... | Observation.found _ _ (Observation.corrected _ _) = settled w
 
   -- An empty model reply can arrive before it submits anything, or after
   -- another caller has saved a review. Read the selected experience first.
@@ -213,9 +195,8 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
         "Submit review_experience for the selected experience and revisions. Correct any rejected fields before submitting.") }))
   ... | true = firstDiagnostic w (toList "review_experience")
     (toList "The judge stopped without saving a review after being asked to submit it.") nothing >>= λ recorded →
-    end (record recorded
-      { report = record (Work.report recorded)
-        { blockReason = just (toList "review_requires_repair") } })
+    interrupted recorded (Policy.noSubmission (submissionDetail w)) "review_requires_repair"
+      (error (submissionDetail w) nothing)
 
   afterDone : Work → Reply observe → Script State
   afterDone w (inj₁ failure) = readbackUnavailable w failure
@@ -226,9 +207,9 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     readbackUnavailable w (error (Display.fault display failure) nothing)
   ... | Observation.found _ _ (Observation.pending _ _ _) = missingSubmission w
   ... | Observation.found _ _ (Observation.confirmed _) =
-    end (record w { policy = record (Work.policy w) { settled = true } })
+    settled w
   ... | Observation.found _ _ (Observation.corrected _ _) =
-    end (record w { policy = record (Work.policy w) { settled = true } })
+    settled w
 
   pendingDoneContinuesWithSubmissionRequest :
     ∀ w snapshot stored valid identityMatches sameRevision unconfirmed →
@@ -242,42 +223,50 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
 
   infrastructure : Work → Text → Error → Script State
-  infrastructure w name failure = ask stopTool (λ _ →
-    ask clock (λ observed → end (record w
-      { policy = Policy.Step.state (Policy.step (Work.policy w) Policy.toolInfrastructureError)
-      ; report = record (R.captureSource (Error.source failure) (Work.report w))
-        { blockReason = just (toList "tool_error")
-        ; diagnostic = just (R.newDiagnostic observed identity name (Error.detail failure)) } })))
+  infrastructure w name failure = closeAttempt (
+    firstDiagnostic w name (Error.detail failure) (Error.source failure) >>= λ recorded →
+    afterCleanup recorded (Policy.toolStopped (Error.detail failure)) "tool_error" failure)
+
+  alreadyExplained : Work → Text → Text → Bool
+  alreadyExplained w name detail = any (λ { (previousName , previousDetail) →
+    does (name ≟Text previousName) ∧ does (detail ≟Text previousDetail) }) (Work.sentCorrections w)
+
+  correct : Work → Text → Error → V.Value → Script State
+  correct w name problem guidance with alreadyExplained w name (Error.detail problem)
+  ... | true = interrupted w (Policy.noSubmission (Error.detail problem)) "tool_rejected" problem
+  ... | false = done (loop (record w
+      { sentCorrections = (name , Error.detail problem) ∷ Work.sentCorrections w
+      ; last = just guidance
+      ; lastRejection = just (rejection name (Error.detail problem) (Error.source problem)) }))
 
   inputRejected : Work → Text → Scoped.Failure → Text → Script State
-  inputRejected w name failure message = done (loop (record w
-      { policy = Policy.Step.state (Policy.step (Work.policy w) (Policy.inputRejected message))
-      ; last = just (feedback "invalid_tool_arguments" message
-          "Correct the indicated arguments and resubmit. If the intended value is unclear, ask the user.")
-      ; lastRejection = just (rejection name (Error.detail diagnostic) (Error.source diagnostic)) }))
-    where diagnostic = scopedError failure
+  inputRejected w name failure message = correct w name (scopedError failure)
+    (feedback "invalid_tool_arguments" message
+      "Correct the indicated arguments and resubmit. If the intended value is unclear, ask the user.")
 
   data Continues : State → Set where
     continue : ∀ work → Continues (loop work)
+    restartFromSource : ∀ report detail → Continues (finished (outcome report (just (Policy.noSubmission detail))))
 
   correctionContinues : ∀ w name failure message events result →
     Runs (inputRejected w name failure message) events result → Continues result
-  correctionContinues w name failure message events result (returned _) = continue _
+  correctionContinues w name failure message events result execution
+    with alreadyExplained w name (Error.detail (scopedError failure))
+  ... | false with execution
+  ...   | returned _ = continue _
+  correctionContinues w name failure message events result execution | true with execution
+  ... | replied _ _ tt (replied _ _ tt (returned _)) = restartFromSource _ _
 
   ordinaryFailure : Work → Text → Scoped.Failure → Script State
   ordinaryFailure w name (Scoped.needsUserDecision detail) =
-    firstDiagnostic w name detail nothing >>= λ recorded → end (record recorded
-      { report = record (Work.report recorded)
-        { blockReason = just (toList "needs_input") ; failureDetail = just detail } })
+    firstDiagnostic w name detail nothing >>= λ recorded →
+      interrupted recorded (Policy.userDecision detail) "needs_input" (error detail nothing)
   ordinaryFailure w name failure with rejectionMessage failure
   ... | just message = inputRejected w name failure message
   ... | nothing = infrastructure w name (scopedError failure)
 
   conflict : Work → Text → Text → Script State
-  conflict w name detail with Policy.step (Work.policy w) (Policy.candidateConflict detail)
-  ... | Policy.mkStep next Policy.retryCandidate =
-    done (loop (record w { policy = next ; last = just candidateFeedback }))
-  ... | Policy.mkStep next _ = end (record w { policy = next })
+  conflict w name detail = correct w name (error detail nothing) candidateFeedback
 
   afterTool : Work → Text → Scoped.Failure ⊎ V.Value → Script State
   afterTool w name (inj₁ (Scoped.candidateConflict detail)) with does (name ≟Text toList "review_experience")
@@ -310,14 +299,17 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   attempt w name arguments = fromScoped (Scope.run name arguments) >>= afterTool w name
 
   malformedAttempt : Work → Text → Source.Failure → Script State
-  malformedAttempt w name source = done (loop (record w
-    { last = just (feedback "invalid_tool_arguments" (Source.Failure.detail source)
-        "Correct the tool arguments using the supplied schema and resend the call.")
-    ; lastRejection = just (rejection name (Source.display source) (just source)) }))
+  malformedAttempt w name source = correct w name (error (Source.display source) (just source))
+    (feedback "invalid_tool_arguments" (Source.Failure.detail source)
+      "Correct the tool arguments using the supplied schema and resend the call.")
 
   afterModel : Work → Answer → Script State
   afterModel w (backendError failure) =
-    end (conditional w Policy.modelError "backend_error" (just (Error.detail failure)) (Error.source failure))
+    interrupted w (Policy.modelStopped (Error.detail failure) nothing) "backend_error" failure
+  afterModel w (backendUnavailable failure) =
+    interrupted w (Policy.backendUnavailable (Error.detail failure)) "backend_configuration" failure
+  afterModel w (providerWaiting failure signal) =
+    interrupted w (Policy.modelStopped (Error.detail failure) (just signal)) "provider_unavailable" failure
   afterModel w (action modelDone) = ask observe (afterDone w)
   afterModel w (action (tool name arguments)) = attempt w name arguments
   afterModel w (action (malformedTool name source)) = malformedAttempt w name source
@@ -344,4 +336,4 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
       Trace middle events after → Trace before (event ∷ events) after
 
   start : R.Report → State
-  start report = loop (work report Policy.initial nothing nothing false)
+  start report = loop (work report [] nothing nothing false)
