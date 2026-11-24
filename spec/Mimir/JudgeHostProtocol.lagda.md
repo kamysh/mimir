@@ -13,7 +13,9 @@ experience must still have the selected source revision, that revision must
 be marked reviewed, and the saved review revision must have advanced.
 A model's success message supplies no confirmation. A source that changed
 in the meantime is reported as corrected. A selected revision that remains
-pending can be deferred while other experience revisions continue. A new
+pending stays eligible unless an attempted review identified a reason to hold it.
+Final readback checks even revisions the judge never reached. It cannot put
+any of them on hold. Other experience revisions continue. A new
 revision or a confirmed review invalidates the old deferral. If final readback
 leaves a rejected review deferred, the watcher immediately checks for other
 eligible work. The report retains the failure reason. If only deferred work
