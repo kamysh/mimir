@@ -1,6 +1,6 @@
 {-# OPTIONS --safe #-}
 -- Exact finish_report order: stamp, persist incident, persist
--- status, notify, persist status again. Reporting errors are reported separately
+-- status, read delivery status, persist status again. Reporting errors are reported separately
 -- and do not replace the observed review outcome.
 module Mimir.JudgeFinalization where
 
@@ -12,6 +12,7 @@ open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
+import Mimir.JudgeHost as Host
 import Mimir.JudgeStateRecords as Records
 import Mimir.JudgeAcknowledgement as Acknowledgement
 import Mimir.Effects as Effects
@@ -22,19 +23,21 @@ module R = Records.Over UUID
 
 data Effect : Set where
   clock : Effect
-  reportProblem : Text → Text → Effect
+  reportProblem : Host.Remedy → Effect
   recordIncident : (report : R.Report) →
     Maybe (Acknowledgement.BatchEvidence (R.Report.selectedIds report)) → Effect
   writeStatus : R.Report → Effect
-  notify : R.Report → Effect
+  -- Synchronize delivery status for the report. Actionable alerts enter the
+  -- outbox where their remedy is known; this read cannot create failure mail.
+  deliveryStatus : Effect
 
 Reply : Effect → Set
 Reply clock = Maybe ℕ
 -- The acknowledgement records an attempt, not successful delivery.
-Reply (reportProblem whereFailed detail) = ⊤
+Reply (reportProblem remedy) = ⊤
 Reply (recordIncident report confirmation) = Text ⊎ ⊤
 Reply (writeStatus report) = Text ⊎ ⊤
-Reply (notify report) = Text ⊎ Text -- notification result field, not a replacement report
+Reply deliveryStatus = Text ⊎ Text -- notification result field, not a replacement report
 
 module E = Effects.Protocol Effect Reply
 open E
@@ -43,23 +46,23 @@ blocked : Text → R.Report → R.Report
 blocked reason report = record report { status = toList "blocked" ; blockReason = just reason }
 
 afterLastWrite : R.Report → Text ⊎ ⊤ → Script R.Report
-afterLastWrite report (inj₁ error) = ask (reportProblem (toList "status") error) (λ _ → done report)
+afterLastWrite report (inj₁ error) = ask (reportProblem (Host.restoreStateAccess error)) (λ _ → done report)
 afterLastWrite report (inj₂ tt) = done report
 
 afterNotification : R.Report → Text ⊎ Text → Script R.Report
-afterNotification report (inj₁ error) = ask (reportProblem (toList "notification") error) λ _ →
+afterNotification report (inj₁ error) = ask (reportProblem (Host.restoreMailAccess error)) λ _ →
   ask (writeStatus updated) (afterLastWrite updated)
   where updated = record report { notification = toList "unavailable" }
 afterNotification report (inj₂ value) = ask (writeStatus updated) (afterLastWrite updated)
   where updated = record report { notification = value }
 
 afterFirstWrite : R.Report → Text ⊎ ⊤ → Script R.Report
-afterFirstWrite report (inj₁ error) = ask (reportProblem (toList "status") error) λ _ →
-  ask (notify report) (afterNotification report)
-afterFirstWrite report (inj₂ tt) = ask (notify report) (afterNotification report)
+afterFirstWrite report (inj₁ error) = ask (reportProblem (Host.restoreStateAccess error)) λ _ →
+  ask deliveryStatus (afterNotification report)
+afterFirstWrite report (inj₂ tt) = ask deliveryStatus (afterNotification report)
 
 afterIncident : R.Report → Text ⊎ ⊤ → Script R.Report
-afterIncident report (inj₁ error) = ask (reportProblem (toList "incident") error) λ _ →
+afterIncident report (inj₁ error) = ask (reportProblem (Host.restoreStateAccess error)) λ _ →
   ask (writeStatus report) (afterFirstWrite report)
 afterIncident report (inj₂ tt) = ask (writeStatus report) (afterFirstWrite report)
 

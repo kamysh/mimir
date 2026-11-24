@@ -8,6 +8,8 @@ open import Data.List using (List; []; _∷_)
 open import Data.Maybe using (Maybe; nothing)
 open import Data.Nat using (ℕ)
 open import Data.Product using (_,_)
+open import Data.Sum using (inj₁; inj₂)
+open import Data.Unit using (⊤)
 open import Mimir.Text using (Text)
 import Mimir.StandardLibrary as Conversion
 import Mimir.PublicEncoding as Encoding
@@ -34,7 +36,7 @@ module Compose (conversion : Conversion.Contract) (format : Encoding.Formatting)
   (mcpProgram : Text) (mcpArguments : List Text) (configurationPath : Path.Path)
   (sizeMaximum : ℕ) where
   private
-    module F = Finalization.Bound
+    module F = Finalization.Bound format
     module Batch = BatchService.Bound conversion format display errors environment sizeMaximum
   module W = Workflow.Run conversion format display
     contract model batchLimit project
@@ -43,12 +45,19 @@ module Compose (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   data External : W.Effect → Set where
     clock : External W.clock
-    -- A successful reply means the case and immediate notification are both available.
-    repairCase : ∀ request → External (W.openRepair request (Recovery.instructions (Recovery.Case.choice request)))
+  AlertEvidence : ∀ problem → W.Reply (W.openRepair problem (Recovery.instructions (Recovery.Case.choice problem))) → Set
+  AlertEvidence problem (inj₁ _) = ⊤
+  AlertEvidence problem (inj₂ (Recovery.opened _ _ _ _)) = Host.Recorded format (Host.review problem)
+  AlertEvidence problem (inj₂ (Recovery.verificationNeeded _ _)) = Host.Recorded format (Host.review problem)
+  AlertEvidence problem (inj₂ (Recovery.rescued _ _ _)) = ⊤
+  AlertEvidence problem (inj₂ (Recovery.superseded _ _ _ _)) = ⊤
+  AlertEvidence problem (inj₂ Recovery.removed) = ⊤
 
 
   data Receipt : Backend.BackendState → (effect : W.Effect) → W.Reply effect → Backend.BackendState → Set where
     external : ∀ backend effect → External effect → (reply : W.Reply effect) → Receipt backend effect reply backend
+    repaired : ∀ backend problem reply → AlertEvidence problem reply → Receipt backend
+      (W.openRepair problem (Recovery.instructions (Recovery.Case.choice problem))) reply backend
     started : ∀ backend diagnostics reply client →
       ClientStartup.Run.Started conversion diagnostics contract model mcpProgram mcpArguments configurationPath reply client →
       Receipt backend W.startClient reply backend
@@ -62,6 +71,7 @@ module Compose (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   Connection : ∀ {before effect reply after} → Maybe Client.Client → Receipt before effect reply after → Maybe Client.Client → Set
   Connection before (started backend diagnostics reply client receipt) after = before ≡ nothing × after ≡ client
+  Connection before (repaired _ _ _ proof) after = before ≡ after
   Connection before (external _ _ _ _) after = before ≡ after
   Connection before (finalized _ _ _ _) after = before ≡ after
   Connection before (selected _ _ _ receipt) after = Client.Chain before (Batch.selectionCalls receipt) after

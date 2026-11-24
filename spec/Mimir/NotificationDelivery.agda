@@ -11,6 +11,7 @@
 -- A successful report's day prevents another delivery for that same day.
 module Mimir.NotificationDelivery where
 
+open import Data.Bool using (true)
 open import Data.Product using (_×_; _,_; proj₁)
 open import Data.Nat using (ℕ; zero; suc)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
@@ -47,8 +48,13 @@ data DeliveryEvent : Set where
   stopped : DeliveryEvent -- confirms all work/resources of the owned attempt stopped
   sentAndStopped : DeliveryEvent
   retryOriginal : DeliveryEvent
+  deliveryRestored : Configuration.Config → DeliveryEvent
   temporaryFailure : DeliveryEvent
   deadlineExpired retryDelayExpired : ℕ → DeliveryEvent
+
+restartDelivery : Message → Configuration.Config → Delivery
+restartDelivery message settings =
+  starting (record message { policy = configuredPolicy settings }) (Configuration.Config.maxAttempts settings)
 
 data DeliveryStep : Delivery → DeliveryEvent → Delivery → Set where
   begin : ∀ message → DeliveryStep idle (enqueue message) (starting message (Policy.maxAttempts (Message.policy message)))
@@ -73,6 +79,10 @@ data DeliveryStep : Delivery → DeliveryEvent → Delivery → Set where
   automaticRetry : ∀ message remaining →
     DeliveryStep (waiting message (suc remaining))
       (retryDelayExpired (Policy.retrySeconds (Message.policy message))) (starting message (suc remaining))
+  restoredAfterExhaustion : ∀ message settings → Configuration.Config.enabled settings ≡ true →
+    DeliveryStep (exhausted message) (deliveryRestored settings) (restartDelivery message settings)
+  restoredAfterFailure : ∀ message reason guidance settings → Configuration.Config.enabled settings ≡ true →
+    DeliveryStep (needsInput message reason guidance) (deliveryRestored settings) (restartDelivery message settings)
   freshRetry : ∀ message reason guidance →
     DeliveryStep (needsInput message reason guidance) retryOriginal (starting message (Policy.maxAttempts (Message.policy message)))
 

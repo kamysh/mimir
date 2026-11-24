@@ -103,9 +103,11 @@ The repair case is resolved only when PostgreSQL confirms a review for that
 experience and intended source revision. A quiet queue, a saved unrelated
 review, and accepted email delivery provide no such confirmation. A shared
 prerequisite such as invalid configuration uses its own repair action and
-wake-up path below. If the prerequisite is a product defect, the alert
-provides the public diagnostic and the upgrade path for resuming affected
-work when a fix is available.
+wake-up path below. For an unreadable result, the action is to restore the read; the alert cannot
+claim the review failed to save. If a fresh judge process also exits without
+an explanation or a recovery signal, the repair dialog offers the configured
+backend and account as choices the operator can change. A known provider
+reset or restored connection wakes the affected work automatically.
 
 ## Waiting and recovery
 
@@ -127,8 +129,21 @@ the observed cause and the corresponding action for email delivery. Correcting
 the named prerequisite wakes the watcher. Each wake establishes a fresh
 subscription and checks the stored queue. Email delivery proceeds separately.
 
-[Watcher](../../crates/cli/src/judge/watcher.rs) and
-[batch runner](../../crates/cli/src/judge/runner.rs) implement these rules.
+## Which part recovers
+
+| Where work stopped | What allows work to continue |
+| --- | --- |
+| Configuration, database setup, or state access | Give the operator the specific correction. Recheck the prerequisite and start a new batch when it is restored. |
+| Another judge owns the lock | Wait for its release, then subscribe and check pending work. |
+| Database connection | Reconnect and check the queue. A shared outage is reported once per episode. |
+| Tool startup, handshake, or incompatible selection response | The failed startup releases its child. Correct the named MCP connection or compatibility problem, then start from the stored work. A failed lookup of one held revision keeps only that revision on hold. |
+| Model exit, tool failure, or a missing submission | Close the attempt, check the database and apply the [review recovery rule](JudgeRevisionPolicy.lagda.md). |
+| The review needs a decision | Register the exact revision and the available correction. Work continues on other reviews while the operator uses the repair command. |
+| Log, status or incident persistence | Surface the access problem and keep the database review result. After access returns the next status write reports current work. |
+| Email delivery | The mail worker retains the original message. It honors the configured delivery policy. Restoring the mail account or delivery settings reopens an exhausted delivery. Reviews continue independently. |
+
+The [watcher](../../crates/cli/src/judge/watcher.rs) and
+[batch runner](../../crates/cli/src/judge/runner.rs) are the corresponding runtime entry points.
 [Operations](../../docs/operations.md) describes the operator actions.
 
 ```agda
@@ -224,7 +239,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     (Config.Judge.project (Config.Runtime.judge settings))
     (Config.Judge.mcpCommand (Config.Runtime.judge settings)) (Config.Judge.mcpArgs (Config.Runtime.judge settings)) configPath
     sizeMaximum
-  module F = FinalizationComposition.Bound
+  module F = FinalizationComposition.Bound format
 
   data Built (config : Config.Llm) : Text → Backend.BackendState → Set where
     harness : ∀ program → Config.Llm.backend config ≢ Config.api → Built config program Backend.harness
@@ -343,7 +358,8 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   afterLog : Recovery.Selection → Bool → (loadedConfiguration : C.Loaded) → Reply (prepareLog loadedConfiguration) → Script Host.Outcome
   afterLog mode watch loadedConfiguration observed with Operational.LogAttempt.outcome observed
-  ... | OperationalLog.For.failed detail files = ask (reportDiagnostic detail) (λ _ → afterLogging mode watch loadedConfiguration)
+  ... | OperationalLog.For.failed detail files = ask (reportDiagnostic detail) (λ _ →
+    ask (queueAction (Host.restoreLogAccess detail)) (λ _ → afterLogging mode watch loadedConfiguration))
   ... | OperationalLog.For.written files = afterLogging mode watch loadedConfiguration
 
   logFailureContinues : ∀ mode watch loadedConfiguration observed detail files events result →
@@ -351,9 +367,9 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
       {coreOf loadedConfiguration} detail files →
     P.Runs (afterLogging mode watch loadedConfiguration) events result →
     P.Runs (afterLog mode watch loadedConfiguration observed)
-      ((reportDiagnostic detail , tt) ∷ events) result
+      ((reportDiagnostic detail , tt) ∷ (queueAction (Host.restoreLogAccess detail) , tt) ∷ events) result
   logFailureContinues mode watch loadedConfiguration observed detail files events result failure execution
-    rewrite failure = P.replied _ _ tt execution
+    rewrite failure = P.replied _ _ tt (P.replied _ _ tt execution)
 
   afterConfig : Recovery.Selection → Bool → C.Result → Script Host.Outcome
   afterConfig mode watch (inj₁ detail) = persistBlocked (toList "invalid_config") detail >>= λ _ → announce watch
@@ -495,7 +511,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     subscribed : ∀ result → Receipt subscribeWork result
     subscriptionDropped : ∀ subscription → Receipt (dropWorkSubscription subscription) tt
     workEvent : ∀ subscription event → Receipt (waitForWork subscription) event
-    actionQueued : ∀ remedy → Receipt (queueAction remedy) tt
+    actionQueued : ∀ remedy → Host.Recorded format (Host.prerequisite remedy) → Receipt (queueAction remedy) tt
     repairEvent : ∀ condition subscription event → Receipt (waitForRepair condition subscription) event
     reconnectEvent : ∀ event → Receipt waitForReconnect event
 
@@ -505,10 +521,10 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     external : ∀ {before effect next reply} → nextWatch before ≡ WatchStep.external effect next →
       Receipt effect reply → WatchTransition before (just (effect , reply)) (next reply)
 
-  operatorActionPrecedesWait : ∀ subscription remedy →
+  operatorActionPrecedesWait : ∀ subscription remedy → Host.Recorded format (Host.prerequisite remedy) →
     WatchTransition (controlling (requestCorrection subscription remedy))
       (just (queueAction remedy , tt)) (controlling (await (corrected remedy) subscription))
-  operatorActionPrecedesWait subscription remedy = external refl (actionQueued remedy)
+  operatorActionPrecedesWait subscription remedy receipt = external refl (actionQueued remedy receipt)
 
   restoredStartsFresh : ∀ condition →
     WatchTransition (controlling (await condition nothing))
