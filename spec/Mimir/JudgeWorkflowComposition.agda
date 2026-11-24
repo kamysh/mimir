@@ -16,6 +16,7 @@ import Mimir.JudgeRevision as Revision
 import Mimir.JudgeServiceBinding as Service
 import Mimir.JudgeBackendComposition as Backend
 import Mimir.JudgeWorkflow as Workflow
+import Mimir.JudgeHost as Host
 import Mimir.JudgeHandshake as Handshake
 import Mimir.JudgeFinalizationComposition as Finalization
 import Mimir.UnixPath as Path
@@ -65,8 +66,8 @@ module Compose (conversion : Conversion.Contract) (format : Encoding.Formatting)
   Connection before (revision _ _ clientReady observedSnapshot _ _ _ execution) after =
     Client.Chain before (B.traceIssued clientReady observedSnapshot execution) after
 
-  data Runs : Backend.BackendState → Maybe Client.Client → W.P.Script Workflow.R.Report → List W.P.Event →
-    Backend.BackendState → Maybe Client.Client → Workflow.R.Report → Set where
+  data Runs : Backend.BackendState → Maybe Client.Client → W.P.Script Host.Batch → List W.P.Event →
+    Backend.BackendState → Maybe Client.Client → Host.Batch → Set where
     returned : ∀ backend client report → Runs backend client (W.P.done report) [] backend client report
     replied : ∀ before client effect continuation reply middle nextClient events after finalClient report →
       (receipt : Receipt before effect reply middle) → Connection client receipt nextClient →
