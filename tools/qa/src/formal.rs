@@ -1,4 +1,4 @@
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{ensure, Context, Result};
 use regex::Regex;
 use serde_json::{json, Value};
 use std::{
@@ -91,46 +91,105 @@ fn markdown_agda(source: &str) -> Result<String> {
     Ok(code)
 }
 
-fn migration_body(source: &str) -> Result<String> {
-    let mut lines = source.lines();
-    ensure!(
-        lines.next().map(str::trim) == Some("-- #!migration"),
-        "expected migration header"
-    );
-    let metadata = Regex::new(r"^\s*--\s*(name|description|requires):\s*(.+)\s*([,;])\s*$")?;
-    let mut fields = BTreeSet::new();
-    while let Some(line) = lines.next() {
-        let c = metadata
-            .captures(line)
-            .context("unsupported or unterminated migration header")?;
-        let key = &c[1];
-        let value: Value = serde_json::from_str(c[2].trim())?;
+#[derive(Debug, PartialEq, Eq)]
+struct BoundMigration {
+    sql: String,
+    requires: BTreeSet<String>,
+}
+
+fn check_migrations(
+    manifest: &str,
+    binding: &str,
+    actual: Vec<kryzhen::Migration>,
+) -> Result<usize> {
+    let names = Regex::new(r#"(?m)^name (\w+) = "([^"]+)"$"#)?;
+    let mut by_constructor = BTreeMap::new();
+    for c in names.captures_iter(manifest) {
         ensure!(
-            fields.insert(key.to_string()),
-            "repeated migration metadata field"
+            by_constructor
+                .insert(c[1].to_owned(), c[2].to_owned())
+                .is_none(),
+            "duplicate migration constructor {}",
+            &c[1]
         );
-        ensure!(
-            value.is_string()
-                || (key == "requires"
-                    && value
-                        .as_array()
-                        .is_some_and(|xs| xs.iter().all(Value::is_string))),
-            "invalid migration metadata value"
-        );
-        if &c[3] == ";" {
-            ensure!(
-                fields.contains("name") && fields.contains("description"),
-                "missing migration metadata"
-            );
-            let body = lines.collect::<Vec<_>>().join("\n");
-            ensure!(
-                !body.starts_with("-- #!") && !body.contains("\n-- #!"),
-                "expected one migration per file"
-            );
-            return Ok(body.trim().to_string());
-        }
     }
-    bail!("unterminated migration header")
+    let mut dependencies = BTreeMap::new();
+    let requires = Regex::new(r"(?m)^requires (\w+) = (.+)$")?;
+    for c in requires.captures_iter(manifest) {
+        let mut list = c[2].split('∷').map(str::trim).collect::<Vec<_>>();
+        ensure!(
+            list.pop() == Some("[]"),
+            "unsupported dependency list for {}",
+            &c[1]
+        );
+        let names = list
+            .into_iter()
+            .map(|ctor| {
+                by_constructor
+                    .get(ctor)
+                    .cloned()
+                    .with_context(|| format!("unknown dependency {ctor}"))
+            })
+            .collect::<Result<_>>()?;
+        ensure!(
+            dependencies.insert(c[1].to_owned(), names).is_none(),
+            "duplicate dependency declaration for {}",
+            &c[1]
+        );
+    }
+    let sources = Regex::new(r#"(?m)^source Manifest\.(\w+) = toList (".*")$"#)?;
+    let mut expected = BTreeMap::new();
+    for c in sources.captures_iter(binding) {
+        let name = by_constructor
+            .remove(&c[1])
+            .with_context(|| format!("missing or repeated migration name for {}", &c[1]))?;
+        let requires = dependencies
+            .remove(&c[1])
+            .with_context(|| format!("missing dependencies for {name}"))?;
+        let sql: String = serde_json::from_str(&c[2])?;
+        ensure!(
+            expected
+                .insert(
+                    name.clone(),
+                    BoundMigration {
+                        sql: sql.trim().into(),
+                        requires
+                    }
+                )
+                .is_none(),
+            "duplicate specification for {name}"
+        );
+    }
+    ensure!(
+        by_constructor.is_empty() && dependencies.is_empty(),
+        "migration declaration has no SQL binding"
+    );
+    let count = actual.len();
+    for migration in actual {
+        let name = &migration.name.0;
+        let spec = expected
+            .remove(name)
+            .with_context(|| format!("missing or duplicate migration binding: {name}"))?;
+        ensure!(
+            spec.sql == migration.script.trim(),
+            "migration SQL differs: {name}"
+        );
+        let requires = migration
+            .requires
+            .into_iter()
+            .map(|dep| dep.0)
+            .collect::<BTreeSet<_>>();
+        ensure!(
+            spec.requires == requires,
+            "migration dependencies differ: {name}"
+        );
+    }
+    ensure!(
+        expected.is_empty(),
+        "missing migration blocks: {:?}",
+        expected.keys()
+    );
+    Ok(count)
 }
 
 pub fn check() -> Result<()> {
@@ -297,49 +356,24 @@ pub fn check() -> Result<()> {
         ensure!(reached.contains(&name), "unreachable module {path}");
     }
     let binding = read(&root, "spec/Mimir/MigrationScriptBinding.agda")?;
-    let re = Regex::new(r#"(?m)^source Schema\.(\w+) = toList (".*")$"#)?;
-    let mut bound = BTreeMap::new();
-    for c in re.captures_iter(&binding) {
-        let value: String = serde_json::from_str(&c[2])?;
-        bound.insert(c[1].to_string(), value.trim().to_string());
-    }
-    let keys = [
-        "initial",
-        "searchPath",
-        "embeddingTable",
-        "evidenceEdges",
-        "betaBeliefs",
-        "learning",
-        "candidates",
-        "assessment",
-        "owners",
-        "allocation",
-        "workEvents",
-        "experienceAllocation",
-        "reviewTranscripts",
-    ];
-    let mut sql = Vec::new();
+    let manifest = read(&root, "spec/Mimir/Migrations.agda")?;
+    let mut paths = Vec::new();
     files(
         &root.join("crates/core/migrations"),
         &|path| path.extension().is_some_and(|ext| ext == "sql"),
-        &mut sql,
+        &mut paths,
     )?;
-    sql.sort();
-    ensure!(
-        sql.len() == keys.len() && bound.len() == keys.len(),
-        "migration inventory mismatch"
-    );
-    for (path, key) in sql.iter().zip(keys) {
-        ensure!(
-            Some(&migration_body(&fs::read_to_string(path)?)?) == bound.get(key),
-            "migration source binding differs: {}",
-            path.display()
-        );
+    let mut migrations = Vec::new();
+    for path in paths {
+        let parsed =
+            kryzhen::parser::parse_file(&fs::read_to_string(&path)?, &path.display().to_string())?;
+        migrations.extend(kryzhen::file::apply_implicit_deps(parsed));
     }
+    let migration_count = check_migrations(&manifest, &binding, migrations)?;
     println!(
         "{}",
         serde_json::to_string_pretty(
-            &json!({"result":"passed", "mcp_operations":operations.len(), "cli_leaves":cli.len(), "lifecycle_groups":coverage["lifecycles"].as_array().map_or(0,Vec::len), "source_artifacts":inventory_files.len(), "production_artifacts":inventory_files.iter().filter(|x| x["classification"] == "production-behavior").count(), "safe_modules":agda.len(), "root_reachable_modules":reached.len(), "referenced_modules":referenced.len(), "exact_migration_bodies":sql.len(), "boundary":"Inventory and structural audit; Agda checking and Rust correspondence are separate."})
+            &json!({"result":"passed", "mcp_operations":operations.len(), "cli_leaves":cli.len(), "lifecycle_groups":coverage["lifecycles"].as_array().map_or(0,Vec::len), "source_artifacts":inventory_files.len(), "production_artifacts":inventory_files.iter().filter(|x| x["classification"] == "production-behavior").count(), "safe_modules":agda.len(), "root_reachable_modules":reached.len(), "referenced_modules":referenced.len(), "exact_migration_bodies":migration_count, "boundary":"Inventory and structural audit; Agda checking and Rust correspondence are separate."})
         )?
     );
     Ok(())
@@ -347,7 +381,7 @@ pub fn check() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{markdown_agda, migration_body, module_name};
+    use super::{check_migrations, markdown_agda, module_name};
     use std::path::Path;
 
     #[test]
@@ -366,35 +400,41 @@ mod tests {
         );
         assert!(markdown_agda("```agda\nimport Mimir.Unclosed\n").is_err());
     }
-    const H: &str = "-- #!migration\n-- name: \"upgrade\",\n-- description: \"Keep old IDs\";\n";
     #[test]
-    fn preserves_sql_comments_and_semicolons() {
-        let body = "-- Keep old IDs.\nDO $$ BEGIN PERFORM f(); END $$;\nSELECT ';';";
-        assert_eq!(migration_body(&format!("{H}\n{body}\n")).unwrap(), body);
-    }
-    #[test]
-    fn metadata_semicolon_and_requires() {
-        let h = H.replace(
-            "IDs\";",
-            "IDs; add default\",\n-- requires: [\"initial\", \"owners\"]; ",
-        );
+    fn migrations_bind_by_name_across_files_and_within_one_file() {
+        let names = "name one = \"first\"\nname two = \"second\"\nrequires one = []\nrequires two = one ∷ []";
+        let sql = "source Manifest.one = toList \"-- Keep IDs.\\nSELECT ';';\"\nsource Manifest.two = toList \"SELECT 2;\"";
+        let first = "-- #!migration\n-- name: \"first\",\n-- description: \"First\";\n-- Keep IDs.\nSELECT ';';\n";
+        let second = "-- #!migration\n-- name: \"second\",\n-- description: \"Second\",\n-- requires: \"first\";\nSELECT 2;\n";
+        let parse = |text: &str, label| {
+            kryzhen::file::apply_implicit_deps(kryzhen::parser::parse_file(text, label).unwrap())
+        };
+        let mut reversed_files = parse(second, "a.sql");
+        reversed_files.extend(parse(first, "z.sql"));
+        assert_eq!(check_migrations(names, sql, reversed_files).unwrap(), 2);
+        let combined = format!("{first}{second}");
         assert_eq!(
-            migration_body(&format!("{h}\nSELECT 1;")).unwrap(),
-            "SELECT 1;"
+            check_migrations(names, sql, parse(&combined, "both.sql")).unwrap(),
+            2
         );
-    }
-    #[test]
-    fn refuses_unterminated_missing_and_repeated_migrations() {
-        assert!(migration_body(&H.replace("IDs\";", "IDs\",")).is_err());
-        assert!(migration_body("-- #!migration\n-- name: \"x\";\nSELECT 1;").is_err());
-        assert!(migration_body(&format!("{H}SELECT 1;\n{H}SELECT 2;")).is_err());
-    }
-    #[test]
-    fn detects_changed_sql_comment() {
-        let a = format!("{H}-- Keep old IDs.\nSELECT 1;");
-        assert_ne!(
-            migration_body(&a).unwrap(),
-            migration_body(&a.replace("Keep old IDs.", "Replace IDs.")).unwrap()
-        );
+        for wrong in [
+            sql.replace("SELECT 2", "SELECT 3"),
+            sql.replace("Keep IDs", "Remove IDs"),
+        ] {
+            assert!(check_migrations(names, &wrong, parse(&combined, "both.sql")).is_err());
+        }
+        assert!(check_migrations(
+            &names.replace("one ∷ []", "[]"),
+            sql,
+            parse(&combined, "both.sql")
+        )
+        .is_err());
+        assert!(check_migrations(
+            names,
+            sql,
+            parse(&format!("{first}{first}"), "duplicate.sql")
+        )
+        .is_err());
+        assert!(check_migrations(names, sql, parse(first, "missing.sql")).is_err());
     }
 }

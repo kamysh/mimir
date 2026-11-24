@@ -1,9 +1,9 @@
 use super::{
-    api, config, harness,
+    api, cases, config, harness,
     mcp::Client,
     notification,
     runner::{self, UnavailableBackend},
-    state::{self, DeferredReview, State},
+    state::{self, DeferredReview, Remedy, State},
 };
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use mimir_core::{
@@ -30,8 +30,80 @@ pub(super) async fn run(
         revision > 0,
         "Use the positive source revision shown in the alert."
     );
-    let settings = config::load(config_path)?;
+    let mut settings = config::load(config_path)?;
     let directory = state::resolve(state_path)?;
+    let held = cases::lookup(&settings.core.database, id, revision)
+        .await?
+        .or_else(|| {
+            state::read(&directory)
+                .ok()
+                .flatten()
+                .filter(|r| !r.database_cases && r.guided_repair)
+                .and_then(|r| {
+                    r.deferred_reviews
+                        .into_iter()
+                        .find(|h| h.id == id && h.revision == revision && h.repair.is_some())
+                })
+        });
+    let mut retry = retry;
+    if let Some(case) = held.as_ref().and_then(|h| h.repair.as_ref()) {
+        println!("{}\n{}", case.explanation, case.detail);
+        if !retry && review.is_none() && case.remedy != Remedy::EditReview {
+            // Check for a racing save before offering a configuration or account change.
+            let db = cases::connect(&settings.core.database).await?;
+            let current = db.query_opt("SELECT revision, reviewed_revision, project FROM mimir_experiences WHERE id=$1", &[&id]).await?;
+            let Some(row) = current else {
+                println!("This experience has been removed.");
+                return Ok(0);
+            };
+            let project: &str = row.get(2);
+            ensure!(
+                settings
+                    .judge
+                    .project
+                    .as_deref()
+                    .is_none_or(|p| p == project),
+                "This experience belongs to another project."
+            );
+            let version: i64 = row.get(0);
+            let reviewed: i64 = row.get(1);
+            if version != revision || reviewed == revision {
+                println!("Current source revision {version}, last reviewed revision {reviewed}. This case needs no further action.");
+                return Ok(0);
+            }
+            match case.remedy {
+                Remedy::ChooseBackend => println!("The configured judge uses model {}. Edit [llm] to select another available backend/model or change its credentials. If you restored the existing account, choose verify.", settings.llm.model),
+                Remedy::RestoreClient => println!("The configured review tool is {}. Edit [judge].mcp_command or restore that program, then verify it.", settings.judge.mcp_command),
+                Remedy::RestoreRead => println!("Restore the review tool's database access, then verify that it can read this source."),
+                Remedy::EditReview => unreachable!(),
+            }
+            match prompt("[e]dit settings, [v]erify the corrected service, [q]uit > ")?.as_deref() {
+                Some("e" | "edit") => {
+                    let editor = std::env::var_os("EDITOR").unwrap_or_else(|| "vi".into());
+                    ensure!(
+                        tokio::process::Command::new(editor)
+                            .arg(&settings.path)
+                            .kill_on_drop(true)
+                            .status()
+                            .await?
+                            .success(),
+                        "The editor exited without confirming the change."
+                    );
+                    let updated = config::load(Some(&settings.path))?;
+                    ensure!(
+                        updated.core.database.host == settings.core.database.host
+                            && updated.core.database.port == settings.core.database.port
+                            && updated.core.database.dbname == settings.core.database.dbname,
+                        "Reopen this repair using its original database."
+                    );
+                    settings = updated;
+                }
+                Some("v" | "verify") => {}
+                _ => return Ok(super::INCOMPLETE),
+            }
+            retry = case.remedy == Remedy::ChooseBackend;
+        }
+    }
     let mut client = Client::start(
         &settings.judge.mcp_command,
         &settings.judge.mcp_args,
@@ -52,12 +124,6 @@ pub(super) async fn run(
         current.revision
     );
 
-    let held = state::read(&directory)?.and_then(|report| {
-        report
-            .deferred_reviews
-            .into_iter()
-            .find(|held| held.id == id && held.revision == revision)
-    });
     if current.reviewed_revision == revision && current.review_revision > 0 {
         let key = DeferredReview {
             id,
@@ -71,6 +137,18 @@ pub(super) async fn run(
         "No deferred review for this revision. The watcher can select it normally. Use `mimir judge status` to inspect the latest attempt."
     ))?;
     let command = notification::repair_command(&settings, &directory, &held);
+    if !retry
+        && review.is_none()
+        && held
+            .repair
+            .as_ref()
+            .is_some_and(|case| matches!(case.remedy, Remedy::RestoreClient | Remedy::RestoreRead))
+    {
+        let db = cases::connect(&settings.core.database).await?;
+        cases::close(&db, &held).await?;
+        println!("The review tool read the current pending source. The watcher can now review this revision.");
+        return Ok(0);
+    }
 
     if let Some(path) = review {
         let corrected: Review = serde_json::from_slice(&tokio::fs::read(path).await?).context(
@@ -133,11 +211,11 @@ pub(super) async fn run(
         return Ok(super::INCOMPLETE);
     }
 
-    let Some(draft) = rejected_draft(&settings, &held).await? else {
-        bail!("This failed attempt contains no submitted review to edit. Start a fresh attempt with {command} --retry.");
-    };
     println!("Repairing the failed review for source revision {revision}.");
-    let corrected = interactive(&mut client, &current, draft).await?;
+    let corrected = match rejected_draft(&settings, &held).await? {
+        Some(draft) => interactive(&mut client, &current, draft).await?,
+        None => supply_review(&current)?,
+    };
     let Some(corrected) = corrected else {
         println!("Repair cancelled. The review is still pending.");
         return Ok(super::INCOMPLETE);
@@ -218,6 +296,35 @@ fn prompt(label: &str) -> Result<Option<String>> {
     io::stdout().flush()?;
     let mut answer = String::new();
     Ok((io::stdin().read_line(&mut answer)? != 0).then(|| answer.trim().to_owned()))
+}
+
+fn supply_review(current: &ExperienceState) -> Result<Option<Review>> {
+    println!(
+        "Source: {}\nAction: {}\nEvidence:\n{}",
+        current.experience.context,
+        current.experience.action,
+        current.experience.evidence.join("\n")
+    );
+    let Some(file) =
+        prompt("Enter the path to your corrected review, or press Enter to leave it pending > ")?
+    else {
+        return Ok(None);
+    };
+    if file.is_empty() {
+        return Ok(None);
+    }
+    let review: Review = serde_json::from_slice(&std::fs::read(file)?)
+        .context("The selected file must contain a complete review")?;
+    ensure!(
+        review.experience_id == current.experience.id
+            && review.experience_revision == current.revision,
+        "The selected review must name this experience and its current source revision."
+    );
+    println!("Proposed review: {}", review.rationale);
+    Ok(
+        (prompt("Submit this review? Type yes to save > ")?.as_deref() == Some("yes"))
+            .then_some(review),
+    )
 }
 
 fn refers_to(assessment: &Assessment, item: &LearningItem) -> bool {
@@ -415,7 +522,10 @@ async fn interactive(
             _ => println!("Choose r, b, or q."),
         }
     }
-    ensure!(changes > 0, "This draft has no invalid assessment target the guided repair can edit. Use diagnostics to see why the attempt ended.");
+    if changes == 0 {
+        println!("Saved draft: {}", draft.rationale);
+        return supply_review(current);
+    }
     println!("Ready to submit {changes} confirmed assessment edits. Other review entries will be preserved.");
     let unresolved = draft
         .source_coverage
