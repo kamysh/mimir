@@ -244,7 +244,7 @@ pub async fn tick(
             }
         }
     }
-    body.push_str("Help: https://github.com/kamysh/mimir/blob/v3.3.2/docs/operations.md\n");
+    body.push_str("Help: https://github.com/kamysh/mimir/blob/v3.3.3/docs/operations.md\n");
     let digest = Digest {
         through_day: through.to_string(),
         body,

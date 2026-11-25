@@ -87,6 +87,8 @@ while IFS= read -r request; do
                       [.candidate_feedback[]?.target.candidate_key | select(. != null)] as $referenced |
                       ($referenced - $declared | length) == 0' <<< "$request" >/dev/null; then
                         error='{"code":-32000,"message":"candidate belief reference must be declared in this review","data":{"kind":"undeclared_candidate","fault":{"path":["candidates"],"code":"missing_reference","message":"candidate belief reference must be declared in this review"}}}'
+                    elif [[ "$mode" == "correction-chain" ]] && ! jq -e '.params.arguments.review.rationale == "corrected quotation"' <<< "$request" >/dev/null; then
+                        value='{"status":"needs_correction","fault":{"path":["extracted_items",0,"statement"],"code":"quotation_mismatch","message":"The extracted statement must exactly match its cited source."},"reason":"The extracted statement must exactly match its cited source.","next_action":"Copy the exact source passage and resubmit."}'
                     elif [[ "$mode" == "project-correction" ]] && jq -e '.params.arguments.review.feedback | length > 0' <<< "$request" >/dev/null; then
                         value='{"status":"needs_correction","fault":{"path":["review","feedback",0,"belief_id"],"code":"wrong_identity","message":"The belief is not owned by the experience project. Select a belief from this project or remove the reference and resubmit."},"reason":"The belief is not owned by the experience project","next_action":"Correct the belief reference and resubmit the review"}'
                     else reviewed=1; value=$(jq -nc --argjson revision "$revision" '{review_revision:$revision}'); fi ;;

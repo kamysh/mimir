@@ -38,6 +38,7 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   data Ordinary : T.Effect → Set where
     clock : Ordinary T.clock
+    correction : ∀ rejected → Ordinary (T.prepareCorrection rejected)
 
   observation : Scoped.Failure ⊎ V.Value → Revision.Error ⊎ Maybe Observation.Snapshot
   observation (inj₁ failure) = inj₁ (T.scopedError failure)

@@ -43,8 +43,19 @@ lost its last assessment. It preserves other entries and never guesses a
 replacement belief. The same source and review revision checks, full review
 validation, transactional publication, and PostgreSQL readback apply to the
 corrected draft. A refusal cannot save a review or advance its revision.
-If the selected revision is still pending and the correction cannot be
-applied, leave a repair case and process other eligible work.
+The mechanically corrected draft goes through the ordinary submission path.
+Any new rejection is returned to the judge with its current field path and
+explanation. This includes errors exposed only after the first defect was
+removed, such as a quotation that does not match its source. The latest
+rejection replaces the previous explanation and renews the request to submit
+a corrected review. A mechanical submission cannot directly open a repair
+case or declare success. Its response is checked through the same PostgreSQL
+readback as every other review submission.
+
+If no permitted mechanical correction exists, or the judge repeats an
+already explained rejection, clean up the attempt and use the existing fresh
+attempt policy. An eventual repair case must explain the latest unresolved
+rejection. Process other eligible work while that case awaits its remedy.
 
 Only an unresolved case with a concrete remedy can keep a source revision
 on hold. The watcher reconstructs those holds from the repair cases. An
@@ -52,6 +63,19 @@ old status report alone cannot prevent a review from running. The failed
 attempt's transcript remains available. Each fresh attempt begins with the
 stored source. [Failed reviews](JudgeRevisionPolicy.lagda.md) describes the
 order of fresh attempts and how a completed remedy releases a hold.
+
+Restoring a faulty Mimir handler is also a remedy for existing cases.
+Before retaining a hold, the watcher checks the latest failed attempt for the
+same experience and revision. A mechanical correction whose new rejection
+was never returned to the judge becomes eligible again under the repaired
+feedback handler. A valid explanation request refused only because the old
+host required paging fields becomes eligible under the public explanation
+schema, where those fields are optional. This check uses the recorded request
+and response, and rereads the current source. It preserves genuine requests
+for a user decision and failures whose feedback was already delivered.
+Releasing a hold starts ordinary processing from the source. It neither saves
+a review nor announces recovery. Only PostgreSQL confirmation closes the
+failure notification.
 
 ## Action required
 

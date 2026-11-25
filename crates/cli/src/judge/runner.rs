@@ -198,12 +198,13 @@ async fn scoped_tool(
             }
             if name == "explain_belief" {
                 input_ensure!(
-                    args["limit"]
-                        .as_u64()
-                        .is_some_and(|n| (1..=20).contains(&n)),
-                    "invalid explain limit"
+                    args.get("limit").is_none_or(|value| value.as_u64().is_some_and(|n| n > 0)),
+                    "explain_belief limit must be a positive integer when supplied. Omit limit to request all matching reviews."
                 );
-                input_ensure!(args["offset"].as_u64().is_some(), "missing explain offset");
+                input_ensure!(
+                    args.get("offset").is_none_or(|value| value.as_u64().is_some()),
+                    "explain_belief offset must be a nonnegative integer when supplied. Omit offset to start at the beginning."
+                );
             }
             if name == "query_intervention" {
                 input_ensure!(
@@ -565,6 +566,9 @@ async fn run_inner<B: Backend>(
             .context(cases::Access)?
         {
             if still_deferred(&held, revision, reviewed) {
+                if cases::handler_restored(db, &held).await.unwrap_or(false) {
+                    continue;
+                }
                 notification::queue_repair(settings, state, &held);
                 report.deferred_reviews.push(held);
             } else {
@@ -768,13 +772,19 @@ async fn run_inner<B: Backend>(
         let mut submission_requested = false;
         let mut needs_repair = false;
         let mut corrected_draft = None;
+        let mut automatic_submission = None;
         let mut confirmed_review = false;
-        let mut repair_explanation = "The judge ended without saving a review.";
+        let mut repair_explanation = "The judge ended without saving a review.".to_owned();
         loop {
-            let action = match backend
-                .next(selected, last.as_ref(), client.allowed_tools())
-                .await
-            {
+            let next_action = match automatic_submission.take() {
+                Some(action) => Ok(action),
+                None => {
+                    backend
+                        .next(selected, last.as_ref(), client.allowed_tools())
+                        .await
+                }
+            };
+            let action = match next_action {
                 Ok(action) => action,
                 Err(error) => {
                     let source = error.downcast_ref::<SourceFailure>();
@@ -871,7 +881,9 @@ async fn run_inner<B: Backend>(
                             report.capture_source(&error);
                         }
                     }
-                    break;
+                    if !needs_repair || corrected_draft.is_none() {
+                        break;
+                    }
                 }
                 Action::RejectedTool { name, source } => {
                     if name == "review_experience" {
@@ -885,7 +897,7 @@ async fn run_inner<B: Backend>(
                         }),
                     );
                     repair_explanation =
-                        "The judge submitted malformed arguments and did not correct them.";
+                        "The judge submitted malformed arguments and did not correct them.".into();
 
                     // The model already knows its input. Return only the parser's
                     // location and a fixed correction instruction, never the input.
@@ -922,6 +934,18 @@ async fn run_inner<B: Backend>(
                             }
                             let correction = value.get("status").and_then(Value::as_str)
                                 == Some("needs_correction");
+                            if correction {
+                                let message = value["fault"]["message"]
+                                    .as_str()
+                                    .or_else(|| value["reason"].as_str())
+                                    .unwrap_or(
+                                        "Correct the rejected request using the supplied guidance.",
+                                    );
+                                let detail =
+                                    format!("{message} Field path: {}.", value["fault"]["path"]);
+                                repair_explanation = message.to_owned();
+                                last_rejection = Some((name.clone(), detail, None));
+                            }
                             last = Some(value);
                             // The database acknowledgement is authoritative. A model
                             // need not spend another turn saying it is done.
@@ -953,7 +977,8 @@ async fn run_inner<B: Backend>(
                             );
                             candidate_rejections += 1;
                             repair_explanation =
-                                "The review reused a candidate key with a different declaration.";
+                                "The review reused a candidate key with a different declaration."
+                                    .into();
                             candidate_rejection_detail = Some(format!("{error:#}"));
                             last = Some(json!({"error":"candidate_key_conflict",
                                 "guidance":"A candidate key from an earlier review has a different declaration. Inspect experience_history. Reuse a key only with its exact original kind and declaration; use a new key for a revised claim."}));
@@ -1038,7 +1063,7 @@ async fn run_inner<B: Backend>(
                                 "The judge asked for a graph explanation outside the review's project."
                             } else {
                                 "The judge submitted a request Mimir rejected and did not resolve it."
-                            };
+                            }.to_owned();
                         }
                         Err(error) => {
                             attempt.event("tool_error", Some(&name), json!(format!("{error:#}")));
@@ -1060,41 +1085,33 @@ async fn run_inner<B: Backend>(
                     let rejected = (name, feedback.clone());
                     if rejected_requests.contains(&rejected) {
                         needs_repair = true;
-                        break;
+                    } else {
+                        rejected_requests.push(rejected);
+                        submission_requested = false;
                     }
-                    rejected_requests.push(rejected);
+                }
+            }
+            if needs_repair {
+                if let Some(arguments) = corrected_draft.take() {
+                    attempt.event(
+                        "automatic_review_correction",
+                        Some("review_experience"),
+                        json!("Removed assessments that treated declared procedures as beliefs."),
+                    );
+                    automatic_submission = Some(Action::Tool {
+                        name: "review_experience".into(),
+                        arguments,
+                    });
+                    needs_repair = false;
+                } else {
+                    break;
                 }
             }
         }
-        if needs_repair {
-            if let Some(arguments) = corrected_draft {
-                attempt.event(
-                    "automatic_review_correction",
-                    Some("review_experience"),
-                    json!("Removed assessments that treated declared procedures as beliefs."),
-                );
-                let result =
-                    scoped_tool(&mut client, selected, "review_experience", arguments).await;
-                match &result {
-                    Ok(value) => {
-                        attempt.event("tool_result", Some("review_experience"), value.clone())
-                    }
-                    Err(error) => attempt.event(
-                        "tool_rejection",
-                        Some("review_experience"),
-                        json!(format!("{error:#}")),
-                    ),
-                }
-                confirmed_review = matches!(
-                    observe(&mut client, selected).await,
-                    Ok("confirmed" | "corrected")
-                );
-            }
-            if !confirmed_review && obstacle.is_none() {
-                report
-                    .block_reason
-                    .get_or_insert_with(|| "review_requires_repair".into());
-            }
+        if needs_repair && !confirmed_review && obstacle.is_none() {
+            report
+                .block_reason
+                .get_or_insert_with(|| "review_requires_repair".into());
         }
         if confirmed_review {
             attempts.remove(&selected.experience.id);
@@ -1104,10 +1121,10 @@ async fn run_inner<B: Backend>(
                 .as_ref()
                 .map(|(_, detail, _)| detail.clone())
                 .or_else(|| candidate_rejection_detail.clone())
-                .unwrap_or_else(|| repair_explanation.into());
+                .unwrap_or_else(|| repair_explanation.clone());
             obstacle = Some(Obstacle::Decision(RepairCase::new(
                 Remedy::EditReview,
-                repair_explanation,
+                &repair_explanation,
                 detail,
             )));
         }
@@ -1411,6 +1428,105 @@ mod tests {
         assert!(still_deferred(&item, 2, 1));
         assert!(!still_deferred(&item, 3, 1));
         assert!(!still_deferred(&item, 2, 2));
+    }
+
+    struct MechanicalCorrection {
+        calls: usize,
+        repair_quotation: bool,
+    }
+
+    impl Backend for MechanicalCorrection {
+        fn next<'a>(
+            &'a mut self,
+            selected: &'a ExperienceState,
+            last: Option<&'a Value>,
+            _tools: &'a [Value],
+        ) -> Pin<Box<dyn Future<Output = Result<Action>> + Send + 'a>> {
+            Box::pin(async move {
+                self.calls += 1;
+                if self.calls == 4 {
+                    let feedback = last.context("mechanical correction lost its new rejection")?;
+                    ensure!(feedback["fault"]["code"] == "quotation_mismatch");
+                    ensure!(
+                        feedback["fault"]["path"] == json!(["extracted_items", 0, "statement"])
+                    );
+                    if self.repair_quotation {
+                        return Ok(Action::Tool {
+                            name: "review_experience".into(),
+                            arguments: json!({"expected_review_revision":selected.review_revision,
+                                "review":{"experience_id":selected.experience.id,
+                                    "experience_revision":selected.revision,
+                                    "reviewer":"fixture","rationale":"corrected quotation",
+                                    "candidates":[{"kind":"pattern","key":"procedure",
+                                        "situation":"A job is running","approach":"Check the existing job"}]}}),
+                        });
+                    }
+                }
+                if self.calls > 1 {
+                    return Ok(Action::Done);
+                }
+                Ok(Action::Tool {
+                    name: "review_experience".into(),
+                    arguments: json!({"expected_review_revision":selected.review_revision,
+                        "review":{"experience_id":selected.experience.id,
+                            "experience_revision":selected.revision,
+                            "reviewer":"fixture","rationale":"initial review",
+                            "candidates":[{"kind":"pattern","key":"procedure",
+                                "situation":"A job is running","approach":"Check the existing job"}],
+                            "assessments":[{"target":{"candidate_key":"procedure"},
+                                "scope":"fixture","rubric":"fixture",
+                                "correctness":{"value":0.5,"weight":0},
+                                "usefulness":{"value":0,"weight":0},
+                                "evidence_indices":[],"rationale":"Fixture assessment"}]}}),
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn mechanical_correction_returns_new_rejection_to_the_judge() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/judge/retry_fixture.sh");
+        for repair_quotation in [true, false] {
+            let dir =
+                std::env::temp_dir().join(format!("mimir-correction-chain-{}", Uuid::new_v4()));
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let config_path = dir.join("config.toml");
+            let review_log = dir.join("reviews.jsonl");
+            std::fs::write(&config_path, format!(
+                "config_version=1\n[logging]\ndirectory='{}'\n[database]\nhost='127.0.0.1'\nport=1\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nbatch_size=1\nmcp_command='bash'\nmcp_args=['{}','{}','{}','correction-chain']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\n",
+                dir.join("logs").display(), fixture.display(), Uuid::new_v4(), review_log.display()
+            )).unwrap();
+            std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let settings = super::super::config::load(Some(&config_path)).unwrap();
+            let state = State::lock(dir.join("state")).unwrap().unwrap();
+            let mut backend = MechanicalCorrection {
+                calls: 0,
+                repair_quotation,
+            };
+            let report = run(&settings, &state, &mut backend).await;
+            assert_eq!(backend.calls, if repair_quotation { 4 } else { 5 });
+            assert_eq!(report.confirmed, usize::from(repair_quotation));
+            assert_eq!(
+                std::fs::read_to_string(&review_log)
+                    .unwrap()
+                    .lines()
+                    .count(),
+                if repair_quotation { 2 } else { 1 }
+            );
+            if repair_quotation {
+                assert_eq!(report.status, "complete");
+                assert!(report.deferred_reviews.is_empty());
+            } else {
+                let case = report.deferred_reviews[0].repair.as_ref().unwrap();
+                assert!(case.explanation.contains("exactly match"));
+                assert!(case.detail.contains("statement"));
+                assert!(!case.explanation.contains("did not declare"));
+            }
+            drop(state);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     struct ReferenceCorrection {
