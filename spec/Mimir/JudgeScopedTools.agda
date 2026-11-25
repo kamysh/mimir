@@ -145,17 +145,18 @@ module For (conversion : Conversion.Contract) (format : Encoding.Formatting) (se
     (inj₂ value) → historyCheck args (snapshot value)
 
   graphArguments : Tools.Query → V.Value → Script (Failure ⊎ V.Value)
-  graphArguments Tools.explanation args = chain (require
-    (does (1 ≤? (looseLimit 0 args))) "invalid explain limit" args) offset
-    where
-    offset : V.Value → Script (Failure ⊎ V.Value)
-    offset value with Input.unsigned maximum (get "offset" value)
-    ... | inj₁ _ = done (inj₁ (rejected (toList "missing explain offset")))
-    ... | inj₂ _ = done (inj₂ value)
+  graphArguments Tools.explanation args with D.decode Catalog.explainBelief (Input.view args)
+  ... | inj₁ failure = done (inj₁ (rejected (Validation.Fault.explanation failure)))
+  ... | inj₂ _ = done (inj₂ args)
   graphArguments Tools.intervention args with D.float (get "value" args)
   ... | inj₁ _ = done (inj₁ (rejected (toList "invalid intervention value")))
   ... | inj₂ value = require (Numeric.probability value) "invalid intervention value" args
   graphArguments _ args = done (inj₂ args)
+
+  explanationMatchesPublicAdmission : ∀ args requested →
+    D.decode Catalog.explainBelief (Input.view args) ≡ inj₂ requested →
+    graphArguments Tools.explanation args ≡ done (inj₂ args)
+  explanationMatchesPublicAdmission args requested accepted rewrite accepted = refl
 
   graphScopeMessage : Text
   graphScopeMessage = toList "Use a belief from the selected project for explanations or interventions. Global beliefs can be read with get_belief."

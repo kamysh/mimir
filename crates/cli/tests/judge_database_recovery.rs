@@ -51,6 +51,174 @@ async fn assert_reviewed(service: &MimirService, id: Uuid) {
 
 #[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
 #[tokio::test]
+async fn watcher_reopens_cases_whose_host_obstruction_was_fixed() {
+    let fixture = isolation::fixture();
+    let core = Config::load_from_path(&fixture.root.join("config.toml")).unwrap();
+    fixture.assert_database(&core.database);
+    let service = MimirService::connect(&core).await.unwrap();
+    let db = mimir_core::db::connect(&core.database).await.unwrap();
+    let project = format!("restored-host-{}", Uuid::new_v4());
+    let dir = fixture.root.join(&project);
+    fs::create_dir(&dir).unwrap();
+    let state = dir.join("state");
+    let config = dir.join("config.toml");
+    let model = dir.join("model.sh");
+    let belief = service
+        .add_belief_in_project(
+            "A project belief for explanation",
+            0.6,
+            0.5,
+            &project,
+            mimir_core::graph::MemoryType::Fact,
+        )
+        .await
+        .unwrap();
+    fs::write(dir.join("belief-id"), belief.id.to_string()).unwrap();
+    fs::write(
+        &model,
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+jq -c --rawfile belief "$(dirname "$0")/belief-id" '
+  .experience as $selected |
+  if $selected.experience.context == "legacy explanation" and (.history|length)==0 then
+    {calls:[{name:"explain_belief",arguments_json:({id:$belief}|tojson)}]}
+  elif (.history[-1].tool_results[0].result.error // null) != null or
+       (.history[-1].tool_results[0].result.status // "") == "needs_correction" then
+    error("the valid explanation was rejected")
+  else
+    {calls:[{name:"review_experience",arguments_json:({
+      expected_review_revision:$selected.review_revision,
+      review:{experience_id:$selected.experience.id,experience_revision:$selected.revision,
+        reviewer:"fixture",rationale:"Checked the stored observation"}}|tojson)}]}
+  end'
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&model, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut settings: toml::Table =
+        toml::from_str(&fs::read_to_string(fixture.root.join("config.toml")).unwrap()).unwrap();
+    settings["judge"]
+        .as_table_mut()
+        .unwrap()
+        .insert("project".into(), project.clone().into());
+    settings["llm"]["command"] = model.to_str().unwrap().into();
+    settings["email"] = toml::Value::try_from(serde_json::json!({"enabled":false})).unwrap();
+    fs::write(&config, toml::to_string(&settings).unwrap()).unwrap();
+    fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
+    let make = |context: &str| Experience {
+        id: (),
+        project: project.clone(),
+        context: context.into(),
+        action: "record observation".into(),
+        outcome: Outcome::Success,
+        source: ObservationSource::ToolResult,
+        evidence: vec!["fixture evidence".into()],
+        belief_ids: vec![],
+        pattern_id: None,
+        learning_items: vec![],
+        source_records: vec![],
+    };
+    let mut ids = Vec::new();
+    for (context, events) in [
+        (
+            "legacy correction",
+            serde_json::json!([
+            {"kind":"automatic_review_correction","tool":"review_experience"},
+            {"kind":"tool_result","tool":"review_experience","detail":{"status":"needs_correction",
+                "fault":{"code":"quotation_mismatch"}}}]),
+        ),
+        (
+            "legacy explanation",
+            serde_json::json!([
+            {"kind":"tool_request","tool":"explain_belief","detail":{"id":belief.id}},
+            {"kind":"tool_rejection","tool":"explain_belief","detail":"invalid explain limit"}]),
+        ),
+        (
+            "requires user decision",
+            serde_json::json!([
+            {"kind":"automatic_review_correction","tool":"review_experience"},
+            {"kind":"tool_result","tool":"review_experience","detail":{"status":"needs_input"}}]),
+        ),
+    ] {
+        let id = service
+            .create_experience(&make(context))
+            .await
+            .unwrap()
+            .experience
+            .id;
+        db.execute(
+            "INSERT INTO mimir_review_repair_cases(experience_id,source_revision,remedy)
+            VALUES($1,1,$2)",
+            &[
+                &id,
+                &serde_json::json!({"remedy":"edit_review",
+                "explanation":context,"detail":context,"diagnostic_id":null}),
+            ],
+        )
+        .await
+        .unwrap();
+        db.execute(
+            "INSERT INTO mimir_failed_review_transcripts
+            (attempt_key,experience_id,source_revision,transcript) VALUES($1,$2,1,$3)",
+            &[
+                &format!("legacy-{id}"),
+                &id,
+                &serde_json::json!({"events":events,"readback":"pending"}),
+            ],
+        )
+        .await
+        .unwrap();
+        ids.push(id);
+    }
+    let mut watcher = Command::new(&fixture.mimir)
+        .args(["judge", "watch", "--config"])
+        .arg(&config)
+        .arg("--state-dir")
+        .arg(&state)
+        .stdout(Stdio::from(
+            fs::File::create(dir.join("watch.stdout")).unwrap(),
+        ))
+        .stderr(Stdio::from(
+            fs::File::create(dir.join("watch.stderr")).unwrap(),
+        ))
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    assert_reviewed(&service, ids[0]).await;
+    assert_reviewed(&service, ids[1]).await;
+    wait_for_state(
+        &state.join("judge-runtime.json"),
+        "phase",
+        "waiting_for_work",
+    )
+    .await;
+    assert_eq!(
+        service
+            .get_experience(ids[2])
+            .await
+            .unwrap()
+            .unwrap()
+            .reviewed_revision,
+        0
+    );
+    let held: Vec<Uuid> = db
+        .query(
+            "SELECT experience_id FROM mimir_review_repair_cases WHERE experience_id=ANY($1)",
+            &[&ids],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert_eq!(held, vec![ids[2]], "a genuine user decision must stay held");
+    watcher.kill().await.unwrap();
+    watcher.wait().await.unwrap();
+    service.delete_project(&project).await.unwrap();
+}
+
+#[ignore = "requires MIMIR_TEST_ROOT isolated fixture"]
+#[tokio::test]
 async fn watcher_recovers_at_startup_and_after_listener_loss() {
     let fixture = isolation::fixture();
     let core = Config::load_from_path(&fixture.root.join("config.toml")).unwrap();

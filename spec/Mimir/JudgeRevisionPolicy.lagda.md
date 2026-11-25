@@ -113,12 +113,21 @@ record Case : Set where
 
 -- The action is tied to the case's own pin. Only the matching remedy opens
 -- it again. Reviewing or changing the source also retires the old hold.
+-- Older hosts could stop before delivering a correction, or refuse a valid
+-- explanation request. Evidence that the corrected host handles that exact
+-- obstruction releases the hold after rereading its still-pending source.
+data RestoredValidation : Set where
+  correctionFeedbackRestored explanationAdmissionRestored : RestoredValidation
+
 data RemedyApplied (chosen : O.Pin) : Choice → Set where
   reviewed : ∀ {detail row} → O.SnapshotValid row → O.Ack chosen row → RemedyApplied chosen (editReview detail)
   backendReady : ∀ {detail} → RemedyApplied chosen (chooseBackend detail)
   clientReady : ∀ {detail} → RemedyApplied chosen (restoreClient detail)
   readable : ∀ {detail row} → O.SnapshotValid row → O.IdentityMatches chosen row →
     RemedyApplied chosen (restoreReadAccess detail)
+  handlerRestored : ∀ {detail row} → O.SnapshotValid row → O.IdentityMatches chosen row →
+    O.StillDeferred (O.deferred (O.Pin.identity chosen) (O.Pin.sourceRevision chosen)) row →
+    RestoredValidation → RemedyApplied chosen (editReview detail)
 
 data CaseState (problem : Case) : Set where
   unresolved : CaseState problem
@@ -154,6 +163,11 @@ exclusions (observedCase problem (remedyApplied evidence) ∷ rest) = exclusions
 remedyReleasesCase : ∀ problem evidence rest →
   exclusions (observedCase problem (remedyApplied evidence) ∷ rest) ≡ exclusions rest
 remedyReleasesCase problem evidence rest = refl
+
+restoredHandlerReleasesPendingCase : ∀ chosen detail row valid identity pending repaired rest →
+  exclusions (observedCase (repair chosen (editReview detail))
+    (remedyApplied (handlerRestored {row = row} valid identity pending repaired)) ∷ rest) ≡ exclusions rest
+restoredHandlerReleasesPendingCase chosen detail row valid identity pending repaired rest = refl
 
 requeue : List Entry → Entry → List Entry
 requeue waiting item = waiting ++ item ∷ []

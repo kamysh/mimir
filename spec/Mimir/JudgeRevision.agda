@@ -86,6 +86,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   data Effect : Set where
     nextModel : Maybe V.Value → Effect
+    prepareCorrection : Maybe Rejection → Effect
     hostTool : Scoped.Effect → Effect
     stopTool releaseBackend : Effect
     observe : Effect
@@ -93,6 +94,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   Reply : Effect → Set
   Reply (nextModel last) = Answer
+  Reply (prepareCorrection rejected) = Maybe V.Value
   Reply (hostTool request) = Scoped.Reply request
   Reply stopTool = ⊤
   Reply releaseBackend = ⊤
@@ -103,6 +105,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   data State : Set where
     loop : Work → State
+    correcting : Work → V.Value → State
     executing : Script State → State
     finished : Outcome → State
 
@@ -193,10 +196,12 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     ; last = just (feedback "review_not_saved"
         (submissionDetail w)
         "Submit review_experience for the selected experience and revisions. Correct any rejected fields before submitting.") }))
-  ... | true = firstDiagnostic w (toList "review_experience")
-    (toList "The judge stopped without saving a review after being asked to submit it.") nothing >>= λ recorded →
-    interrupted recorded (Policy.noSubmission (submissionDetail w)) "review_requires_repair"
-      (error (submissionDetail w) nothing)
+  ... | true = ask (prepareCorrection (Work.lastRejection w)) λ where
+    (just draft) → done (correcting w draft)
+    nothing → firstDiagnostic w (toList "review_experience")
+      (submissionDetail w) nothing >>= λ recorded →
+      interrupted recorded (Policy.noSubmission (submissionDetail w)) "review_requires_repair"
+        (error (submissionDetail w) nothing)
 
   afterDone : Work → Reply observe → Script State
   afterDone w (inj₁ failure) = readbackUnavailable w failure
@@ -237,7 +242,8 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   ... | false = done (loop (record w
       { sentCorrections = (name , Error.detail problem) ∷ Work.sentCorrections w
       ; last = just guidance
-      ; lastRejection = just (rejection name (Error.detail problem) (Error.source problem)) }))
+      ; lastRejection = just (rejection name (Error.detail problem) (Error.source problem))
+      ; submissionRequested = false }))
 
   inputRejected : Work → Text → Scoped.Failure → Text → Script State
   inputRejected w name failure message = correct w name (scopedError failure)
@@ -298,6 +304,31 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   attempt : Work → Text → V.Value → Script State
   attempt w name arguments = fromScoped (Scope.run name arguments) >>= afterTool w name
 
+  -- Host-produced corrections enter the same validation and feedback path.
+  -- Their receipts cannot directly settle a revision or open a repair case.
+  correctedSubmission : Work → V.Value → Script State
+  correctedSubmission w arguments = attempt w (toList "review_experience") arguments
+
+  correctedRejectionContinues : ∀ w failure message events result →
+    Runs (inputRejected w (toList "review_experience") failure message) events result →
+    Continues result
+  correctedRejectionContinues w = correctionContinues w (toList "review_experience")
+
+  newRejectionReplacesExplanation : ∀ w name problem guidance →
+    alreadyExplained w name (Error.detail problem) ≡ false →
+    Σ Work (λ updated →
+      correct w name problem guidance ≡ done (loop updated) ×
+      Work.lastRejection updated ≡
+        just (rejection name (Error.detail problem) (Error.source problem)) ×
+      Work.submissionRequested updated ≡ false)
+  newRejectionReplacesExplanation w name problem guidance fresh rewrite fresh =
+    _ , refl , refl , refl
+
+  correctedResponseRequiresReadback : ∀ w value →
+    afterTool w (toList "review_experience") (inj₂ value) ≡
+      ask observe (afterObservation (record w { last = just value }))
+  correctedResponseRequiresReadback w value = refl
+
   malformedAttempt : Work → Text → Source.Failure → Script State
   malformedAttempt w name source = correct w name (error (Source.display source) (just source))
     (feedback "invalid_tool_arguments" (Source.Failure.detail source)
@@ -321,6 +352,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   next : State → Step
   next (loop w) = external (nextModel (Work.last w)) (λ reply → executing (afterModel w reply))
+  next (correcting w arguments) = internal (executing (correctedSubmission w arguments))
   next (executing (done state)) = internal state
   next (executing (ask effect continuation)) = external effect (λ reply → executing (continuation reply))
   next (finished result) = stopped result
